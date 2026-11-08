@@ -13,6 +13,8 @@ extends Node3D
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
 @onready var info: Label = $HUD/Info
+@onready var panel: ControlPanel = $HUD/ControlPanel
+@onready var overlay: GrabOverlay = $HUD/GrabOverlay
 
 ## Empty space around the sheet, as a fraction of its size.
 const FRAME_MARGIN := 1.3
@@ -20,6 +22,10 @@ const FRAME_MARGIN := 1.3
 
 func _ready() -> void:
 	# Children are ready before their parent, so the sheet already exists.
+	panel.setup(sheet)
+	panel.reset_requested.connect(sheet.reset_simulation)
+	overlay.sheet = sheet
+	overlay.camera = camera
 	sheet.mesh_rebuilt.connect(_frame_sheet)
 	get_viewport().size_changed.connect(_frame_sheet)
 	_frame_sheet()
@@ -34,6 +40,10 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
+		# Emulated touches are generated even over the UI panel; a press there
+		# is meant for a slider, not for the skin underneath.
+		if event.pressed and panel.get_global_rect().has_point(event.position):
+			return
 		if event.pressed:
 			sheet.grab(event.index, _screen_to_sheet_plane(event.position))
 		else:
@@ -68,9 +78,8 @@ func _process(_delta: float) -> void:
 		flags += " projected"
 	if s.regularized:
 		flags += " regularized"
-	info.text = "%s\n%d vertices, %d triangles, mu %.0f kPa\n" % [
-			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
-			sheet.shear_modulus_kpa] \
+	info.text = "%s\n%d vertices, %d triangles\n" % [
+			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [
 			status, s.iterations, s.step_ms, _sci(s.residual), flags] \
 		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
@@ -106,10 +115,14 @@ func _demo_pull() -> void:
 
 
 ## An orthographic camera's `size` is the visible *height* in world units (mm).
-## Fit both the sheet's height and width (given the window's aspect ratio).
+## Fit the sheet into the part of the window not covered by the side panel,
+## then slide the camera right so the sheet is centred in that free area.
 func _frame_sheet() -> void:
 	var vp := get_viewport().get_visible_rect().size
-	camera.size = maxf(sheet.height, sheet.width / (vp.x / vp.y)) * FRAME_MARGIN
+	var free_width := maxf(vp.x - panel.PANEL_WIDTH, 100.0)
+	camera.size = maxf(sheet.height, sheet.width / (free_width / vp.y)) * FRAME_MARGIN
+	var mm_per_px := camera.size / vp.y
+	camera.position.x = 0.5 * panel.PANEL_WIDTH * mm_per_px
 
 
 func _save_screenshot_and_quit(path: String) -> void:

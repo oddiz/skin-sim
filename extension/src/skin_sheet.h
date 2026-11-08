@@ -20,6 +20,7 @@
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include "skinsim/params.hpp"
@@ -46,14 +47,22 @@ public:
     // The Inspector uses kPa, which is friendlier for skin; the solver uses MPa.
     void set_shear_modulus_kpa(double p_kpa);
     double get_shear_modulus_kpa() const { return params_.shear_modulus * 1000.0; }
+    void set_stiffening(double p_b);
+    double get_stiffening() const { return params_.stiffening; }
     void set_thickness(double p_mm);
     double get_thickness() const { return params_.thickness; }
     void set_tether_stiffness_kpa_per_mm(double p_value);
     double get_tether_stiffness_kpa_per_mm() const { return params_.tether_stiffness * 1000.0; }
-    void set_grab_stiffness(double p_n_per_mm);
-    double get_grab_stiffness() const { return params_.grab_stiffness; }
     void set_pin_boundary(bool p_pin);
     bool get_pin_boundary() const { return params_.pin_boundary; }
+
+    // --- Grab (the user's forceps) ---
+    void set_grab_radius(double p_mm);
+    double get_grab_radius() const { return grab_params_.radius; }
+    void set_grab_stiffness(double p_n_per_mm);
+    double get_grab_stiffness() const { return grab_params_.stiffness; }
+    void set_max_pull_force(double p_newton);
+    double get_max_pull_force() const { return grab_params_.max_force; }
 
     // --- Solver ---
     void set_iterations_per_frame(int p_iterations);
@@ -77,21 +86,25 @@ public:
     int get_triangle_count() const { return mesh_.triangle_count(); }
     String get_solver_info() const;
     Dictionary get_step_info() const;
+    // One Dictionary per active grab: point/target (world space), force (N),
+    // force_limited (bool), radius (mm).
+    Array get_grab_info() const;
 
 protected:
     static void _bind_methods();
 
 private:
     void rebuild();               // new mesh + new simulation
-    void push_params();           // hand params_ to the running simulation
+    void push_params();           // hand params_/grab_params_ to the running simulation
     void update_render_mesh();    // copy current positions into the ArrayMesh
     void ensure_render_objects();
     Eigen::Vector2d world_to_sheet(const Vector3& p_world) const;
 
     double width_ = 100.0;
     double height_ = 60.0;
-    double element_size_ = 5.0;
-    skinsim::TissueParams params_;  // the one struct of tissue parameters
+    double element_size_ = 2.5;
+    skinsim::TissueParams params_;      // the one struct of tissue parameters
+    skinsim::GrabParams grab_params_;   // how the user's finger acts
     int iterations_per_frame_ = 5;
     bool show_wireframe_ = true;
     Color skin_color_ = Color(0.85, 0.64, 0.53);

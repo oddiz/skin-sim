@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "name": "Neo-Hookean (no stiffening)",
+  "description": "The M2 model: no strain-stiffening, the skin never locks. For comparison.",
+  "params": {
+    "shear_modulus_kpa": 50,
+    "stiffening": 0,
+    "thickness": 2.0,
+    "tether_stiffness_kpa_per_mm": 1.0,
+    "pin_boundary": true
+  }
+}

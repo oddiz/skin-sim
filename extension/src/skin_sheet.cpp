@@ -32,6 +32,12 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_element_size"), &SkinSheet::get_element_size);
     ClassDB::bind_method(D_METHOD("set_shear_modulus_kpa", "kpa"), &SkinSheet::set_shear_modulus_kpa);
     ClassDB::bind_method(D_METHOD("get_shear_modulus_kpa"), &SkinSheet::get_shear_modulus_kpa);
+    ClassDB::bind_method(D_METHOD("set_stiffening", "b"), &SkinSheet::set_stiffening);
+    ClassDB::bind_method(D_METHOD("get_stiffening"), &SkinSheet::get_stiffening);
+    ClassDB::bind_method(D_METHOD("set_grab_radius", "mm"), &SkinSheet::set_grab_radius);
+    ClassDB::bind_method(D_METHOD("get_grab_radius"), &SkinSheet::get_grab_radius);
+    ClassDB::bind_method(D_METHOD("set_max_pull_force", "newton"), &SkinSheet::set_max_pull_force);
+    ClassDB::bind_method(D_METHOD("get_max_pull_force"), &SkinSheet::get_max_pull_force);
     ClassDB::bind_method(D_METHOD("set_thickness", "mm"), &SkinSheet::set_thickness);
     ClassDB::bind_method(D_METHOD("get_thickness"), &SkinSheet::get_thickness);
     ClassDB::bind_method(D_METHOD("set_tether_stiffness_kpa_per_mm", "value"),
@@ -59,6 +65,7 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_triangle_count"), &SkinSheet::get_triangle_count);
     ClassDB::bind_method(D_METHOD("get_solver_info"), &SkinSheet::get_solver_info);
     ClassDB::bind_method(D_METHOD("get_step_info"), &SkinSheet::get_step_info);
+    ClassDB::bind_method(D_METHOD("get_grab_info"), &SkinSheet::get_grab_info);
 
     // ADD_GROUP folds the following properties under a heading in the Inspector.
     // Hint strings: "min,max,step[,exp][,suffix:unit]"; "exp" = logarithmic slider,
@@ -75,15 +82,24 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "shear_modulus_kpa", PROPERTY_HINT_RANGE,
                               "1,2000,0.1,exp,suffix:kPa"),
                  "set_shear_modulus_kpa", "get_shear_modulus_kpa");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "stiffening", PROPERTY_HINT_RANGE, "0,30,0.1"),
+                 "set_stiffening", "get_stiffening");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "thickness", PROPERTY_HINT_RANGE, "0.2,6,0.05,suffix:mm"),
                  "set_thickness", "get_thickness");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tether_stiffness_kpa_per_mm", PROPERTY_HINT_RANGE,
                               "0,50,0.01,suffix:kPa/mm"),
                  "set_tether_stiffness_kpa_per_mm", "get_tether_stiffness_kpa_per_mm");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pin_boundary"), "set_pin_boundary", "get_pin_boundary");
+
+    ADD_GROUP("Grab", "");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "grab_radius", PROPERTY_HINT_RANGE, "0,10,0.1,suffix:mm"),
+                 "set_grab_radius", "get_grab_radius");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "grab_stiffness", PROPERTY_HINT_RANGE,
                               "0.1,100,0.1,exp,suffix:N/mm"),
                  "set_grab_stiffness", "get_grab_stiffness");
-    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pin_boundary"), "set_pin_boundary", "get_pin_boundary");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_pull_force", PROPERTY_HINT_RANGE,
+                              "0.1,50,0.1,exp,suffix:N"),
+                 "set_max_pull_force", "get_max_pull_force");
 
     ADD_GROUP("Solver", "");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "iterations_per_frame", PROPERTY_HINT_RANGE, "1,50,1"),
@@ -137,6 +153,11 @@ void SkinSheet::set_shear_modulus_kpa(double p_kpa) {
     push_params();
 }
 
+void SkinSheet::set_stiffening(double p_b) {
+    params_.stiffening = p_b;
+    push_params();
+}
+
 void SkinSheet::set_thickness(double p_mm) {
     params_.thickness = p_mm;
     push_params();
@@ -147,8 +168,18 @@ void SkinSheet::set_tether_stiffness_kpa_per_mm(double p_value) {
     push_params();
 }
 
+void SkinSheet::set_grab_radius(double p_mm) {
+    grab_params_.radius = p_mm;
+    push_params();
+}
+
 void SkinSheet::set_grab_stiffness(double p_n_per_mm) {
-    params_.grab_stiffness = p_n_per_mm;
+    grab_params_.stiffness = p_n_per_mm;
+    push_params();
+}
+
+void SkinSheet::set_max_pull_force(double p_newton) {
+    grab_params_.max_force = p_newton;
     push_params();
 }
 
@@ -172,7 +203,9 @@ void SkinSheet::set_skin_color(const Color& p_color) {
 }
 
 void SkinSheet::push_params() {
-    if (sim_) sim_->set_params(params_);
+    if (!sim_) return;
+    sim_->set_params(params_);
+    sim_->set_grab_params(grab_params_);
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +268,23 @@ Dictionary SkinSheet::get_step_info() const {
     return d;
 }
 
+Array SkinSheet::get_grab_info() const {
+    Array out;
+    if (!sim_) return out;
+    for (const skinsim::GrabInfo& g : sim_->grab_info()) {
+        Dictionary d;
+        d["id"] = g.id;
+        // to_global: node-local -> world space, so the overlay can project it to the screen.
+        d["point"] = to_global(to_godot(g.point));
+        d["target"] = to_global(to_godot(g.target));
+        d["force"] = g.force;
+        d["force_limited"] = g.force_limited;
+        d["radius"] = g.radius;
+        out.push_back(d);
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -264,7 +314,7 @@ void SkinSheet::rebuild() {
     mesh_ = skinsim::make_rectangle_mesh(width_, height_, element_size_);
     edges_ = skinsim::unique_edges(mesh_);
     sim_ = std::make_unique<skinsim::Simulation>(mesh_);  // old simulation is deleted here
-    sim_->set_params(params_);
+    push_params();
     last_step_ = skinsim::StepInfo{};
     update_render_mesh();
     emit_signal("mesh_rebuilt");

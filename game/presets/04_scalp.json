@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "name": "Scalp",
+  "description": "Thick, stiff skin firmly bound to the galea: little mobility. Illustrative values, not calibrated.",
+  "params": {
+    "shear_modulus_kpa": 100,
+    "stiffening": 12,
+    "thickness": 2.5,
+    "tether_stiffness_kpa_per_mm": 5.0,
+    "pin_boundary": true
+  }
+}

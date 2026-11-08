@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "name": "Back",
+  "description": "Thick dermis, moderately tethered. Illustrative values, not calibrated.",
+  "params": {
+    "shear_modulus_kpa": 80,
+    "stiffening": 10,
+    "thickness": 3.5,
+    "tether_stiffness_kpa_per_mm": 3.0,
+    "pin_boundary": true
+  }
+}

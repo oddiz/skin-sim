@@ -10,12 +10,13 @@
 //
 //   E(x) = sum over triangles   thickness * area * W(F)          (skin)
 //        + sum over nodes       1/2 k A_i |x_i - X_i|^2          (tethers)
-//        + sum over grabs       1/2 k_g |p(x) - target|^2        (fingers)
+//        + sum over grabs       psi(|p(x) - target|)             (fingers)
 //
+// where p(x) is the weighted centre of the grabbed patch of skin and psi is a
+// spring that saturates at the maximum pull force (see simulation.cpp).
 // Equilibrium = minimum of E. step() moves towards it with Newton's method.
 #pragma once
 
-#include <array>
 #include <map>
 #include <vector>
 
@@ -40,6 +41,16 @@ struct StepInfo {
     double residual = 0.0;     // largest net force on any free node, N
 };
 
+// What a grab is doing right now (for drawing and for reporting forces).
+struct GrabInfo {
+    int id = 0;
+    Eigen::Vector2d point;      // current centre of the grabbed patch, mm
+    Eigen::Vector2d target;     // where the finger wants it, mm
+    double force = 0.0;         // pulling force magnitude, N
+    bool force_limited = false; // at max_force: the skin is lagging the finger
+    double radius = 0.0;        // patch radius actually used, mm (0 = single triangle)
+};
+
 using SparseMatrix = Eigen::SparseMatrix<double>;
 
 class Simulation {
@@ -51,6 +62,8 @@ public:
     // --- parameters (may change between any two steps) ---
     void set_params(const TissueParams& params);
     const TissueParams& params() const { return params_; }
+    void set_grab_params(const GrabParams& params);
+    const GrabParams& grab_params() const { return grab_params_; }
 
     // --- state ---
     const TriMesh& mesh() const { return mesh_; }
@@ -64,14 +77,17 @@ public:
     void reset();                             // back to rest, grabs released
 
     // --- interaction ---
-    // Grab whatever material point is under `point` (current configuration, mm).
-    // `id` is chosen by the caller, e.g. the touch index, so several fingers can
-    // grab at once. Returns false if the point is not on the sheet.
+    // Grab the skin under `point` (current configuration, mm). The pull is
+    // spread over the skin within grab_params().radius. `id` is chosen by the
+    // caller, e.g. the touch index, so several fingers can grab at once.
+    // Returns false if the point is not on the sheet.
     bool grab(int id, const Eigen::Vector2d& point);
-    void move_grab(int id, const Eigen::Vector2d& target);
+    // Move the finger. The grabbed patch keeps its offset from the finger.
+    void move_grab(int id, const Eigen::Vector2d& finger);
     void release_grab(int id);
     void release_all_grabs();
     int grab_count() const { return static_cast<int>(grabs_.size()); }
+    std::vector<GrabInfo> grab_info() const;
 
     // --- solving ---
     // Run up to max_iterations Newton iterations. Returns immediately (and
@@ -84,12 +100,13 @@ public:
     Eigen::VectorXd gradient(const Eigen::VectorXd& x) const;
     // project_psd=false gives the exact Hessian (for finite-difference checks);
     // true clips each element to positive semi-definite (Newton's fallback).
-    SparseMatrix hessian(const Eigen::VectorXd& x, bool project_psd) const;
+    // include_grabs=false leaves out the grab springs, whose dense patch blocks
+    // step() handles separately (see the Woodbury identity in simulation.cpp).
+    SparseMatrix hessian(const Eigen::VectorXd& x, bool project_psd, bool include_grabs = true) const;
 
-    // Smallest current/rest area ratio J over all triangles. 1 = undeformed,
-    // < 1 compressed, > 1 stretched, <= 0 would mean an inverted element.
+    // Smallest/largest current-to-rest area ratio J over all triangles.
+    // 1 = undeformed, < 1 compressed, > 1 stretched, <= 0 would be inverted.
     double min_area_ratio() const;
-    // Largest area ratio J (the most stretched triangle).
     double max_area_ratio() const;
 
 private:
@@ -99,13 +116,20 @@ private:
         double area;                         // rest area, mm^2
     };
     struct Grab {
-        int element;
-        Eigen::Vector3d bary;  // barycentric weights of the grabbed point in that element
-        Eigen::Vector2d target;
+        // The grabbed patch: p(x) = sum_i weight_i * x_node_i, weights sum to 1.
+        std::vector<int> nodes;
+        std::vector<double> weights;
+        Eigen::Vector2d offset;  // patch centre minus finger position at grab time
+        Eigen::Vector2d target;  // finger position + offset
+        double radius = 0.0;
     };
 
     Eigen::Matrix2d deformation_gradient(const Element& e, const Eigen::VectorXd& x) const;
     Eigen::Vector2d grab_point(const Grab& g, const Eigen::VectorXd& x) const;
+    // The finger "spring" as a function of the gap r = p - target:
+    double grab_energy(const Eigen::Vector2d& r) const;
+    Eigen::Vector2d grab_force(const Eigen::Vector2d& r) const;  // d(energy)/dr
+    Eigen::Matrix2d grab_stiffness(const Eigen::Vector2d& r) const;
     void apply_pins();
     // Fixed dofs: drop their rows/columns and put 1 on the diagonal, so the
     // Newton step for them is exactly zero.
@@ -114,6 +138,7 @@ private:
 
     TriMesh mesh_;
     TissueParams params_;
+    GrabParams grab_params_;
     std::vector<Element> elements_;
     Eigen::VectorXd rest_;       // X, the rest positions as a dof vector
     Eigen::VectorXd x_;          // current positions

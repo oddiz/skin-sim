@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <limits>
 #include <random>
 
 #include "skinsim/simulation.hpp"
@@ -11,14 +12,30 @@ using namespace skinsim;
 
 namespace {
 
+constexpr double kUnlimited = std::numeric_limits<double>::infinity();
+
+// The three grab regimes the derivative tests must cover. The finger sits
+// ~2.4 mm from the patch, far from the spring/constant-force switch-over
+// (finite differences across that kink would be meaningless).
+GrabParams grab_regime(int which) {
+    GrabParams g;
+    switch (which) {
+        case 0: g.radius = 0.0; g.max_force = kUnlimited; break;  // point grab, spring
+        case 1: g.radius = 6.0; g.max_force = kUnlimited; break;  // spread patch, spring
+        default: g.radius = 6.0; g.max_force = 0.5; break;        // spread patch, force-capped
+    }
+    return g;
+}
+
 // A small sheet in a non-trivial state: interior nodes jiggled randomly so
-// every element has a different, generic deformation.
-Simulation jiggled_sheet(double amplitude) {
+// every element has a different, generic deformation. Stiffening is on.
+Simulation jiggled_sheet(double amplitude, const GrabParams& grab = GrabParams{}) {
     Simulation sim(make_rectangle_mesh(24.0, 16.0, 4.0));
     TissueParams p;
     p.tether_stiffness = 0.002;
     p.pin_boundary = false;
     sim.set_params(p);
+    sim.set_grab_params(grab);
 
     std::mt19937 rng(42);  // fixed seed: the test is identical every run
     std::uniform_real_distribution<double> noise(-amplitude, amplitude);
@@ -33,21 +50,26 @@ Simulation jiggled_sheet(double amplitude) {
 }  // namespace
 
 TEST_CASE("assembled gradient matches finite differences of energy") {
-    const Simulation sim = jiggled_sheet(0.4);
-    const Eigen::VectorXd x = sim.dofs();
-    const Eigen::VectorXd g = sim.gradient(x);
-    const double h = 1e-6;
-    for (int i = 0; i < x.size(); ++i) {
-        Eigen::VectorXd xp = x, xm = x;
-        xp[i] += h;
-        xm[i] -= h;
-        const double fd = (sim.energy(xp) - sim.energy(xm)) / (2 * h);
-        CHECK(g[i] == doctest::Approx(fd).epsilon(1e-5).scale(1e-3));
+    for (int regime = 0; regime < 3; ++regime) {
+        CAPTURE(regime);  // doctest prints this if a check below fails
+        const Simulation sim = jiggled_sheet(0.4, grab_regime(regime));
+        const Eigen::VectorXd x = sim.dofs();
+        const Eigen::VectorXd g = sim.gradient(x);
+        const double h = 1e-6;
+        for (int i = 0; i < x.size(); ++i) {
+            Eigen::VectorXd xp = x, xm = x;
+            xp[i] += h;
+            xm[i] -= h;
+            const double fd = (sim.energy(xp) - sim.energy(xm)) / (2 * h);
+            CHECK(g[i] == doctest::Approx(fd).epsilon(1e-5).scale(1e-3));
+        }
     }
 }
 
 TEST_CASE("assembled Hessian matches finite differences of gradient") {
-    const Simulation sim = jiggled_sheet(0.4);
+  for (int regime = 0; regime < 3; ++regime) {
+    CAPTURE(regime);
+    const Simulation sim = jiggled_sheet(0.4, grab_regime(regime));
     const Eigen::VectorXd x = sim.dofs();
     const Eigen::MatrixXd H = Eigen::MatrixXd(sim.hessian(x, /*project_psd=*/false));
     CHECK((H - H.transpose()).norm() < 1e-10);
@@ -59,6 +81,7 @@ TEST_CASE("assembled Hessian matches finite differences of gradient") {
         const Eigen::VectorXd fd = (sim.gradient(xp) - sim.gradient(xm)) / (2 * h);
         CHECK((H.col(col) - fd).norm() <= 1e-5 * (1.0 + fd.norm()));
     }
+  }
 }
 
 TEST_CASE("sheet at rest is in equilibrium with zero energy") {
@@ -70,7 +93,15 @@ TEST_CASE("sheet at rest is in equilibrium with zero energy") {
 }
 
 TEST_CASE("pulling the centre: energy decreases monotonically and Newton converges") {
+    // Pure Neo-Hookean, plain point spring: the setting the bounds below were derived for.
     Simulation sim(make_rectangle_mesh(40.0, 40.0, 4.0));
+    TissueParams p;
+    p.stiffening = 0.0;
+    sim.set_params(p);
+    GrabParams gp;
+    gp.radius = 0.0;
+    gp.max_force = kUnlimited;
+    sim.set_grab_params(gp);
     REQUIRE(sim.grab(0, Eigen::Vector2d(0.0, 0.0)));
     sim.move_grab(0, Eigen::Vector2d(8.0, 0.0));
 
@@ -172,4 +203,99 @@ TEST_CASE("changing parameters mid-simulation relaxes to the new equilibrium") {
     CHECK(info.converged);
     // Stiffer skin resists the same finger spring more: the point moves less.
     CHECK(sim.positions()(0, c) < soft_x);
+}
+
+namespace {
+
+// Pull the centre of a 30 x 30 mm sheet with a constant force (the finger is
+// placed far away, so the grab spring is saturated at max_force) and return
+// how far the grabbed patch moved once at equilibrium.
+double force_controlled_pull(double element_size, double force, double stiffening, double radius) {
+    Simulation sim(make_rectangle_mesh(30.0, 30.0, element_size));
+    TissueParams p;
+    p.stiffening = stiffening;
+    sim.set_params(p);
+    GrabParams gp;
+    gp.radius = radius;
+    gp.max_force = force;
+    sim.set_grab_params(gp);
+    REQUIRE(sim.grab(0, Eigen::Vector2d(0.0, 0.0)));
+    const Eigen::Vector2d start = sim.grab_info()[0].point;
+    sim.move_grab(0, Eigen::Vector2d(1000.0, 0.0));  // far away: constant pull
+    StepInfo info;
+    for (int i = 0; i < 100 && !info.converged; ++i) info = sim.step(10);
+    CHECK(info.converged);
+    CHECK(sim.min_area_ratio() > 0.0);
+    const GrabInfo g = sim.grab_info()[0];
+    CHECK(g.force_limited);
+    CHECK(g.force == doctest::Approx(force));
+    return (g.point - start).norm();
+}
+
+}  // namespace
+
+TEST_CASE("force cap: the finger pulls with at most max_force") {
+    // Doubling the allowed force moves the skin further, but finitely.
+    const double u1 = force_controlled_pull(2.0, 1.0, 8.0, 3.0);
+    const double u2 = force_controlled_pull(2.0, 2.0, 8.0, 3.0);
+    CHECK(u1 > 0.0);
+    CHECK(u2 > u1);
+    CHECK(u2 < 30.0);
+}
+
+TEST_CASE("stiffening limits how far the same force can stretch the skin") {
+    const double force = 3.0;  // N
+    const double u_nh = force_controlled_pull(2.0, force, 0.0, 3.0);
+    const double u_exp = force_controlled_pull(2.0, force, 8.0, 3.0);
+    MESSAGE("3 N pull: Neo-Hookean " << u_nh << " mm, stiffening (b=8) " << u_exp << " mm");
+    CHECK(u_exp < 0.8 * u_nh);
+}
+
+TEST_CASE("spreading the grab over an area makes results converge with mesh refinement") {
+    // A point force in a 2D continuum gives infinite displacement under the
+    // point, so refining the mesh would keep changing the answer. A pull spread
+    // over a fixed physical radius must converge: successive refinements should
+    // change the result less and less.
+    const double u_coarse = force_controlled_pull(2.5, 1.0, 8.0, 5.0);
+    const double u_mid = force_controlled_pull(1.25, 1.0, 8.0, 5.0);
+    const double u_fine = force_controlled_pull(0.625, 1.0, 8.0, 5.0);
+    MESSAGE("patch pull displacement: " << u_coarse << " / " << u_mid << " / " << u_fine << " mm");
+    CHECK(std::abs(u_fine - u_mid) < 0.6 * std::abs(u_mid - u_coarse));
+    CHECK(std::abs(u_fine - u_mid) < 0.05 * u_fine);  // within 5% at the finest level
+}
+
+TEST_CASE("grab patch: weights sum to one and the skin doesn't jump when grabbed") {
+    Simulation sim(make_rectangle_mesh(30.0, 30.0, 1.0));
+    GrabParams gp;
+    gp.radius = 3.0;
+    sim.set_grab_params(gp);
+    REQUIRE(sim.grab(0, Eigen::Vector2d(0.3, -0.2)));
+    const GrabInfo g = sim.grab_info()[0];
+    CHECK(g.radius == doctest::Approx(3.0));
+    CHECK(g.force == doctest::Approx(0.0));  // no pull until the finger moves
+    const StepInfo info = sim.step(5);
+    CHECK(info.converged);
+    CHECK(info.iterations == 0);
+}
+
+TEST_CASE("Woodbury grab solve keeps Newton's quadratic convergence") {
+    // Small pull (no step clamping, no force cap) with a large patch: if the
+    // low-rank grab correction in step() were wrong, Newton would still creep
+    // towards the answer but would need many iterations instead of a few.
+    Simulation sim(make_rectangle_mesh(30.0, 30.0, 1.0));
+    GrabParams gp;
+    gp.radius = 6.0;  // ~110 patch nodes
+    gp.max_force = kUnlimited;
+    sim.set_grab_params(gp);
+    REQUIRE(sim.grab(0, Eigen::Vector2d(0.0, 0.0)));
+    sim.move_grab(0, Eigen::Vector2d(0.3, 0.0));
+    int iterations = 0;
+    StepInfo info;
+    for (int i = 0; i < 50 && !info.converged; ++i) {
+        info = sim.step(1);
+        iterations += info.iterations;
+    }
+    CHECK(info.converged);
+    CHECK_FALSE(info.projected);
+    CHECK(iterations <= 6);
 }

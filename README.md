@@ -36,3 +36,16 @@ Open `game/project.godot` in Godot 4.7, or headless:
 ```
 Godot_v4.7.2-stable_win64_console.exe --headless --path game --quit-after 1
 ```
+
+Note: scripts declare global types with `class_name`. Godot registers these when the editor
+scans the project. If you run the game from the command line on a fresh checkout (no
+`game/.godot/` folder yet), run an import first:
+
+```
+Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
+```
+
+## Presets
+
+Built-in tissue presets live in `game/presets/*.json` (format documented in
+`game/presets/README.md`). Presets saved from the app go to `user://presets/`.

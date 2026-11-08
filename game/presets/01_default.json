@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "name": "Default skin",
+  "description": "Generic adult skin. Illustrative values, not calibrated.",
+  "params": {
+    "shear_modulus_kpa": 50,
+    "stiffening": 8,
+    "thickness": 2.0,
+    "tether_stiffness_kpa_per_mm": 1.0,
+    "pin_boundary": true
+  }
+}

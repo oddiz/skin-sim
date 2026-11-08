@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "name": "Eyelid",
+  "description": "Very thin, lax skin with loose attachment. Illustrative values, not calibrated.",
+  "params": {
+    "shear_modulus_kpa": 15,
+    "stiffening": 4,
+    "thickness": 0.6,
+    "tether_stiffness_kpa_per_mm": 0.2,
+    "pin_boundary": true
+  }
+}

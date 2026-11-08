@@ -39,7 +39,9 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 ## Physics design (built in stages)
 - Skin = 2D plane-stress membrane on a linear triangle mesh. Epidermis/dermis are a visual
   distinction only (layered cut-edge walls); dermis dominates mechanically.
-- Material: Neo-Hookean first; then Gasser-Ogden-Holzapfel (GOH) anisotropic fibres, with
+- Material: incompressible plane-stress membrane. Neo-Hookean (M2), plus isotropic exponential
+  strain-stiffening W = mu/(2b)(exp(bQ)-1) (M3, Demiray; b=0 recovers Neo-Hookean); then
+  Gasser-Ogden-Holzapfel (GOH) anisotropic fibres, with
   fibre angle representing relaxed skin tension lines (RSTL).
 - Tethering: per-node spring to the underlying base; undermining brush lowers tether
   stiffness locally.
@@ -52,6 +54,8 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 - Cutting: on committing an incision polyline, re-mesh with CDT. CDT does no quality
   refinement, so: seed evenly spaced interior points + denser points along cuts,
   triangulate, then a few Laplacian smoothing passes to avoid slivers.
+- Grabs (forceps): pull spread over a radius (area-weighted, so results converge with mesh
+  refinement), force-capped spring (Huber energy); solved via Woodbury identity, never a dense block.
 - Sutures: constraint pulling two edge points together.
 - Output per element: stress values for a heatmap (vertex colours).
 

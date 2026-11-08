@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "name": "Face (cheek)",
+  "description": "Thinner, softer, mobile skin over the cheek. Illustrative values, not calibrated.",
+  "params": {
+    "shear_modulus_kpa": 30,
+    "stiffening": 6,
+    "thickness": 1.5,
+    "tether_stiffness_kpa_per_mm": 0.5,
+    "pin_boundary": true
+  }
+}

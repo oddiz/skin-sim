@@ -32,8 +32,27 @@ TissueParams sanitized(TissueParams p) {
     p.shear_modulus = at_least(p.shear_modulus, 1e-9);
     p.thickness = at_least(p.thickness, 1e-3);
     p.tether_stiffness = at_least(p.tether_stiffness, 0.0);
-    p.grab_stiffness = at_least(p.grab_stiffness, 1e-9);
+    // Stiffening is capped: beyond ~100 the exponential overflows at strains
+    // of a few percent, and no tissue is that extreme.
+    p.stiffening = std::min(at_least(p.stiffening, 0.0), 100.0);
     return p;
+}
+
+GrabParams sanitized(GrabParams p) {
+    p.radius = at_least(p.radius, 0.0);
+    p.stiffness = at_least(p.stiffness, 1e-9);
+    p.max_force = at_least(p.max_force, 1e-9);  // +infinity passes through: "unlimited"
+    return p;
+}
+
+// Smooth bell-shaped weight for nodes in a grab patch: 1 at the centre,
+// falling to 0 (with zero slope) at distance r. A hard cut-off would make the
+// grab jumpy as nodes enter/leave the patch on slightly different clicks.
+double patch_kernel(double distance, double radius) {
+    const double s = distance / radius;
+    if (s >= 1.0) return 0.0;
+    const double t = 1.0 - s * s;
+    return t * t;
 }
 
 }  // namespace
@@ -108,6 +127,11 @@ void Simulation::set_params(const TissueParams& params) {
     converged_ = false;  // new parameters -> new equilibrium to find
 }
 
+void Simulation::set_grab_params(const GrabParams& params) {
+    grab_params_ = sanitized(params);
+    converged_ = false;
+}
+
 void Simulation::apply_pins() {
     std::fill(fixed_.begin(), fixed_.end(), 0);
     if (!params_.pin_boundary) return;
@@ -133,9 +157,12 @@ void Simulation::reset() {
 // ---------------------------------------------------------------------------
 
 bool Simulation::grab(int id, const Eigen::Vector2d& point) {
-    // Find the triangle containing the point in the *current* shape, i.e. what
-    // the user sees. A linear scan is fine for a few thousand triangles.
-    for (int ei = 0; ei < static_cast<int>(elements_.size()); ++ei) {
+    // 1. Is the point on the sheet? Find the triangle containing it in the
+    //    *current* shape (what the user sees). A linear scan is fine for a few
+    //    thousand triangles.
+    int hit = -1;
+    Eigen::Vector3d bary;
+    for (int ei = 0; ei < static_cast<int>(elements_.size()) && hit < 0; ++ei) {
         const Element& e = elements_[ei];
         const Eigen::Vector2d a = x_.segment<2>(2 * e.v[0]);
         const Eigen::Vector2d b = x_.segment<2>(2 * e.v[1]);
@@ -143,23 +170,103 @@ bool Simulation::grab(int id, const Eigen::Vector2d& point) {
         const double total = signed_area(a, b, c);
         if (!(total > 0.0)) continue;
         // Barycentric weight of a vertex = area of the sub-triangle opposite it / total.
-        const Eigen::Vector3d bary(signed_area(point, b, c) / total,
-                                   signed_area(a, point, c) / total,
-                                   signed_area(a, b, point) / total);
-        if (bary.minCoeff() >= -1e-9) {
-            grabs_[id] = Grab{ei, bary, point};
-            converged_ = false;
-            return true;
+        bary << signed_area(point, b, c) / total, signed_area(a, point, c) / total,
+            signed_area(a, b, point) / total;
+        if (bary.minCoeff() >= -1e-9) hit = ei;
+    }
+    if (hit < 0) return false;
+
+    // 2. Collect the patch: nodes within the radius, weighted by
+    //    (node area) x (bell-shaped kernel). Weighting by area is what makes the
+    //    pull a *distributed* force that doesn't depend on how finely the mesh
+    //    is divided: the same physical pull at any resolution.
+    Grab g;
+    const double r = grab_params_.radius;
+    if (r > 0.0) {
+        for (int i = 0; i < mesh_.vertex_count(); ++i) {
+            const double w = node_area_[i] * patch_kernel((x_.segment<2>(2 * i) - point).norm(), r);
+            if (w > 0.0) {
+                g.nodes.push_back(i);
+                g.weights.push_back(w);
+            }
         }
     }
-    return false;
+    if (g.nodes.size() >= 3) {
+        g.radius = r;
+    } else {
+        // Radius smaller than the elements: fall back to the containing
+        // triangle, weighted barycentrically (an exact point grab).
+        g.nodes.assign(elements_[hit].v.begin(), elements_[hit].v.end());
+        g.weights = {bary[0], bary[1], bary[2]};
+        g.radius = 0.0;
+    }
+    double total = 0.0;
+    for (double w : g.weights) total += w;
+    for (double& w : g.weights) w /= total;  // weights sum to 1
+
+    // 3. The patch centre may differ slightly from the clicked point; keep that
+    //    offset so the skin doesn't jump when grabbed.
+    const Eigen::Vector2d centre = grab_point(g, x_);
+    g.offset = centre - point;
+    g.target = centre;
+    grabs_[id] = std::move(g);
+    converged_ = false;
+    return true;
 }
 
-void Simulation::move_grab(int id, const Eigen::Vector2d& target) {
+void Simulation::move_grab(int id, const Eigen::Vector2d& finger) {
     auto it = grabs_.find(id);
-    if (it == grabs_.end() || it->second.target == target) return;
+    if (it == grabs_.end()) return;
+    const Eigen::Vector2d target = finger + it->second.offset;
+    if (it->second.target == target) return;
     it->second.target = target;
     converged_ = false;
+}
+
+std::vector<GrabInfo> Simulation::grab_info() const {
+    std::vector<GrabInfo> out;
+    for (const auto& [id, g] : grabs_) {
+        GrabInfo info;
+        info.id = id;
+        info.point = grab_point(g, x_);
+        info.target = g.target;
+        info.force = grab_force(info.point - g.target).norm();
+        info.force_limited = info.force >= grab_params_.max_force * (1.0 - 1e-9);
+        info.radius = g.radius;
+        out.push_back(info);
+    }
+    return out;
+}
+
+// The finger: a spring of stiffness k that saturates at max_force F.
+// With gap s = |r| and s0 = F/k (the stretch at which the spring hits F):
+//
+//   s <= s0:  psi = k s^2 / 2          force = k s      (ordinary spring)
+//   s >  s0:  psi = F (s - s0/2)       force = F        (constant pull, slipping)
+//
+// Both pieces meet with equal value and slope at s0, and psi stays convex.
+// This "Huber" shape is common in robust statistics for the same reason: a
+// quadratic core with linear tails, smooth enough for Newton.
+double Simulation::grab_energy(const Eigen::Vector2d& r) const {
+    const double k = grab_params_.stiffness, F = grab_params_.max_force;
+    const double s = r.norm(), s0 = F / k;
+    return (s <= s0) ? 0.5 * k * s * s : F * (s - 0.5 * s0);
+}
+
+Eigen::Vector2d Simulation::grab_force(const Eigen::Vector2d& r) const {
+    const double k = grab_params_.stiffness, F = grab_params_.max_force;
+    const double s = r.norm();
+    return (k * s <= F) ? Eigen::Vector2d(k * r) : Eigen::Vector2d(F * r / s);
+}
+
+Eigen::Matrix2d Simulation::grab_stiffness(const Eigen::Vector2d& r) const {
+    const double k = grab_params_.stiffness, F = grab_params_.max_force;
+    const double s = r.norm();
+    if (k * s <= F) return k * Eigen::Matrix2d::Identity();
+    // Constant-magnitude pull: no stiffness along the pull direction n, and
+    // F/s sideways (the direction of a constant force still turns with r).
+    const Eigen::Vector2d n = r / s;
+    return (F / s) * (Eigen::Matrix2d::Identity() - n * n.transpose());
 }
 
 void Simulation::release_grab(int id) {
@@ -172,9 +279,8 @@ void Simulation::release_all_grabs() {
 }
 
 Eigen::Vector2d Simulation::grab_point(const Grab& g, const Eigen::VectorXd& x) const {
-    const Element& e = elements_[g.element];
     Eigen::Vector2d p = Eigen::Vector2d::Zero();
-    for (int a = 0; a < 3; ++a) p += g.bary[a] * x.segment<2>(2 * e.v[a]);
+    for (size_t a = 0; a < g.nodes.size(); ++a) p += g.weights[a] * x.segment<2>(2 * g.nodes[a]);
     return p;
 }
 
@@ -193,11 +299,12 @@ Eigen::Matrix2d Simulation::deformation_gradient(const Element& e, const Eigen::
 
 double Simulation::energy(const Eigen::VectorXd& x) const {
     const double mu = params_.shear_modulus;
+    const double b = params_.stiffening;
     const double h = params_.thickness;
     double E = 0.0;
 
     for (const Element& e : elements_) {
-        const double W = membrane_nh::energy_density(deformation_gradient(e, x), mu);
+        const double W = membrane::energy_density(deformation_gradient(e, x), mu, b);
         if (W == kInf) return kInf;  // inverted element: this state is not allowed
         E += h * e.area * W;
     }
@@ -210,18 +317,19 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
     }
 
     for (const auto& [id, g] : grabs_) {  // C++17 "structured binding" over map entries
-        E += 0.5 * params_.grab_stiffness * (grab_point(g, x) - g.target).squaredNorm();
+        E += grab_energy(grab_point(g, x) - g.target);
     }
     return E;
 }
 
 Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
     const double mu = params_.shear_modulus;
+    const double b = params_.stiffening;
     const double h = params_.thickness;
     Eigen::VectorXd g = Eigen::VectorXd::Zero(x.size());
 
     for (const Element& e : elements_) {
-        const Eigen::Matrix2d P = membrane_nh::first_piola(deformation_gradient(e, x), mu);
+        const Eigen::Matrix2d P = membrane::first_piola(deformation_gradient(e, x), mu, b);
         // Chain rule: dE/dx_a = h * area * P * grad N_a. This is the internal
         // force the element exerts on node a (with the opposite sign).
         for (int a = 0; a < 3; ++a) {
@@ -237,15 +345,16 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
     }
 
     for (const auto& [id, gr] : grabs_) {
-        const Eigen::Vector2d f = params_.grab_stiffness * (grab_point(gr, x) - gr.target);
-        const Element& e = elements_[gr.element];
-        for (int a = 0; a < 3; ++a) g.segment<2>(2 * e.v[a]) += gr.bary[a] * f;
+        // Each patch node carries its weighted share of the finger's force.
+        const Eigen::Vector2d f = grab_force(grab_point(gr, x) - gr.target);
+        for (size_t a = 0; a < gr.nodes.size(); ++a) g.segment<2>(2 * gr.nodes[a]) += gr.weights[a] * f;
     }
     return g;
 }
 
-SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd) const {
+SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, bool include_grabs) const {
     const double mu = params_.shear_modulus;
+    const double b = params_.stiffening;
     const double h = params_.thickness;
 
     // Sparse matrices are built from a list of (row, col, value) "triplets";
@@ -255,8 +364,8 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd) con
     trip.reserve(elements_.size() * 36 + x.size() + grabs_.size() * 18);
 
     for (const Element& e : elements_) {
-        membrane_nh::Mat4 K = membrane_nh::stiffness(deformation_gradient(e, x), mu);
-        if (project_psd) K = membrane_nh::project_psd(K);
+        membrane::Mat4 K = membrane::stiffness(deformation_gradient(e, x), mu, b);
+        if (project_psd) K = membrane::project_psd(K);
 
         // B maps the element's 6 nodal coordinates to the 4 entries of vec(F):
         // vecF[i + 2j] = sum_a x_a[i] * gradN_a[j]  ->  B(i + 2j, 2a + i) = gradN_a[j].
@@ -277,12 +386,17 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd) con
     }
 
     for (const auto& [id, gr] : grabs_) {
-        const Element& e = elements_[gr.element];
-        for (int a = 0; a < 3; ++a)
-            for (int b = 0; b < 3; ++b)
-                for (int d = 0; d < 2; ++d)
-                    trip.emplace_back(2 * e.v[a] + d, 2 * e.v[b] + d,
-                                      params_.grab_stiffness * gr.bary[a] * gr.bary[b]);
+        if (!include_grabs) break;
+        // p = sum w_a x_a, so d2psi/dx_a dx_b = w_a w_b * (2x2 spring stiffness).
+        // Note this couples *every pair* of patch nodes: a dense block. step()
+        // therefore never assembles it and uses the Woodbury identity instead.
+        const Eigen::Matrix2d Kg = grab_stiffness(grab_point(gr, x) - gr.target);
+        for (size_t na = 0; na < gr.nodes.size(); ++na)
+            for (size_t nb = 0; nb < gr.nodes.size(); ++nb)
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j)
+                        trip.emplace_back(2 * gr.nodes[na] + i, 2 * gr.nodes[nb] + j,
+                                          gr.weights[na] * gr.weights[nb] * Kg(i, j));
     }
 
     SparseMatrix H(x.size(), x.size());
@@ -371,22 +485,57 @@ StepInfo Simulation::step(int max_iterations) {
         //    definite (all pivots D > 0); only then is d guaranteed downhill.
         //    Usually it is, even when a few compressed elements are individually
         //    unstable, because tethers, pins and neighbours stabilise them.
+        //
+        //    The grabs add a low-rank term: H = A + U C U^T, where A is the sparse
+        //    skin + tether stiffness, U (n x 2m) holds each grab's patch weights
+        //    (one column for x, one for y) and C (2m x 2m) the finger springs.
+        //    Assembling U C U^T would couple every pair of patch nodes (a dense
+        //    block), so instead we factorize only A and apply the Woodbury
+        //    (push-through) identity:
+        //      (A + U C U^T)^-1 r = z - Y C (I + U^T Y C)^-1 U^T z,
+        //      with z = A^-1 r and Y = A^-1 U.
+        //    That costs 2m extra sparse solves and one tiny dense 2m x 2m solve.
+        //    Because A is positive definite and U C U^T is positive semi-definite
+        //    (the finger springs are convex), checking A alone is enough.
+        const int m = static_cast<int>(grabs_.size());
+        Eigen::MatrixXd U = Eigen::MatrixXd::Zero(x_.size(), 2 * m);
+        Eigen::MatrixXd C = Eigen::MatrixXd::Zero(2 * m, 2 * m);
+        {
+            int j = 0;
+            for (const auto& [id, gr] : grabs_) {
+                for (size_t a = 0; a < gr.nodes.size(); ++a)
+                    for (int i = 0; i < 2; ++i) {
+                        const int dof = 2 * gr.nodes[a] + i;
+                        if (!fixed_[dof]) U(dof, 2 * j + i) = gr.weights[a];  // pinned dofs can't move
+                    }
+                C.block<2, 2>(2 * j, 2 * j) = grab_stiffness(grab_point(gr, x_) - gr.target);
+                ++j;
+            }
+        }
+
         Eigen::SimplicialLDLT<SparseMatrix> ldlt;
         Eigen::VectorXd d;
         auto try_solve = [&](const SparseMatrix& A) {
             ldlt.compute(A);
             if (ldlt.info() != Eigen::Success || !(ldlt.vectorD().minCoeff() > 0.0)) return false;
-            d = ldlt.solve(-g);
+            const Eigen::VectorXd z = ldlt.solve(-g);
+            if (m == 0) {
+                d = z;
+            } else {
+                const Eigen::MatrixXd Y = ldlt.solve(U);  // solves for all 2m columns at once
+                const Eigen::MatrixXd S = Eigen::MatrixXd::Identity(2 * m, 2 * m) + U.transpose() * Y * C;
+                d = z - Y * (C * S.partialPivLu().solve(U.transpose() * z));
+            }
             return d.allFinite();
         };
 
-        SparseMatrix H = constrain(hessian(x_, /*project_psd=*/false));
+        SparseMatrix H = constrain(hessian(x_, /*project_psd=*/false, /*include_grabs=*/false));
         bool solved = try_solve(H);
         if (!solved) {
             // Not positive definite: fall back to per-element PSD projection,
             // which is always safe but converges only linearly.
             info.projected = true;
-            H = constrain(hessian(x_, /*project_psd=*/true));
+            H = constrain(hessian(x_, /*project_psd=*/true, /*include_grabs=*/false));
             solved = try_solve(H);
         }
         const double diag_scale = std::max(1e-12, H.diagonal().cwiseAbs().maxCoeff());

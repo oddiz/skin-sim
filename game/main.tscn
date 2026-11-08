@@ -1,6 +1,8 @@
 [gd_scene format=3]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
+[ext_resource type="Script" path="res://ui/control_panel.gd" id="2_panel"]
+[ext_resource type="Script" path="res://ui/grab_overlay.gd" id="3_overlay"]
 
 [sub_resource type="Environment" id="Environment_bg"]
 background_mode = 1
@@ -48,3 +50,9 @@ offset_top = 10.0
 theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
 theme_override_font_sizes/font_size = 14
 theme_override_styles/normal = SubResource("StyleBox_hud")
+
+[node name="GrabOverlay" type="Control" parent="HUD"]
+script = ExtResource("3_overlay")
+
+[node name="ControlPanel" type="PanelContainer" parent="HUD"]
+script = ExtResource("2_panel")
