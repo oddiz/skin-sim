@@ -1,0 +1,33 @@
+# SCons
+.sconsign*.dblite
+build/
+run_tests_stamp
+
+# Compiler / linker outputs (MSVC and others)
+*.obj
+*.o
+*.lib
+*.a
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.dll
+*.so
+*.dylib
+*.framework/
+*.exe
+
+# Godot editor cache and generated import data
+game/.godot/
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors / OS
+.vscode/
+.vs/
+.DS_Store
+Thumbs.db

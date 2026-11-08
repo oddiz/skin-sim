@@ -1,0 +1,23 @@
+; Tells Godot how to load our native library.
+; Godot reads every *.gdextension file inside the project at startup.
+
+[configuration]
+
+; Name of the exported C function in extension/src/register_types.cpp.
+entry_symbol = "skinsim_library_init"
+; We bind against the Godot 4.7 API, so older Godot versions must refuse it.
+compatibility_minimum = "4.7"
+; Lets the editor reload the DLL after a rebuild without restarting (dev only).
+reloadable = true
+
+[libraries]
+
+; "debug" = template_debug builds (used by the editor and debug exports).
+windows.debug.x86_64 = "res://bin/libskinsim.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/libskinsim.windows.template_release.x86_64.dll"
+macos.debug = "res://bin/libskinsim.macos.template_debug.framework"
+macos.release = "res://bin/libskinsim.macos.template_release.framework"
+ios.debug = "res://bin/libskinsim.ios.template_debug.arm64.a"
+ios.release = "res://bin/libskinsim.ios.template_release.arm64.a"
+linux.debug.x86_64 = "res://bin/libskinsim.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/libskinsim.linux.template_release.x86_64.so"

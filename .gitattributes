@@ -1,0 +1,6 @@
+# Store all text files with LF line endings in the repo, so the code is byte-
+# identical on Windows and on the Mac used later for iOS builds.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
