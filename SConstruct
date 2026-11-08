@@ -80,7 +80,8 @@ Alias("tests", tests_exe)
 
 # --- 4. GDExtension ----------------------------------------------------------
 ext_env = env.Clone()
-ext_env.Append(CPPPATH=["#extension/src", "#solver/include"])
+# The solver's public headers use Eigen types, so the extension needs Eigen too.
+ext_env.Append(CPPPATH=["#extension/src", "#solver/include", EIGEN_DIR])
 ext_env.Append(CPPDEFINES=["EIGEN_MPL2_ONLY"])
 # Prepend so the solver comes before libgodot-cpp on the link line.
 ext_env.Prepend(LIBS=[solver_lib])

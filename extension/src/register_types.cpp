@@ -11,7 +11,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
-#include "hello_skin.h"
+#include "skin_sheet.h"
 
 using namespace godot;
 
@@ -21,7 +21,7 @@ static void initialize_skinsim(ModuleInitializationLevel p_level) {
     if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
     }
-    GDREGISTER_CLASS(HelloSkin);
+    GDREGISTER_CLASS(SkinSheet);
 }
 
 static void uninitialize_skinsim(ModuleInitializationLevel p_level) {
