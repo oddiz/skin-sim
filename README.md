@@ -45,6 +45,29 @@ scans the project. If you run the game from the command line on a fresh checkout
 Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
 ```
 
+## Controls
+
+| Input | Action |
+|---|---|
+| Drag (Grab tool) | Grab and pull the skin with forceps; several fingers on a touch screen |
+| Drag (Cut tool), or Shift + drag | Draw an incision; it is made when you release |
+| C | Switch between Grab and Cut |
+| Z | Undo the last incision |
+| W / R | Wireframe on/off / reset the deformation (incisions stay) |
+
+Incisions are stored in rest (tissue) coordinates, so you can cut skin that is
+being pulled. They stay one element away from the pinned outer border, and a
+stroke starting within ~2 mm of an existing cut snaps onto it, so flap limbs join cleanly.
+
+## Tests
+
+`scons run_tests` runs the unit tests. An opt-in stress test throws ~1600
+adversarial strokes at the cutter and mesher (it takes ~40 s):
+
+```
+build\skinsim_tests.windows.template_debug.x86_64.exe --no-skip -tc="*adversarial*"
+```
+
 ## Presets
 
 Built-in tissue presets live in `game/presets/*.json` (format documented in

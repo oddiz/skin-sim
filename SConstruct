@@ -42,7 +42,11 @@ DOCTEST_DIR = "#thirdparty/doctest"
 solver_env = env.Clone()
 solver_env.Replace(CPPPATH=["#solver/include", EIGEN_DIR, CDT_DIR], LIBS=[], LIBPATH=[])
 # EIGEN_MPL2_ONLY: Eigen refuses to compile any of its (few) LGPL-licensed parts.
-solver_env.Append(CPPDEFINES=["EIGEN_MPL2_ONLY"])
+# CDT_DISABLE_EXCEPTIONS: CDT reports errors with `throw`, which does not even
+# compile under clang's -fno-exceptions (iOS). With this define it calls
+# std::terminate() instead, so the mesher must never feed CDT invalid input
+# (see solver/src/cuts.cpp and mesher.cpp).
+solver_env.Append(CPPDEFINES=["EIGEN_MPL2_ONLY", "CDT_DISABLE_EXCEPTIONS"])
 
 solver_lib = solver_env.StaticLibrary(
     "#build/skinsim_solver" + env["suffix"] + env["LIBSUFFIX"],

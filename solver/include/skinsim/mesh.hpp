@@ -29,6 +29,12 @@ struct TriMesh {
 
     std::vector<Triangle> triangles;
 
+    // Incision lips: edges created by cutting. Each side of an incision has
+    // its own copy of the vertices along it (same rest position, separate
+    // nodes), so the two lips can move apart. These edges are part of the
+    // mesh boundary but, unlike the outer border, are never pinned.
+    std::vector<Edge> cut_edges;
+
     int vertex_count() const { return static_cast<int>(rest_positions.cols()); }
     int triangle_count() const { return static_cast<int>(triangles.size()); }
 };
@@ -51,11 +57,41 @@ TriMesh make_rectangle_mesh(double width, double height, double element_size);
 // Twice the signed area is the 2D cross product (b - a) x (c - a). Positive means a, b, c are CCW.
 double signed_area(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const Eigen::Vector2d& c);
 
+// Barycentric coordinates of p in triangle (a, b, c): the weights (w0, w1, w2),
+// summing to 1, with p = w0 a + w1 b + w2 c. All >= 0 means p is inside.
+Eigen::Vector3d barycentric(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const Eigen::Vector2d& c,
+                            const Eigen::Vector2d& p);
+
+// Answers "which triangle contains this point?" quickly. Testing every
+// triangle would be fine once, but cutting asks for thousands of points.
+// The triangles are sorted into a uniform grid of square "buckets"; a query
+// only tests the few triangles in its own bucket.
+class TriangleLocator {
+public:
+    // positions: 2 x N vertex positions (rest or current shape). Copied, so
+    // the locator stays valid if the caller's positions change later.
+    TriangleLocator(const Eigen::Matrix2Xd& positions, const std::vector<Triangle>& triangles);
+
+    // Index of the triangle containing p, or -1. If several qualify (p on a
+    // shared edge), the one p is most "inside" wins. `tolerance` accepts points
+    // slightly outside a triangle (in barycentric units: 1e-3 = 0.1% of its size).
+    // Inverted or degenerate triangles are never returned.
+    int locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary = nullptr, double tolerance = 1e-9) const;
+
+private:
+    Eigen::Matrix2Xd positions_;
+    std::vector<Triangle> triangles_;
+    Eigen::Vector2d origin_;
+    double cell_ = 1.0;
+    int nx_ = 1, ny_ = 1;
+    std::vector<std::vector<int>> buckets_;  // triangle indices per grid cell
+};
+
 // Every edge of the mesh exactly once, sorted.
 std::vector<Edge> unique_edges(const TriMesh& mesh);
 
-// Edges used by exactly one triangle: the outline of the sheet (and later, the
-// lips of incisions). Interior edges are shared by exactly two triangles.
+// Edges used by exactly one triangle: the outline of the sheet and the lips of
+// incisions. Interior edges are shared by exactly two triangles.
 std::vector<Edge> boundary_edges(const TriMesh& mesh);
 
 }  // namespace skinsim

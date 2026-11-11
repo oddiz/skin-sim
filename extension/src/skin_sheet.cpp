@@ -15,6 +15,11 @@ namespace {
 // unit) doesn't flicker between drawing lines and surface at the same depth
 // ("z-fighting").
 constexpr real_t kWireLift = 0.05f;  // mm
+// Incision lips are drawn a little higher still, so they sit on top of the wireframe.
+constexpr real_t kLipLift = 0.1f;  // mm
+// The wound bed (the tissue under the skin, seen when a wound opens) lies
+// this far below the sheet.
+constexpr real_t kWoundBedDepth = 0.5f;  // mm
 
 Vector3 to_godot(const Eigen::Vector2d& p, real_t lift = 0.0f) {
     return Vector3(static_cast<real_t>(p.x()), lift, static_cast<real_t>(-p.y()));
@@ -60,6 +65,11 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("release_grab", "id"), &SkinSheet::release_grab);
     ClassDB::bind_method(D_METHOD("release_all_grabs"), &SkinSheet::release_all_grabs);
     ClassDB::bind_method(D_METHOD("reset_simulation"), &SkinSheet::reset_simulation);
+    ClassDB::bind_method(D_METHOD("cut", "world_path"), &SkinSheet::cut);
+    ClassDB::bind_method(D_METHOD("undo_cut"), &SkinSheet::undo_cut);
+    ClassDB::bind_method(D_METHOD("clear_cuts"), &SkinSheet::clear_cuts);
+    ClassDB::bind_method(D_METHOD("get_cut_count"), &SkinSheet::get_cut_count);
+    ClassDB::bind_method(D_METHOD("get_last_cut_ms"), &SkinSheet::get_last_cut_ms);
 
     ClassDB::bind_method(D_METHOD("get_vertex_count"), &SkinSheet::get_vertex_count);
     ClassDB::bind_method(D_METHOD("get_triangle_count"), &SkinSheet::get_triangle_count);
@@ -109,20 +119,22 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_wireframe"), "set_show_wireframe", "get_show_wireframe");
     ADD_PROPERTY(PropertyInfo(Variant::COLOR, "skin_color"), "set_skin_color", "get_skin_color");
 
-    ADD_SIGNAL(MethodInfo("mesh_rebuilt"));
+    ADD_SIGNAL(MethodInfo("mesh_rebuilt"));   // new sheet (geometry changed)
+    ADD_SIGNAL(MethodInfo("cuts_changed"));   // incision made, undone or cleared
 }
 
 void SkinSheet::_ready() {
-    rebuild();
+    rebuild(false);
     set_process(true);  // ask Godot to call _process() every frame
 }
 
 void SkinSheet::_process(double /*p_delta*/) {
-    if (!sim_) return;
+    skinsim::Simulation* s = sim();
+    if (!s) return;
     // Measure solver time so the HUD can show whether we fit in the frame budget
     // (16.7 ms at 60 frames per second, shared with rendering).
     const uint64_t t0 = Time::get_singleton()->get_ticks_usec();
-    last_step_ = sim_->step(iterations_per_frame_);
+    last_step_ = s->step(iterations_per_frame_);
     last_step_ms_ = static_cast<double>(Time::get_singleton()->get_ticks_usec() - t0) / 1000.0;
     if (last_step_.iterations > 0) update_render_mesh();  // only re-upload when something moved
 }
@@ -133,19 +145,22 @@ void SkinSheet::_process(double /*p_delta*/) {
 // While a scene loads, Godot calls setters before the node enters the tree;
 // _ready() builds everything once afterwards, so skip work until then.
 
+// A new width/height moves the border, so incisions may no longer fit:
+// they are removed. A new element size only re-meshes the same incisions
+// (handy for checking that results converge as the mesh is refined).
 void SkinSheet::set_width(double p_mm) {
     width_ = p_mm;
-    if (is_inside_tree()) rebuild();
+    if (is_inside_tree()) rebuild(false);
 }
 
 void SkinSheet::set_height(double p_mm) {
     height_ = p_mm;
-    if (is_inside_tree()) rebuild();
+    if (is_inside_tree()) rebuild(false);
 }
 
 void SkinSheet::set_element_size(double p_mm) {
     element_size_ = p_mm;
-    if (is_inside_tree()) rebuild();
+    if (is_inside_tree()) rebuild(true);
 }
 
 void SkinSheet::set_shear_modulus_kpa(double p_kpa) {
@@ -203,9 +218,10 @@ void SkinSheet::set_skin_color(const Color& p_color) {
 }
 
 void SkinSheet::push_params() {
-    if (!sim_) return;
-    sim_->set_params(params_);
-    sim_->set_grab_params(grab_params_);
+    skinsim::Simulation* s = sim();
+    if (!s) return;
+    s->set_params(params_);
+    s->set_grab_params(grab_params_);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,25 +236,53 @@ Eigen::Vector2d SkinSheet::world_to_sheet(const Vector3& p_world) const {
 }
 
 bool SkinSheet::grab(int p_id, const Vector3& p_world_point) {
-    return sim_ && sim_->grab(p_id, world_to_sheet(p_world_point));
+    skinsim::Simulation* s = sim();
+    return s && s->grab(p_id, world_to_sheet(p_world_point));
 }
 
 void SkinSheet::move_grab(int p_id, const Vector3& p_world_point) {
-    if (sim_) sim_->move_grab(p_id, world_to_sheet(p_world_point));
+    if (skinsim::Simulation* s = sim()) s->move_grab(p_id, world_to_sheet(p_world_point));
 }
 
 void SkinSheet::release_grab(int p_id) {
-    if (sim_) sim_->release_grab(p_id);
+    if (skinsim::Simulation* s = sim()) s->release_grab(p_id);
 }
 
 void SkinSheet::release_all_grabs() {
-    if (sim_) sim_->release_all_grabs();
+    if (skinsim::Simulation* s = sim()) s->release_all_grabs();
 }
 
 void SkinSheet::reset_simulation() {
-    if (!sim_) return;
-    sim_->reset();
+    skinsim::Simulation* s = sim();
+    if (!s) return;
+    s->reset();
     update_render_mesh();
+}
+
+int SkinSheet::cut(const PackedVector3Array& p_world_path) {
+    if (!sheet_) return 0;
+    skinsim::Polyline path;
+    path.reserve(p_world_path.size());
+    for (int64_t i = 0; i < p_world_path.size(); ++i) path.push_back(world_to_sheet(p_world_path[i]));
+    const uint64_t t0 = Time::get_singleton()->get_ticks_usec();
+    const int added = sheet_->cut(path);
+    if (added > 0) {
+        last_cut_ms_ = static_cast<double>(Time::get_singleton()->get_ticks_usec() - t0) / 1000.0;
+        topology_changed();
+    }
+    return added;
+}
+
+bool SkinSheet::undo_cut() {
+    if (!sheet_ || !sheet_->undo_cut()) return false;
+    topology_changed();
+    return true;
+}
+
+void SkinSheet::clear_cuts() {
+    if (!sheet_ || sheet_->cuts().empty()) return;
+    sheet_->clear_cuts();
+    topology_changed();
 }
 
 // ---------------------------------------------------------------------------
@@ -262,16 +306,18 @@ Dictionary SkinSheet::get_step_info() const {
     d["energy"] = last_step_.energy;
     d["residual"] = last_step_.residual;
     d["step_ms"] = last_step_ms_;
-    d["grabs"] = sim_ ? sim_->grab_count() : 0;
-    d["min_area_ratio"] = sim_ ? sim_->min_area_ratio() : 1.0;
-    d["max_area_ratio"] = sim_ ? sim_->max_area_ratio() : 1.0;
+    const skinsim::Simulation* s = sim();
+    d["grabs"] = s ? s->grab_count() : 0;
+    d["min_area_ratio"] = s ? s->min_area_ratio() : 1.0;
+    d["max_area_ratio"] = s ? s->max_area_ratio() : 1.0;
     return d;
 }
 
 Array SkinSheet::get_grab_info() const {
     Array out;
-    if (!sim_) return out;
-    for (const skinsim::GrabInfo& g : sim_->grab_info()) {
+    const skinsim::Simulation* s = sim();
+    if (!s) return out;
+    for (const skinsim::GrabInfo& g : s->grab_info()) {
         Dictionary d;
         d["id"] = g.id;
         // to_global: node-local -> world space, so the overlay can project it to the screen.
@@ -302,31 +348,61 @@ void SkinSheet::ensure_render_objects() {
     wire_material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
     wire_material_->set_albedo(Color(0.35, 0.2, 0.17));
 
+    lip_material_.instantiate();
+    lip_material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+    lip_material_->set_albedo(Color(0.45, 0.02, 0.04));
+
     // Internal child: hidden from the Scene dock and never saved into the .tscn,
     // so saving the scene doesn't write the whole generated mesh into it.
     mesh_instance_ = memnew(MeshInstance3D);  // memnew = Godot's `new` for engine objects
     mesh_instance_->set_mesh(render_mesh_);
     add_child(mesh_instance_, false, INTERNAL_MODE_FRONT);
+
+    // Wound bed: a flat dark-red layer just under the skin. Covered by the
+    // skin everywhere, except where an incision has opened. PlaneMesh lies
+    // in the XZ plane facing +Y, like the sheet.
+    Ref<StandardMaterial3D> bed_material;
+    bed_material.instantiate();
+    bed_material->set_albedo(Color(0.42, 0.08, 0.08));
+    bed_material->set_roughness(0.6);
+    wound_bed_mesh_.instantiate();
+    wound_bed_mesh_->set_material(bed_material);
+    wound_bed_ = memnew(MeshInstance3D);
+    wound_bed_->set_mesh(wound_bed_mesh_);
+    wound_bed_->set_position(Vector3(0, -kWoundBedDepth, 0));
+    add_child(wound_bed_, false, INTERNAL_MODE_FRONT);
 }
 
-void SkinSheet::rebuild() {
+void SkinSheet::rebuild(bool p_keep_cuts) {
     ensure_render_objects();
-    mesh_ = skinsim::make_rectangle_mesh(width_, height_, element_size_);
-    edges_ = skinsim::unique_edges(mesh_);
-    sim_ = std::make_unique<skinsim::Simulation>(mesh_);  // old simulation is deleted here
+    skinsim::CutGraph cuts;
+    if (p_keep_cuts && sheet_) cuts = sheet_->cuts();
+    const skinsim::SheetGeometry geometry{width_, height_, element_size_};
+    sheet_ = std::make_unique<skinsim::Sheet>(geometry, cuts);  // the old sheet is deleted here
     push_params();
     last_step_ = skinsim::StepInfo{};
-    update_render_mesh();
+    // Same size as the sheet: it lies underneath, so it only shows through wounds.
+    wound_bed_mesh_->set_size(Vector2(static_cast<real_t>(width_), static_cast<real_t>(height_)));
+    topology_changed();
     emit_signal("mesh_rebuilt");
 }
 
+void SkinSheet::topology_changed() {
+    mesh_ = sheet_->mesh();
+    edges_ = skinsim::unique_edges(mesh_);
+    push_params();  // a cut creates a new Simulation; it copies params, but be explicit
+    update_render_mesh();
+    emit_signal("cuts_changed");
+}
+
 void SkinSheet::update_render_mesh() {
-    if (!sim_ || render_mesh_.is_null()) return;
+    const skinsim::Simulation* s = sim();
+    if (!s || render_mesh_.is_null()) return;
 
     // Rebuilding the surfaces from scratch each frame is the simplest correct
     // approach and is fast enough for a few thousand vertices. If profiling
     // ever shows otherwise, Godot can update just the vertex buffer in place.
-    const Eigen::Map<const Eigen::Matrix2Xd> x = sim_->positions();
+    const Eigen::Map<const Eigen::Matrix2Xd> x = s->positions();
     const int n_verts = mesh_.vertex_count();
     const int n_tris = mesh_.triangle_count();
 
@@ -385,7 +461,23 @@ void SkinSheet::update_render_mesh() {
         line_arrays[Mesh::ARRAY_VERTEX] = line_vertices;
         line_arrays[Mesh::ARRAY_INDEX] = line_indices;
         render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_LINES, line_arrays);
-        render_mesh_->surface_set_material(1, wire_material_);
+        render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1, wire_material_);
+    }
+
+    // --- Incision lips: always drawn, dark red ------------------------------
+    if (!mesh_.cut_edges.empty()) {
+        PackedVector3Array lip_vertices;
+        lip_vertices.resize(2 * static_cast<int64_t>(mesh_.cut_edges.size()));
+        Vector3* lv = lip_vertices.ptrw();
+        for (size_t e = 0; e < mesh_.cut_edges.size(); ++e) {
+            lv[2 * e + 0] = to_godot(x.col(mesh_.cut_edges[e][0]), kLipLift);
+            lv[2 * e + 1] = to_godot(x.col(mesh_.cut_edges[e][1]), kLipLift);
+        }
+        Array lip_arrays;
+        lip_arrays.resize(Mesh::ARRAY_MAX);
+        lip_arrays[Mesh::ARRAY_VERTEX] = lip_vertices;
+        render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_LINES, lip_arrays);
+        render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1, lip_material_);
     }
 }
 

@@ -1,14 +1,23 @@
 extends Node3D
-## Main scene logic: touch/mouse input -> grabs, camera framing, HUD.
+## Main scene logic: touch/mouse input -> grabs and incisions, camera framing, HUD.
 ##
 ## Input is handled as *touch* events. With the project setting
 ## input_devices/pointing/emulate_touch_from_mouse on, a mouse click/drag
 ## arrives as touch index 0, so the same code works on desktop and iPhone,
 ## and several fingers can grab the skin at once on a touch screen.
 ##
+## Two tools:
+##   GRAB  touches grab and pull the skin (forceps).
+##   CUT   a touch draws an incision (scalpel); it is made on release.
+## On desktop, Shift + drag cuts whatever the tool.
+##
 ## Command-line options (everything after a lone "--" goes to the game):
 ##   --screenshot <path.png>   save a screenshot after a moment, then quit
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
+##   --demo-cut                cut a 30 mm vertical incision, then pull its
+##                             right lip 8 mm right so it gapes (for checks)
+
+enum Tool { GRAB, CUT }
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
@@ -18,12 +27,21 @@ extends Node3D
 
 ## Empty space around the sheet, as a fraction of its size.
 const FRAME_MARGIN := 1.3
+## A new point is added to the scalpel path once the finger has moved this
+## many pixels: enough to follow curves, few enough to keep the path short.
+const CUT_SAMPLE_PX := 4.0
+
+var tool: Tool = Tool.GRAB
+var _cut_touch := -1                      # touch index drawing the incision, -1 = none
+var _cut_path := PackedVector2Array()     # screen positions of the stroke so far
+var _status := ""                         # last cut result, shown in the HUD
 
 
 func _ready() -> void:
 	# Children are ready before their parent, so the sheet already exists.
 	panel.setup(sheet)
 	panel.reset_requested.connect(sheet.reset_simulation)
+	panel.tool_selected.connect(_set_tool)
 	overlay.sheet = sheet
 	overlay.camera = camera
 	sheet.mesh_rebuilt.connect(_frame_sheet)
@@ -33,9 +51,16 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.has("--demo-pull"):
 		_demo_pull()
+	if args.has("--demo-cut"):
+		_demo_cut()
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
+
+
+func _set_tool(t: int) -> void:
+	tool = t as Tool
+	panel.show_tool(tool)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -45,17 +70,51 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.pressed and panel.get_global_rect().has_point(event.position):
 			return
 		if event.pressed:
-			sheet.grab(event.index, _screen_to_sheet_plane(event.position))
+			var cutting := tool == Tool.CUT or Input.is_key_pressed(KEY_SHIFT)
+			if cutting and _cut_touch == -1:
+				_cut_touch = event.index
+				_cut_path = PackedVector2Array([event.position])
+			elif not cutting:
+				sheet.grab(event.index, _screen_to_sheet_plane(event.position))
+		elif event.index == _cut_touch:
+			_cut_path.append(event.position)
+			_commit_cut()
 		else:
 			sheet.release_grab(event.index)
 	elif event is InputEventScreenDrag:
-		sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
+		if event.index == _cut_touch:
+			if event.position.distance_to(_cut_path[_cut_path.size() - 1]) >= CUT_SAMPLE_PX:
+				_cut_path.append(event.position)
+			overlay.cut_path = _cut_path
+		else:
+			sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_W:
 				sheet.show_wireframe = not sheet.show_wireframe
 			KEY_R:
 				sheet.reset_simulation()
+			KEY_C:
+				_set_tool(Tool.GRAB if tool == Tool.CUT else Tool.CUT)
+			KEY_Z:
+				if sheet.undo_cut():
+					_status = "Last incision undone."
+
+
+## Turn the finished stroke into an incision. The solver does the rest:
+## mapping it onto the (possibly deformed) skin, cleaning it, re-meshing.
+func _commit_cut() -> void:
+	var world := PackedVector3Array()
+	for p in _cut_path:
+		world.append(_screen_to_sheet_plane(p))
+	var segments := sheet.cut(world)
+	if segments > 0:
+		_status = "Incision: %d segments, re-meshed in %.1f ms." % [segments, sheet.get_last_cut_ms()]
+	else:
+		_status = "Nothing cut (too short, or not on the skin)."
+	_cut_touch = -1
+	_cut_path = PackedVector2Array()
+	overlay.cut_path = _cut_path
 
 
 ## Turn a screen position into the 3D point on the sheet's plane under it:
@@ -78,13 +137,17 @@ func _process(_delta: float) -> void:
 		flags += " projected"
 	if s.regularized:
 		flags += " regularized"
-	info.text = "%s\n%d vertices, %d triangles\n" % [
-			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count()] \
+	var tool_line := "Tool: GRAB - drag the skin." if tool == Tool.GRAB \
+		else "Tool: CUT - draw an incision."
+	info.text = "%s\n%d vertices, %d triangles, %d incisions\n" % [
+			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
+			sheet.get_cut_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [
 			status, s.iterations, s.step_ms, _sci(s.residual), flags] \
 		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
-		+ "Drag the skin. [W] wireframe  [R] reset"
+		+ (_status + "\n" if _status != "" else "") \
+		+ tool_line + "\n[C] grab/cut  [Shift+drag] cut  [Z] undo cut  [W] wireframe  [R] reset"
 
 
 ## Compact scientific notation, e.g. 1.2e-14 (GDScript's % has no %e).
@@ -95,23 +158,48 @@ func _sci(x: float) -> String:
 	return "%.1fe%d" % [x / pow(10.0, exponent), exponent]
 
 
-## Simulate a finger pressing the sheet centre and dragging 15 mm right, by
-## injecting the same touch events a real screen (or emulated mouse) produces.
-## This exercises the full input path, including screen->sheet conversion.
+## Inject the touch events a real screen (or emulated mouse) would produce,
+## so demos exercise the full input path, including screen->sheet conversion.
+func _touch(index: int, sheet_mm: Vector2, pressed: bool) -> void:
+	var touch := InputEventScreenTouch.new()
+	touch.index = index
+	touch.pressed = pressed
+	touch.position = _sheet_to_screen(sheet_mm)
+	Input.parse_input_event(touch)
+
+
+func _drag(index: int, sheet_mm: Vector2) -> void:
+	var drag := InputEventScreenDrag.new()
+	drag.index = index
+	drag.position = _sheet_to_screen(sheet_mm)
+	Input.parse_input_event(drag)
+
+
+## Solver coordinates (mm, y up) -> screen pixel. Godot's 3D z is the solver's -y.
+func _sheet_to_screen(p: Vector2) -> Vector2:
+	return camera.unproject_position(sheet.to_global(Vector3(p.x, 0, -p.y)))
+
+
+## Simulate a finger pressing the sheet centre and dragging 15 mm right.
 func _demo_pull() -> void:
 	await get_tree().process_frame  # let the camera settle on its first frame
-	var start := camera.unproject_position(Vector3.ZERO)  # 3D point -> pixel
-	var end := camera.unproject_position(Vector3(15, 0, 0))
-	var touch := InputEventScreenTouch.new()
-	touch.index = 0
-	touch.pressed = true
-	touch.position = start
-	Input.parse_input_event(touch)
-	var drag := InputEventScreenDrag.new()
-	drag.index = 0
-	drag.position = end
-	drag.relative = end - start
-	Input.parse_input_event(drag)
+	_touch(0, Vector2.ZERO, true)
+	_drag(0, Vector2(15, 0))
+
+
+## Draw a vertical incision through the centre with the scalpel, then grab
+## just right of it and pull right: the incision should gape.
+func _demo_cut() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.CUT)
+	_touch(0, Vector2(0, -15), true)
+	for k in range(1, 31):
+		_drag(0, Vector2(0, -15 + k))
+	_touch(0, Vector2(0, 15), false)
+	await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	_touch(0, Vector2(3, 0), true)
+	_drag(0, Vector2(11, 0))
 
 
 ## An orthographic camera's `size` is the visible *height* in world units (mm).

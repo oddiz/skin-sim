@@ -73,12 +73,16 @@ public:
         return Eigen::Map<const Eigen::Matrix2Xd>(x_.data(), 2, mesh_.vertex_count());
     }
     const Eigen::VectorXd& dofs() const { return x_; }
-    void set_dofs(const Eigen::VectorXd& x);  // for tests; marks the state dirty
+    // Set all positions (e.g. carried over from a previous mesh). Pinned nodes
+    // are put back at rest: by definition they cannot be anywhere else.
+    void set_dofs(const Eigen::VectorXd& x);
     void reset();                             // back to rest, grabs released
 
     // --- interaction ---
     // Grab the skin under `point` (current configuration, mm). The pull is
-    // spread over the skin within grab_params().radius. `id` is chosen by the
+    // spread over the skin within grab_params().radius, but only over skin
+    // connected to the grabbed spot: forceps on one lip of an incision don't
+    // pick up the other lip, even if it lies within the radius. `id` is chosen by the
     // caller, e.g. the touch index, so several fingers can grab at once.
     // Returns false if the point is not on the sheet.
     bool grab(int id, const Eigen::Vector2d& point);
@@ -88,6 +92,11 @@ public:
     void release_all_grabs();
     int grab_count() const { return static_cast<int>(grabs_.size()); }
     std::vector<GrabInfo> grab_info() const;
+    // Re-create the grabs of `other` (a simulation of the same skin on a
+    // different mesh, e.g. before a cut) on this one: same patch centre, same
+    // radius, same pull and same finger offset, so a held grab continues
+    // seamlessly across re-meshing. Call after set_dofs().
+    void adopt_grabs(const Simulation& other);
 
     // --- solving ---
     // Run up to max_iterations Newton iterations. Returns immediately (and
@@ -124,6 +133,9 @@ private:
         double radius = 0.0;
     };
 
+    // Find the triangle under `point` and collect the patch of radius r
+    // around it. False if the point is not on the skin.
+    bool build_patch(const Eigen::Vector2d& point, double radius, Grab& g) const;
     Eigen::Matrix2d deformation_gradient(const Element& e, const Eigen::VectorXd& x) const;
     Eigen::Vector2d grab_point(const Grab& g, const Eigen::VectorXd& x) const;
     // The finger "spring" as a function of the gap r = p - target:
@@ -143,7 +155,8 @@ private:
     Eigen::VectorXd rest_;       // X, the rest positions as a dof vector
     Eigen::VectorXd x_;          // current positions
     Eigen::VectorXd node_area_;  // lumped area per node (1/3 of each adjacent triangle)
-    std::vector<int> boundary_nodes_;
+    std::vector<std::vector<int>> neighbours_;  // vertex -> vertices sharing an edge
+    std::vector<int> boundary_nodes_;           // outer border only (incision lips are free)
     std::vector<char> fixed_;    // per dof: 1 = pinned (char, not bool: see .cpp)
     std::map<int, Grab> grabs_;
     double mean_edge_ = 1.0;     // mm, sets the step clamp and force scale

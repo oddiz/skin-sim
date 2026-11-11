@@ -89,6 +89,75 @@ double signed_area(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const Eig
     return 0.5 * (ab.x() * ac.y() - ab.y() * ac.x());
 }
 
+Eigen::Vector3d barycentric(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const Eigen::Vector2d& c,
+                            const Eigen::Vector2d& p) {
+    // The weight of a vertex is the area of the sub-triangle opposite it,
+    // divided by the whole: p at vertex a gives (1, 0, 0).
+    const double total = signed_area(a, b, c);
+    return Eigen::Vector3d(signed_area(p, b, c), signed_area(a, p, c), signed_area(a, b, p)) / total;
+}
+
+TriangleLocator::TriangleLocator(const Eigen::Matrix2Xd& positions, const std::vector<Triangle>& triangles)
+    : positions_(positions), triangles_(triangles) {
+    if (positions_.cols() == 0 || triangles_.empty()) return;
+    const Eigen::Vector2d lo = positions_.rowwise().minCoeff();
+    const Eigen::Vector2d hi = positions_.rowwise().maxCoeff();
+    const Eigen::Vector2d size = (hi - lo).cwiseMax(1e-9);
+    // About two triangles per bucket on average: cell area ~ 2x triangle area.
+    cell_ = std::sqrt(2.0 * size.x() * size.y() / static_cast<double>(triangles_.size()));
+    if (!(cell_ > 0.0) || !std::isfinite(cell_)) cell_ = std::max(size.x(), size.y());
+    // Cap the grid so a degenerate shape can't allocate millions of buckets.
+    cell_ = std::max(cell_, std::max(size.x(), size.y()) / 1000.0);
+    origin_ = lo;
+    nx_ = static_cast<int>(size.x() / cell_) + 1;
+    ny_ = static_cast<int>(size.y() / cell_) + 1;
+    buckets_.assign(static_cast<size_t>(nx_) * ny_, {});
+
+    for (int t = 0; t < static_cast<int>(triangles_.size()); ++t) {
+        // Put the triangle in every bucket its bounding box touches.
+        Eigen::Vector2d tlo = positions_.col(triangles_[t][0]), thi = tlo;
+        for (int k = 1; k < 3; ++k) {
+            tlo = tlo.cwiseMin(positions_.col(triangles_[t][k]));
+            thi = thi.cwiseMax(positions_.col(triangles_[t][k]));
+        }
+        const int i0 = std::clamp(static_cast<int>((tlo.x() - origin_.x()) / cell_), 0, nx_ - 1);
+        const int i1 = std::clamp(static_cast<int>((thi.x() - origin_.x()) / cell_), 0, nx_ - 1);
+        const int j0 = std::clamp(static_cast<int>((tlo.y() - origin_.y()) / cell_), 0, ny_ - 1);
+        const int j1 = std::clamp(static_cast<int>((thi.y() - origin_.y()) / cell_), 0, ny_ - 1);
+        for (int j = j0; j <= j1; ++j)
+            for (int i = i0; i <= i1; ++i) buckets_[static_cast<size_t>(j) * nx_ + i].push_back(t);
+    }
+}
+
+int TriangleLocator::locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary, double tolerance) const {
+    if (buckets_.empty() || !p.allFinite()) return -1;
+    const double fi = (p.x() - origin_.x()) / cell_;
+    const double fj = (p.y() - origin_.y()) / cell_;
+    // A point just outside the grid can still be within `tolerance` of a
+    // triangle on its edge, so clamp rather than reject (the test below decides).
+    if (fi < -1.0 || fj < -1.0 || fi > nx_ + 1.0 || fj > ny_ + 1.0) return -1;
+    const int i = std::clamp(static_cast<int>(fi), 0, nx_ - 1);
+    const int j = std::clamp(static_cast<int>(fj), 0, ny_ - 1);
+
+    int best = -1;
+    double best_inside = -tolerance;  // how far inside: the smallest barycentric weight
+    Eigen::Vector3d best_bary;
+    for (int t : buckets_[static_cast<size_t>(j) * nx_ + i]) {
+        const Eigen::Vector2d a = positions_.col(triangles_[t][0]);
+        const Eigen::Vector2d b = positions_.col(triangles_[t][1]);
+        const Eigen::Vector2d c = positions_.col(triangles_[t][2]);
+        if (!(signed_area(a, b, c) > 0.0)) continue;  // inverted/degenerate: no inside
+        const Eigen::Vector3d w = barycentric(a, b, c, p);
+        if (w.minCoeff() >= best_inside) {
+            best_inside = w.minCoeff();
+            best = t;
+            best_bary = w;
+        }
+    }
+    if (best >= 0 && bary != nullptr) *bary = best_bary;
+    return best;
+}
+
 std::vector<Edge> unique_edges(const TriMesh& mesh) {
     std::vector<Edge> edges = all_edges_sorted(mesh);
     // std::unique moves duplicates to the end and returns where they start; erase drops them.

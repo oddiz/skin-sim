@@ -15,6 +15,8 @@ extends PanelContainer
 
 ## Emitted when the user presses a button that changes the scene.
 signal reset_requested
+## Emitted when the user picks a tool (main.gd's Tool enum: 0 = grab, 1 = cut).
+signal tool_selected(tool: int)
 
 const PANEL_WIDTH := 300
 const BUILTIN_PRESET_DIR := "res://presets"
@@ -64,6 +66,7 @@ var _presets: Array[Dictionary] = []
 var _preset_list: OptionButton
 var _preset_name: LineEdit
 var _status: Label
+var _tool_buttons: Array[Button] = []
 
 
 ## Called by main.gd once the sheet exists.
@@ -99,6 +102,7 @@ func _build() -> void:
 	box.add_theme_constant_override("separation", 6)
 	margin.add_child(box)
 
+	_build_tools(box)
 	_build_presets(box)
 	for spec in PARAMS:
 		if spec.has("section"):
@@ -121,6 +125,46 @@ func _build() -> void:
 	release.pressed.connect(func(): sheet.release_all_grabs())
 	row.add_child(release)
 	box.add_child(row)
+
+
+## Tool choice (grab / cut) and incision management, at the top of the panel.
+func _build_tools(box: VBoxContainer) -> void:
+	box.add_child(_section_label("Tool"))
+	var row := HBoxContainer.new()
+	# A ButtonGroup makes toggle buttons mutually exclusive, like radio buttons.
+	var group := ButtonGroup.new()
+	for i in 2:
+		var b := Button.new()
+		b.text = ["Grab (forceps)", "Cut (scalpel)"][i]
+		b.toggle_mode = true
+		b.button_group = group
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.y = 32  # comfortable touch target
+		b.pressed.connect(func(): tool_selected.emit(i))
+		row.add_child(b)
+		_tool_buttons.append(b)
+	_tool_buttons[0].button_pressed = true
+	box.add_child(row)
+
+	var cuts := HBoxContainer.new()
+	var undo := Button.new()
+	undo.text = "Undo cut"
+	undo.tooltip_text = "Remove the most recent incision [Z]."
+	undo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	undo.pressed.connect(func(): sheet.undo_cut())
+	cuts.add_child(undo)
+	var clear := Button.new()
+	clear.text = "Clear cuts"
+	clear.tooltip_text = "Remove all incisions (the deformation is kept)."
+	clear.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clear.pressed.connect(func(): sheet.clear_cuts())
+	cuts.add_child(clear)
+	box.add_child(cuts)
+
+
+## Show which tool is active (when it was changed by keyboard, not by a button).
+func show_tool(tool: int) -> void:
+	_tool_buttons[tool].set_pressed_no_signal(true)
 
 
 func _section_label(text: String) -> Label:

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 
 #include <Eigen/LU>  // provides Matrix::inverse(); Eigen/Core only declares it
 #include <Eigen/SparseCholesky>
@@ -96,15 +97,20 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
     }
 
     const std::vector<Edge> edges = unique_edges(mesh_);
+    neighbours_.assign(n, {});
     double total = 0.0;
     for (const Edge& e : edges) {
         total += (mesh_.rest_positions.col(e[1]) - mesh_.rest_positions.col(e[0])).norm();
+        neighbours_[e[0]].push_back(e[1]);
+        neighbours_[e[1]].push_back(e[0]);
     }
     if (!edges.empty()) mean_edge_ = total / static_cast<double>(edges.size());
 
-    // At M1/M2 every boundary edge is the outer rectangle. Once cuts exist (M4)
-    // the incision lips are boundary edges too and must NOT be pinned.
+    // Boundary edges are the outer border plus the incision lips. Only the
+    // outer border is pinned; the lips must be free to gape.
+    const std::set<Edge> lips(mesh_.cut_edges.begin(), mesh_.cut_edges.end());
     for (const Edge& e : boundary_edges(mesh_)) {
+        if (lips.count(e)) continue;
         boundary_nodes_.push_back(e[0]);
         boundary_nodes_.push_back(e[1]);
     }
@@ -143,6 +149,7 @@ void Simulation::apply_pins() {
 
 void Simulation::set_dofs(const Eigen::VectorXd& x) {
     if (x.size() == x_.size()) x_ = x;
+    apply_pins();
     converged_ = false;
 }
 
@@ -156,7 +163,7 @@ void Simulation::reset() {
 // Grabs
 // ---------------------------------------------------------------------------
 
-bool Simulation::grab(int id, const Eigen::Vector2d& point) {
+bool Simulation::build_patch(const Eigen::Vector2d& point, double r, Grab& g) const {
     // 1. Is the point on the sheet? Find the triangle containing it in the
     //    *current* shape (what the user sees). A linear scan is fine for a few
     //    thousand triangles.
@@ -167,11 +174,8 @@ bool Simulation::grab(int id, const Eigen::Vector2d& point) {
         const Eigen::Vector2d a = x_.segment<2>(2 * e.v[0]);
         const Eigen::Vector2d b = x_.segment<2>(2 * e.v[1]);
         const Eigen::Vector2d c = x_.segment<2>(2 * e.v[2]);
-        const double total = signed_area(a, b, c);
-        if (!(total > 0.0)) continue;
-        // Barycentric weight of a vertex = area of the sub-triangle opposite it / total.
-        bary << signed_area(point, b, c) / total, signed_area(a, point, c) / total,
-            signed_area(a, b, point) / total;
+        if (!(signed_area(a, b, c) > 0.0)) continue;
+        bary = barycentric(a, b, c, point);
         if (bary.minCoeff() >= -1e-9) hit = ei;
     }
     if (hit < 0) return false;
@@ -180,15 +184,25 @@ bool Simulation::grab(int id, const Eigen::Vector2d& point) {
     //    (node area) x (bell-shaped kernel). Weighting by area is what makes the
     //    pull a *distributed* force that doesn't depend on how finely the mesh
     //    is divided: the same physical pull at any resolution.
-    Grab g;
-    const double r = grab_params_.radius;
+    //    The patch grows outwards from the hit triangle along mesh edges (a
+    //    "flood fill", or breadth-first search), so it only contains skin
+    //    connected to the grabbed spot: there are no edges across an incision.
+    g = Grab{};
     if (r > 0.0) {
-        for (int i = 0; i < mesh_.vertex_count(); ++i) {
+        std::vector<char> seen(mesh_.vertex_count(), 0);
+        std::vector<int> queue(elements_[hit].v.begin(), elements_[hit].v.end());
+        for (int v : queue) seen[v] = 1;
+        for (size_t qi = 0; qi < queue.size(); ++qi) {
+            const int i = queue[qi];
             const double w = node_area_[i] * patch_kernel((x_.segment<2>(2 * i) - point).norm(), r);
-            if (w > 0.0) {
-                g.nodes.push_back(i);
-                g.weights.push_back(w);
-            }
+            if (w <= 0.0) continue;  // outside the radius: don't spread further from here
+            g.nodes.push_back(i);
+            g.weights.push_back(w);
+            for (int j : neighbours_[i])
+                if (!seen[j]) {
+                    seen[j] = 1;
+                    queue.push_back(j);
+                }
         }
     }
     if (g.nodes.size() >= 3) {
@@ -203,15 +217,37 @@ bool Simulation::grab(int id, const Eigen::Vector2d& point) {
     double total = 0.0;
     for (double w : g.weights) total += w;
     for (double& w : g.weights) w /= total;  // weights sum to 1
+    return true;
+}
 
-    // 3. The patch centre may differ slightly from the clicked point; keep that
-    //    offset so the skin doesn't jump when grabbed.
+bool Simulation::grab(int id, const Eigen::Vector2d& point) {
+    Grab g;
+    if (!build_patch(point, grab_params_.radius, g)) return false;
+    // The patch centre may differ slightly from the clicked point; keep that
+    // offset so the skin doesn't jump when grabbed.
     const Eigen::Vector2d centre = grab_point(g, x_);
     g.offset = centre - point;
     g.target = centre;
     grabs_[id] = std::move(g);
     converged_ = false;
     return true;
+}
+
+void Simulation::adopt_grabs(const Simulation& other) {
+    // `other.grabs_` is private, but in C++ "private" means private to the
+    // class, not to the object: one Simulation may read another one's members.
+    for (const auto& [id, old] : other.grabs_) {
+        const Eigen::Vector2d centre = other.grab_point(old, other.x_);
+        Grab g;
+        if (!build_patch(centre, old.radius, g)) continue;  // skin no longer there
+        const Eigen::Vector2d new_centre = grab_point(g, x_);
+        const Eigen::Vector2d finger = old.target - old.offset;
+        // Keep the spring's stretch (patch centre minus target), hence the force.
+        g.target = new_centre - (centre - old.target);
+        g.offset = g.target - finger;
+        grabs_[id] = std::move(g);
+    }
+    converged_ = false;
 }
 
 void Simulation::move_grab(int id, const Eigen::Vector2d& finger) {

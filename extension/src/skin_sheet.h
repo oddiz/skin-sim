@@ -2,8 +2,9 @@
 //
 // Responsibilities (and nothing more, since physics stays in the solver):
 //   1. hold the geometry and tissue settings the user edits (Inspector / UI),
-//   2. own a skinsim::Simulation and step it a few Newton iterations per frame,
-//   3. forward grabs (touch/mouse) to the solver, converting coordinates,
+//   2. own a skinsim::Sheet (mesh + incisions + simulation) and step it a few
+//      Newton iterations per frame,
+//   3. forward grabs and incisions (touch/mouse) to the solver, converting coordinates,
 //   4. copy the current shape into a Godot ArrayMesh for rendering.
 //
 // Coordinate mapping, solver 2D (mm) -> Godot 3D (node-local):
@@ -19,12 +20,14 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/plane_mesh.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_vector3_array.hpp>
 
 #include "skinsim/params.hpp"
-#include "skinsim/simulation.hpp"
+#include "skinsim/sheet.hpp"
 
 namespace godot {
 
@@ -35,7 +38,8 @@ public:
     void _ready() override;
     void _process(double p_delta) override;
 
-    // --- Geometry (changing these rebuilds the mesh and resets the simulation) ---
+    // --- Geometry (changing these rebuilds the mesh and resets the simulation;
+    //     width/height also remove all incisions, element size keeps them) ---
     void set_width(double p_mm);
     double get_width() const { return width_; }
     void set_height(double p_mm);
@@ -79,13 +83,22 @@ public:
     void move_grab(int p_id, const Vector3& p_world_point);
     void release_grab(int p_id);
     void release_all_grabs();
-    void reset_simulation();
+    void reset_simulation();  // undeformed, grabs released; incisions stay
+
+    // --- Incisions ---
+    // Cut along a path drawn on the skin (world-space points, on the skin as
+    // it looks now). Returns the number of cut segments made; 0 = nothing cut.
+    int cut(const PackedVector3Array& p_world_path);
+    bool undo_cut();
+    void clear_cuts();
+    int get_cut_count() const { return sheet_ ? sheet_->cut_count() : 0; }
 
     // --- Info for the HUD ---
     int get_vertex_count() const { return mesh_.vertex_count(); }
     int get_triangle_count() const { return mesh_.triangle_count(); }
     String get_solver_info() const;
     Dictionary get_step_info() const;
+    double get_last_cut_ms() const { return last_cut_ms_; }
     // One Dictionary per active grab: point/target (world space), force (N),
     // force_limited (bool), radius (mm).
     Array get_grab_info() const;
@@ -94,11 +107,15 @@ protected:
     static void _bind_methods();
 
 private:
-    void rebuild();               // new mesh + new simulation
-    void push_params();           // hand params_/grab_params_ to the running simulation
-    void update_render_mesh();    // copy current positions into the ArrayMesh
+    void rebuild(bool p_keep_cuts);  // new mesh + new simulation
+    void topology_changed();         // after a cut: refresh caches, redraw, notify
+    void push_params();              // hand params_/grab_params_ to the running simulation
+    void update_render_mesh();       // copy current positions into the ArrayMesh
     void ensure_render_objects();
     Eigen::Vector2d world_to_sheet(const Vector3& p_world) const;
+    // The sheet's current simulation. Cutting replaces it, so never keep this
+    // pointer across a cut: call sim() again.
+    skinsim::Simulation* sim() const { return sheet_ ? &sheet_->simulation() : nullptr; }
 
     double width_ = 100.0;
     double height_ = 60.0;
@@ -109,19 +126,24 @@ private:
     bool show_wireframe_ = true;
     Color skin_color_ = Color(0.85, 0.64, 0.53);
 
+    // Cached copies of the mesh topology: it only changes when cutting.
     skinsim::TriMesh mesh_;
-    std::vector<skinsim::Edge> edges_;  // cached: topology doesn't change while dragging
+    std::vector<skinsim::Edge> edges_;
 
     // std::unique_ptr owns a heap object and deletes it automatically when the
     // pointer is destroyed or reassigned: C++'s answer to "who frees this?".
-    std::unique_ptr<skinsim::Simulation> sim_;
+    std::unique_ptr<skinsim::Sheet> sheet_;
     skinsim::StepInfo last_step_;
     double last_step_ms_ = 0.0;
+    double last_cut_ms_ = 0.0;
 
     Ref<ArrayMesh> render_mesh_;
     Ref<StandardMaterial3D> skin_material_;
     Ref<StandardMaterial3D> wire_material_;
-    MeshInstance3D* mesh_instance_ = nullptr;  // our internal child; Godot frees it
+    Ref<StandardMaterial3D> lip_material_;
+    Ref<PlaneMesh> wound_bed_mesh_;
+    MeshInstance3D* mesh_instance_ = nullptr;  // our internal children; Godot frees them
+    MeshInstance3D* wound_bed_ = nullptr;      // dark layer under the sheet, seen through open wounds
 };
 
 }  // namespace godot

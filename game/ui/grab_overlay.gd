@@ -5,15 +5,19 @@ extends Control
 ##   - a line from the patch to the finger,
 ##   - the pulling force in newtons, orange when capped at max_force
 ##     (the skin is lagging behind the finger: it won't come further).
+## and, while an incision is being drawn, the scalpel's path.
 ##
 ## 3D world points are turned into screen pixels with
 ## Camera3D.unproject_position(), the reverse of the picking ray in main.gd.
 
 var sheet: SkinSheet
 var camera: Camera3D
+## Screen positions of the incision being drawn (empty when not cutting).
+var cut_path := PackedVector2Array()
 
 const COLOR_NORMAL := Color(1, 1, 1, 0.9)
 const COLOR_LIMITED := Color(1.0, 0.55, 0.1, 0.95)
+const COLOR_SCALPEL := Color(0.9, 0.1, 0.15, 0.95)
 
 
 func _ready() -> void:
@@ -28,6 +32,10 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	if sheet == null or camera == null:
 		return
+	if cut_path.size() >= 2:
+		# Dark halo underneath so the line shows on skin and background alike.
+		draw_polyline(cut_path, Color(0, 0, 0, 0.6), 5.0, true)
+		draw_polyline(cut_path, COLOR_SCALPEL, 2.5, true)
 	var font := ThemeDB.fallback_font
 	# Orthographic camera: `size` mm spans the viewport height in pixels.
 	var px_per_mm := get_viewport_rect().size.y / camera.size
