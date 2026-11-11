@@ -16,7 +16,14 @@ Presets the user saves in the app go to `user://presets/` instead
     "stiffening": 8,                     // exponential stiffening rate b (0 = Neo-Hookean)
     "thickness": 2.0,                    // dermis thickness, mm
     "tether_stiffness_kpa_per_mm": 1.0,  // attachment to the base, kPa/mm (= 1e-3 N/mm^3)
-    "pin_boundary": true                 // hold the sheet's outer edge fixed
+    "pin_boundary": true,                // hold the sheet's outer edge fixed
+    "fibre_angle_deg": 0,                // RSTL direction, degrees from horizontal
+    "fibre_stiffness_kpa": 50,           // GOH fibre stiffness k1, kPa (0 = no fibres)
+    "fibre_nonlinearity": 5,             // GOH k2: how steeply the fibres stiffen
+    "fibre_dispersion": 0.15,            // GOH kappa: 0 aligned .. 0.333 isotropic
+    "prestretch_along_pct": 8,           // in-vivo prestretch along the RSTL, %
+    "prestretch_across_pct": 3,          // ... and across, %
+    "undermined_tethering_pct": 5        // attachment left where undermined, %
   }
 }
 ```

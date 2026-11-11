@@ -61,6 +61,23 @@ public:
     void set_pin_boundary(bool p_pin);
     bool get_pin_boundary() const { return params_.pin_boundary; }
 
+    // --- Collagen fibres along the RSTL, in-vivo prestretch, undermining ---
+    void set_fibre_angle_deg(double p_deg);
+    double get_fibre_angle_deg() const { return params_.fibre_angle; }
+    void set_fibre_stiffness_kpa(double p_kpa);
+    double get_fibre_stiffness_kpa() const { return params_.fibre_stiffness * 1000.0; }
+    void set_fibre_nonlinearity(double p_k2);
+    double get_fibre_nonlinearity() const { return params_.fibre_nonlinearity; }
+    void set_fibre_dispersion(double p_kappa);
+    double get_fibre_dispersion() const { return params_.fibre_dispersion; }
+    // Prestretch in percent: 8 means the in-vivo skin is 8% longer than unloaded.
+    void set_prestretch_along_pct(double p_pct);
+    double get_prestretch_along_pct() const { return (params_.prestretch_along - 1.0) * 100.0; }
+    void set_prestretch_across_pct(double p_pct);
+    double get_prestretch_across_pct() const { return (params_.prestretch_across - 1.0) * 100.0; }
+    void set_undermined_tethering_pct(double p_pct);
+    double get_undermined_tethering_pct() const { return params_.undermined_tether * 100.0; }
+
     // --- Grab (the user's forceps) ---
     void set_grab_radius(double p_mm);
     double get_grab_radius() const { return grab_params_.radius; }
@@ -104,6 +121,15 @@ public:
     bool undo_cut();
     void clear_cuts();
     int get_cut_count() const { return sheet_ ? sheet_->cut_count() : 0; }
+
+    // --- Undermining brush (world-space points) ---
+    void set_undermine_radius(double p_mm);
+    double get_undermine_radius() const { return undermine_radius_; }
+    // Paint at a point; p_new_stroke starts a new undo step. False if not on skin.
+    bool undermine_at(const Vector3& p_world_point, bool p_new_stroke);
+    bool undo_undermine();
+    void clear_undermining();
+    int get_undermine_count() const { return sheet_ ? sheet_->undermine_count() : 0; }
 
     // --- Sutures (world-space points) ---
     // A thread from the entry point to the exit point (both on the skin), tied
@@ -156,13 +182,17 @@ private:
     double width_ = 100.0;
     double height_ = 60.0;
     double element_size_ = 2.5;
-    skinsim::TissueParams params_;      // the one struct of tissue parameters
+    // The one struct of tissue parameters, starting from the app's defaults
+    // (fibres and prestretch on; the solver's own defaults have them off).
+    skinsim::TissueParams params_ = app_default_tissue();
+    static skinsim::TissueParams app_default_tissue();
     skinsim::GrabParams grab_params_;   // how the user's finger acts
     skinsim::SutureParams suture_params_;
     int iterations_per_frame_ = 5;
     bool show_wireframe_ = true;
     Color skin_color_ = Color(0.85, 0.64, 0.53);
     int heatmap_ = 0;
+    double undermine_radius_ = 8.0;  // mm
     double heatmap_range_kpa_ = 50.0;
 
     // Cached copies of the mesh topology: it only changes when cutting.

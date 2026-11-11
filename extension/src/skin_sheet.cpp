@@ -54,6 +54,23 @@ const Color kSequential[] = {Color(1.0, 1.0, 0.80), Color(0.996, 0.85, 0.46), Co
 
 }  // namespace
 
+skinsim::TissueParams SkinSheet::app_default_tissue() {
+    // Illustrative values chosen to feel plausible, NOT calibrated: horizontal
+    // RSTL; collagen fibres carry the strain-stiffening along them, so the
+    // isotropic matrix stiffens less than in M3; living skin pre-stretched 8%
+    // along the RSTL and 3% across, so incisions gape.
+    skinsim::TissueParams p;
+    p.stiffening = 4.0;
+    p.fibre_angle = 0.0;
+    p.fibre_stiffness = 0.05;  // 50 kPa
+    p.fibre_nonlinearity = 5.0;
+    p.fibre_dispersion = 0.15;
+    p.prestretch_along = 1.08;
+    p.prestretch_across = 1.03;
+    p.undermined_tether = 0.05;
+    return p;
+}
+
 void SkinSheet::_bind_methods() {
     // Every method GDScript may call, or that a property uses, must be bound.
     ClassDB::bind_method(D_METHOD("set_width", "mm"), &SkinSheet::set_width);
@@ -78,6 +95,26 @@ void SkinSheet::_bind_methods() {
                          &SkinSheet::get_tether_stiffness_kpa_per_mm);
     ClassDB::bind_method(D_METHOD("set_grab_stiffness", "n_per_mm"), &SkinSheet::set_grab_stiffness);
     ClassDB::bind_method(D_METHOD("get_grab_stiffness"), &SkinSheet::get_grab_stiffness);
+    ClassDB::bind_method(D_METHOD("set_fibre_angle_deg", "deg"), &SkinSheet::set_fibre_angle_deg);
+    ClassDB::bind_method(D_METHOD("get_fibre_angle_deg"), &SkinSheet::get_fibre_angle_deg);
+    ClassDB::bind_method(D_METHOD("set_fibre_stiffness_kpa", "kpa"), &SkinSheet::set_fibre_stiffness_kpa);
+    ClassDB::bind_method(D_METHOD("get_fibre_stiffness_kpa"), &SkinSheet::get_fibre_stiffness_kpa);
+    ClassDB::bind_method(D_METHOD("set_fibre_nonlinearity", "k2"), &SkinSheet::set_fibre_nonlinearity);
+    ClassDB::bind_method(D_METHOD("get_fibre_nonlinearity"), &SkinSheet::get_fibre_nonlinearity);
+    ClassDB::bind_method(D_METHOD("set_fibre_dispersion", "kappa"), &SkinSheet::set_fibre_dispersion);
+    ClassDB::bind_method(D_METHOD("get_fibre_dispersion"), &SkinSheet::get_fibre_dispersion);
+    ClassDB::bind_method(D_METHOD("set_prestretch_along_pct", "pct"), &SkinSheet::set_prestretch_along_pct);
+    ClassDB::bind_method(D_METHOD("get_prestretch_along_pct"), &SkinSheet::get_prestretch_along_pct);
+    ClassDB::bind_method(D_METHOD("set_prestretch_across_pct", "pct"), &SkinSheet::set_prestretch_across_pct);
+    ClassDB::bind_method(D_METHOD("get_prestretch_across_pct"), &SkinSheet::get_prestretch_across_pct);
+    ClassDB::bind_method(D_METHOD("set_undermined_tethering_pct", "pct"), &SkinSheet::set_undermined_tethering_pct);
+    ClassDB::bind_method(D_METHOD("get_undermined_tethering_pct"), &SkinSheet::get_undermined_tethering_pct);
+    ClassDB::bind_method(D_METHOD("set_undermine_radius", "mm"), &SkinSheet::set_undermine_radius);
+    ClassDB::bind_method(D_METHOD("get_undermine_radius"), &SkinSheet::get_undermine_radius);
+    ClassDB::bind_method(D_METHOD("undermine_at", "point", "new_stroke"), &SkinSheet::undermine_at);
+    ClassDB::bind_method(D_METHOD("undo_undermine"), &SkinSheet::undo_undermine);
+    ClassDB::bind_method(D_METHOD("clear_undermining"), &SkinSheet::clear_undermining);
+    ClassDB::bind_method(D_METHOD("get_undermine_count"), &SkinSheet::get_undermine_count);
     ClassDB::bind_method(D_METHOD("set_pin_boundary", "pin"), &SkinSheet::set_pin_boundary);
     ClassDB::bind_method(D_METHOD("get_pin_boundary"), &SkinSheet::get_pin_boundary);
     ClassDB::bind_method(D_METHOD("set_suture_stiffness", "n_per_mm"), &SkinSheet::set_suture_stiffness);
@@ -142,6 +179,24 @@ void SkinSheet::_bind_methods() {
                               "0,50,0.01,suffix:kPa/mm"),
                  "set_tether_stiffness_kpa_per_mm", "get_tether_stiffness_kpa_per_mm");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pin_boundary"), "set_pin_boundary", "get_pin_boundary");
+
+    ADD_GROUP("Fibres and prestress", "");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fibre_angle_deg", PROPERTY_HINT_RANGE, "-90,90,1,suffix:deg"),
+                 "set_fibre_angle_deg", "get_fibre_angle_deg");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fibre_stiffness_kpa", PROPERTY_HINT_RANGE, "0,1000,0.5,suffix:kPa"),
+                 "set_fibre_stiffness_kpa", "get_fibre_stiffness_kpa");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fibre_nonlinearity", PROPERTY_HINT_RANGE, "0,50,0.1"),
+                 "set_fibre_nonlinearity", "get_fibre_nonlinearity");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fibre_dispersion", PROPERTY_HINT_RANGE, "0,0.3333,0.005"),
+                 "set_fibre_dispersion", "get_fibre_dispersion");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "prestretch_along_pct", PROPERTY_HINT_RANGE, "0,30,0.5,suffix:%"),
+                 "set_prestretch_along_pct", "get_prestretch_along_pct");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "prestretch_across_pct", PROPERTY_HINT_RANGE, "0,30,0.5,suffix:%"),
+                 "set_prestretch_across_pct", "get_prestretch_across_pct");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "undermined_tethering_pct", PROPERTY_HINT_RANGE, "0,100,1,suffix:%"),
+                 "set_undermined_tethering_pct", "get_undermined_tethering_pct");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "undermine_radius", PROPERTY_HINT_RANGE, "1,30,0.5,suffix:mm"),
+                 "set_undermine_radius", "get_undermine_radius");
 
     ADD_GROUP("Grab", "");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "grab_radius", PROPERTY_HINT_RANGE, "0,10,0.1,suffix:mm"),
@@ -251,6 +306,63 @@ void SkinSheet::set_max_pull_force(double p_newton) {
     push_params();
 }
 
+void SkinSheet::set_fibre_angle_deg(double p_deg) {
+    params_.fibre_angle = p_deg;
+    push_params();
+}
+
+void SkinSheet::set_fibre_stiffness_kpa(double p_kpa) {
+    params_.fibre_stiffness = p_kpa / 1000.0;
+    push_params();
+}
+
+void SkinSheet::set_fibre_nonlinearity(double p_k2) {
+    params_.fibre_nonlinearity = p_k2;
+    push_params();
+}
+
+void SkinSheet::set_fibre_dispersion(double p_kappa) {
+    params_.fibre_dispersion = p_kappa;
+    push_params();
+}
+
+void SkinSheet::set_prestretch_along_pct(double p_pct) {
+    params_.prestretch_along = 1.0 + p_pct / 100.0;
+    push_params();
+}
+
+void SkinSheet::set_prestretch_across_pct(double p_pct) {
+    params_.prestretch_across = 1.0 + p_pct / 100.0;
+    push_params();
+}
+
+void SkinSheet::set_undermined_tethering_pct(double p_pct) {
+    params_.undermined_tether = p_pct / 100.0;
+    push_params();
+}
+
+void SkinSheet::set_undermine_radius(double p_mm) {
+    undermine_radius_ = p_mm > 0.1 ? p_mm : 0.1;
+}
+
+bool SkinSheet::undermine_at(const Vector3& p_world_point, bool p_new_stroke) {
+    if (!sheet_ || !sheet_->undermine_at(world_to_sheet(p_world_point), undermine_radius_, p_new_stroke)) return false;
+    update_render_mesh();  // show the painted area right away
+    return true;
+}
+
+bool SkinSheet::undo_undermine() {
+    if (!sheet_ || !sheet_->undo_undermine()) return false;
+    update_render_mesh();
+    return true;
+}
+
+void SkinSheet::clear_undermining() {
+    if (!sheet_) return;
+    sheet_->clear_undermining();
+    update_render_mesh();
+}
+
 void SkinSheet::set_pin_boundary(bool p_pin) {
     params_.pin_boundary = p_pin;
     push_params();
@@ -274,14 +386,16 @@ void SkinSheet::set_heatmap_range_kpa(double p_kpa) {
 
 void SkinSheet::update_skin_material() {
     if (skin_material_.is_null()) return;
+    if (is_inside_tree()) update_render_mesh();  // skin colour lives in the vertex colours
     const bool heat = heatmap_ != HEATMAP_OFF;
-    // With a heatmap the vertex colours *are* the data: draw them unlit, so
-    // lighting can't shift a colour and change its meaning.
-    skin_material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, heat);
-    skin_material_->set_flag(BaseMaterial3D::FLAG_SRGB_VERTEX_COLOR, heat);
+    // The skin's colour always comes from the vertex colours (skin colour,
+    // darker where undermined, or the heatmap). With a heatmap the colours
+    // *are* the data: draw them unlit, so lighting can't change their meaning.
+    skin_material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+    skin_material_->set_flag(BaseMaterial3D::FLAG_SRGB_VERTEX_COLOR, true);
     skin_material_->set_shading_mode(heat ? BaseMaterial3D::SHADING_MODE_UNSHADED
                                           : BaseMaterial3D::SHADING_MODE_PER_PIXEL);
-    skin_material_->set_albedo(heat ? Color(1, 1, 1) : skin_color_);
+    skin_material_->set_albedo(Color(1, 1, 1));
 }
 
 void SkinSheet::set_iterations_per_frame(int p_iterations) {
@@ -665,6 +779,17 @@ void SkinSheet::update_render_mesh() {
         colors.resize(n_verts);
         Color* cw = colors.ptrw();
         for (int i = 0; i < n_verts; ++i) cw[i] = heat_color(values[i]);
+        arrays[Mesh::ARRAY_COLOR] = colors;
+    } else {
+        // Plain skin; undermined areas a duskier, darker shade so the
+        // painted region is visible.
+        const Eigen::VectorXd& u = s->undermining();
+        const Color undermined = Color(0.58, 0.40, 0.44);
+        PackedColorArray colors;
+        colors.resize(n_verts);
+        Color* cw = colors.ptrw();
+        for (int i = 0; i < n_verts; ++i)
+            cw[i] = skin_color_.lerp(undermined, static_cast<real_t>(0.75 * (i < u.size() ? u[i] : 0.0)));
         arrays[Mesh::ARRAY_COLOR] = colors;
     }
 

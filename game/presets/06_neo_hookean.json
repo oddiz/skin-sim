@@ -1,12 +1,19 @@
 {
   "format_version": 1,
   "name": "Neo-Hookean (no stiffening)",
-  "description": "The M2 model: no strain-stiffening, the skin never locks. For comparison.",
+  "description": "The M2 model: no strain-stiffening, no fibres, no prestress; the skin never locks and incisions do not gape. For comparison.",
   "params": {
     "shear_modulus_kpa": 50,
     "stiffening": 0,
     "thickness": 2.0,
     "tether_stiffness_kpa_per_mm": 1.0,
-    "pin_boundary": true
+    "pin_boundary": true,
+    "fibre_angle_deg": 0,
+    "fibre_stiffness_kpa": 0,
+    "fibre_nonlinearity": 0,
+    "fibre_dispersion": 0,
+    "prestretch_along_pct": 0,
+    "prestretch_across_pct": 0,
+    "undermined_tethering_pct": 5
   }
 }

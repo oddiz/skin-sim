@@ -4,9 +4,16 @@
   "description": "Very thin, lax skin with loose attachment. Illustrative values, not calibrated.",
   "params": {
     "shear_modulus_kpa": 15,
-    "stiffening": 4,
+    "stiffening": 2,
     "thickness": 0.6,
     "tether_stiffness_kpa_per_mm": 0.2,
-    "pin_boundary": true
+    "pin_boundary": true,
+    "fibre_angle_deg": 0,
+    "fibre_stiffness_kpa": 10,
+    "fibre_nonlinearity": 3,
+    "fibre_dispersion": 0.2,
+    "prestretch_along_pct": 2,
+    "prestretch_across_pct": 1,
+    "undermined_tethering_pct": 10
   }
 }

@@ -4,9 +4,16 @@
   "description": "Thick, stiff skin firmly bound to the galea: little mobility. Illustrative values, not calibrated.",
   "params": {
     "shear_modulus_kpa": 100,
-    "stiffening": 12,
+    "stiffening": 6,
     "thickness": 2.5,
     "tether_stiffness_kpa_per_mm": 5.0,
-    "pin_boundary": true
+    "pin_boundary": true,
+    "fibre_angle_deg": 0,
+    "fibre_stiffness_kpa": 120,
+    "fibre_nonlinearity": 6,
+    "fibre_dispersion": 0.15,
+    "prestretch_along_pct": 5,
+    "prestretch_across_pct": 4,
+    "undermined_tethering_pct": 5
   }
 }

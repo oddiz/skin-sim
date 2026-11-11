@@ -7,12 +7,14 @@ extends Node3D
 ## arrives as touch index 0, so the same code works on desktop and iPhone,
 ## and several fingers can grab the skin at once on a touch screen.
 ##
-## Three tools:
+## Four tools:
 ##   GRAB    touches grab and pull the skin (forceps).
 ##   CUT     a touch draws an incision (scalpel); it is made on release.
 ##   SUTURE  press where the needle goes in, drag, release where it comes out:
 ##           the thread is tied with the knot tightness set in the panel.
 ##           Tap a suture to select it; the tightness slider then re-ties it.
+##   UNDERMINE paint the areas where the skin is freed from the underlying
+##           tissue (brush size in the panel); they are shaded darker.
 ## On desktop, Shift + drag cuts whatever the tool.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
@@ -23,8 +25,11 @@ extends Node3D
 ##   --demo-suture             cut, close with three sutures (3 mm bites, the
 ##                             middle one tied 30% tight), then pull the right
 ##                             side; heatmap on (for checks)
+##   --demo-m6                 prestressed skin: an incision across the RSTL
+##                             gapes by itself; one side undermined; max
+##                             principal stress heatmap (for checks)
 
-enum Tool { GRAB, CUT, SUTURE }
+enum Tool { GRAB, CUT, SUTURE, UNDERMINE }
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
@@ -48,6 +53,9 @@ var _cut_path := PackedVector2Array()     # screen positions of the stroke so fa
 var _suture_touch := -1                   # touch index placing a suture, -1 = none
 var _suture_start := Vector2.ZERO
 var _selected_suture := -1                # id, -1 = none
+var _undermine_touch := -1                # touch index painting, -1 = none
+var _undermine_new := true                # next stamp starts a new stroke (undo step)
+var _last_paint_pos := Vector2.ZERO
 var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"} or {"kind": "suture", "id": n}
 var _status := ""                         # last action's result, shown in the HUD
 
@@ -66,6 +74,7 @@ func _ready() -> void:
 			sheet.remove_suture(_selected_suture)
 			_select_suture(-1))
 	panel.cuts_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "cut"))
+	panel.undermining_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "undermine"))
 	panel.sutures_cleared.connect(func():
 		_history = _history.filter(func(h): return h.kind != "suture")
 		_select_suture(-1))
@@ -83,6 +92,8 @@ func _ready() -> void:
 		_demo_cut()
 	if args.has("--demo-suture"):
 		_demo_suture()
+	if args.has("--demo-m6"):
+		_demo_m6()
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
@@ -108,12 +119,18 @@ func _unhandled_input(event: InputEvent) -> void:
 			if event.position.distance_to(_cut_path[_cut_path.size() - 1]) >= CUT_SAMPLE_PX:
 				_cut_path.append(event.position)
 			overlay.cut_path = _cut_path
+		elif event.index == _undermine_touch:
+			_paint_undermining(event.position)
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
 				and _on_skin(event.position)
 		else:
 			sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
+	elif event is InputEventMouseMotion:
+		# Preview the brush under the mouse (desktop only; touch has no hover).
+		overlay.brush_pos = event.position if tool == Tool.UNDERMINE else Vector2(-1, -1)
+		overlay.brush_radius_px = sheet.undermine_radius * get_viewport().get_visible_rect().size.y / camera.size
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_W:
@@ -126,6 +143,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_tool(Tool.CUT)
 			KEY_S:
 				_set_tool(Tool.SUTURE)
+			KEY_U:
+				_set_tool(Tool.UNDERMINE)
 			KEY_H:
 				sheet.heatmap = (sheet.heatmap + 1) % 4
 				panel.refresh()
@@ -143,6 +162,11 @@ func _on_press(index: int, pos: Vector2) -> void:
 		if _suture_touch == -1:
 			_suture_touch = index
 			_suture_start = pos
+	elif tool == Tool.UNDERMINE:
+		if _undermine_touch == -1:
+			_undermine_touch = index
+			_undermine_new = true
+			_paint_undermining(pos)
 	else:
 		sheet.grab(index, _screen_to_sheet_plane(pos))
 
@@ -153,6 +177,11 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_cut()
 	elif index == _suture_touch:
 		_commit_suture(pos)
+	elif index == _undermine_touch:
+		_undermine_touch = -1
+		if not _undermine_new:  # something was painted: one undo step
+			_history.append({"kind": "undermine"})
+			_status = "Undermined (%d areas)." % sheet.get_undermine_count()
 	else:
 		sheet.release_grab(index)
 
@@ -215,6 +244,9 @@ func _undo() -> void:
 	if last.kind == "cut":
 		sheet.undo_cut()
 		_status = "Incision undone."
+	elif last.kind == "undermine":
+		sheet.undo_undermine()
+		_status = "Undermining undone."
 	else:
 		sheet.remove_suture(last.id)
 		if last.id == _selected_suture:
@@ -247,6 +279,7 @@ func _process(_delta: float) -> void:
 		"Tool: GRAB - drag the skin.",
 		"Tool: CUT - draw an incision.",
 		"Tool: SUTURE - drag from needle entry to exit; tap a suture to select it.",
+		"Tool: UNDERMINE - paint where the skin is freed from the tissue below.",
 	][tool]
 	info.text = "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
 			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
@@ -256,7 +289,7 @@ func _process(_delta: float) -> void:
 		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
 		+ (_status + "\n" if _status != "" else "") \
-		+ tool_line + "\n[G]rab [C]ut [S]uture  [Shift+drag] cut  [Z] undo  [H] heatmap  [W] wireframe  [R] reset"
+		+ tool_line + "\n[G]rab [C]ut [S]uture [U]ndermine  [Shift+drag] cut  [Z] undo  [H] heatmap  [W] wire  [R] reset"
 
 
 ## Compact scientific notation, e.g. 1.2e-14 (GDScript's % has no %e).
@@ -369,3 +402,41 @@ func _selected_info() -> Dictionary:
 			return su
 	_select_suture(-1)  # it disappeared (e.g. its skin was re-meshed away)
 	return {}
+
+
+## Paint from the previous brush position to this one. Godot merges drag
+## events ("accumulated input": one per frame), so a quick stroke arrives as
+## a few far-apart points; stamping only those would leave gaps. Instead,
+## stamps are laid every quarter radius along the way.
+func _paint_undermining(screen_pos: Vector2) -> void:
+	var radius_px := sheet.undermine_radius * get_viewport().get_visible_rect().size.y / camera.size
+	overlay.brush_pos = screen_pos
+	overlay.brush_radius_px = radius_px
+	var from := screen_pos if _undermine_new else _last_paint_pos
+	var spacing := maxf(2.0, 0.25 * radius_px)
+	var steps := maxi(1, ceili(from.distance_to(screen_pos) / spacing))
+	for k in range(1 if not _undermine_new else 0, steps + 1):
+		var p := from.lerp(screen_pos, float(k) / steps)
+		if sheet.undermine_at(_screen_to_sheet_plane(p), _undermine_new):
+			_undermine_new = false
+	_last_paint_pos = screen_pos
+
+
+## Prestressed skin, RSTL horizontal: an incision across them gapes on its
+## own. Then undermine the right side and show the max principal stress.
+func _demo_m6() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.CUT)
+	_touch(0, Vector2(0, -15), true)
+	for k in range(1, 31):
+		_drag(0, Vector2(0, -15 + k))
+	_touch(0, Vector2(0, 15), false)
+	await get_tree().process_frame
+	_set_tool(Tool.UNDERMINE)
+	_touch(0, Vector2(8, -18), true)
+	for k in range(1, 19):
+		_drag(0, Vector2(8, -18 + 2 * k))
+	_touch(0, Vector2(8, 18), false)
+	await get_tree().process_frame
+	sheet.heatmap = 1
+	panel.refresh()

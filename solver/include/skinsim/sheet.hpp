@@ -10,6 +10,10 @@
 //   4. carry the current deformation over to the new mesh, so the skin does
 //      not jump when cut, and re-attach held grabs and tied sutures,
 //   5. let the solver relax: the lips are now free and separate.
+//
+// Sheet also keeps the undermined areas, painted with a brush. Like the
+// incisions they are stored in rest coordinates (a list of brush stamps), so
+// they belong to the tissue and survive re-meshing exactly.
 #pragma once
 
 #include <memory>
@@ -45,12 +49,30 @@ public:
     bool undo_cut();   // remove the most recent stroke; false if none
     void clear_cuts(); // remove all incisions ("heal" the skin)
 
+    // --- undermining ---
+    // Undermine the skin within `radius` (mm) of a point on the skin as it
+    // looks now. new_stroke = true starts a new brush stroke (one undo step),
+    // false continues the last one. Returns false if the point is not on skin.
+    bool undermine_at(const Eigen::Vector2d& point, double radius, bool new_stroke);
+    bool undo_undermine();
+    void clear_undermining();
+    int undermine_count() const { return static_cast<int>(undermine_strokes_.size()); }
+    // How undermined a rest point is: 1 well inside a brush stamp, fading
+    // smoothly to 0 at its edge. Public for testing.
+    double undermining_at(const Eigen::Vector2d& rest_point) const;
+
     // Positions on `to` (rest mesh) that reproduce the deformation `x_from`
     // of mesh `from`: each new vertex takes the position the old (piecewise
     // linear) deformation gives at its rest point. Public for testing.
     static Eigen::VectorXd transfer(const TriMesh& from, const Eigen::VectorXd& x_from, const TriMesh& to);
 
 private:
+    struct Stamp {
+        Eigen::Vector2d centre;  // rest coordinates, mm
+        double radius;           // mm
+    };
+    static double stamp_weight(const Stamp& s, const Eigen::Vector2d& rest_point);
+    void apply_undermining();  // recompute the per-node values for the current mesh
     void remesh(CutGraph cuts);
     std::vector<Polyline> current_to_rest(const Polyline& path) const;
 
@@ -58,6 +80,7 @@ private:
     CutGraph cuts_;
     std::vector<CutGraph> history_;  // the cut graph before each stroke, for undo
     std::unique_ptr<Simulation> sim_;
+    std::vector<std::vector<Stamp>> undermine_strokes_;
 };
 
 }  // namespace skinsim

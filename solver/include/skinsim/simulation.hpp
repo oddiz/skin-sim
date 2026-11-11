@@ -24,6 +24,7 @@
 #include <Eigen/Core>
 #include <Eigen/SparseCore>
 
+#include "skinsim/material.hpp"
 #include "skinsim/mesh.hpp"
 #include "skinsim/params.hpp"
 
@@ -154,6 +155,15 @@ public:
     // "bite" of a suture entering the skin there. 0 if there are no incisions.
     double bite(const MaterialPoint& p) const;
 
+    // --- undermining ---
+    // Per vertex, 0 = attached as normal, 1 = fully undermined (tether reduced
+    // to TissueParams::undermined_tether of its value). Sheet computes it
+    // from the painted brush strokes.
+    void set_undermining(const Eigen::VectorXd& u);
+    const Eigen::VectorXd& undermining() const { return undermining_; }
+    // Rest position of a material point.
+    Eigen::Vector2d rest_position_of(const MaterialPoint& p) const;
+
     // --- output ---
     // One value per mesh triangle (0 for degenerate triangles, which the
     // solver skips). Stress is the Cauchy ("true") stress in the deformed skin.
@@ -225,6 +235,13 @@ private:
     // Newton step for them is exactly zero.
     SparseMatrix constrain(const SparseMatrix& H) const;
     double max_node_force(const Eigen::VectorXd& g) const;
+    // The material law of one element, with prestretch and fibres included:
+    // energy density, first Piola stress, stiffness, as functions of F.
+    void update_material();
+    double element_energy_density(const Eigen::Matrix2d& F) const;
+    Eigen::Matrix2d element_piola(const Eigen::Matrix2d& F) const;
+    membrane::Mat4 element_stiffness(const Eigen::Matrix2d& F) const;
+    double tether_weight(int node) const;  // node area x undermining reduction
 
     TriMesh mesh_;
     TissueParams params_;
@@ -237,6 +254,10 @@ private:
     std::vector<std::vector<int>> neighbours_;  // vertex -> vertices sharing an edge
     std::vector<int> boundary_nodes_;           // outer border only (incision lips are free)
     std::vector<char> fixed_;    // per dof: 1 = pinned (char, not bool: see .cpp)
+    Eigen::VectorXd undermining_;  // per node, 0..1
+    Eigen::Matrix2d prestretch_ = Eigen::Matrix2d::Identity();  // G: natural -> rest (in vivo)
+    membrane::Mat4 prestretch_vec_ = membrane::Mat4::Identity();  // vec(F G) = (G^T (x) I) vec(F)
+    membrane::Fibres fibres_;
     std::map<int, Grab> grabs_;
     std::map<int, Suture> sutures_;
     int next_suture_id_ = 1;

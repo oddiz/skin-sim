@@ -4,9 +4,16 @@
   "description": "Thinner, softer, mobile skin over the cheek. Illustrative values, not calibrated.",
   "params": {
     "shear_modulus_kpa": 30,
-    "stiffening": 6,
+    "stiffening": 3,
     "thickness": 1.5,
     "tether_stiffness_kpa_per_mm": 0.5,
-    "pin_boundary": true
+    "pin_boundary": true,
+    "fibre_angle_deg": 35,
+    "fibre_stiffness_kpa": 30,
+    "fibre_nonlinearity": 4,
+    "fibre_dispersion": 0.18,
+    "prestretch_along_pct": 6,
+    "prestretch_across_pct": 3,
+    "undermined_tethering_pct": 5
   }
 }

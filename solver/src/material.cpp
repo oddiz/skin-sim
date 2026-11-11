@@ -89,6 +89,68 @@ Mat4 stiffness(const Eigen::Matrix2d& F, double mu, double b) {
     return K;
 }
 
+namespace {
+
+// The fibre strain measure E and its derivative dE/dF (see material.hpp).
+struct FibreStrain {
+    double E = 0.0;
+    Eigen::Matrix2d dE = Eigen::Matrix2d::Zero();
+};
+
+FibreStrain fibre_strain(const Eigen::Matrix2d& F, const Fibres& f) {
+    const double J = F.determinant();
+    const double I1 = F.squaredNorm() + 1.0 / (J * J);
+    const Eigen::Vector2d Fa = F * f.direction;
+    const double I4 = Fa.squaredNorm();
+    FibreStrain s;
+    s.E = f.kappa * (I1 - 3.0) + (1.0 - 3.0 * f.kappa) * (I4 - 1.0);
+    s.dE = 2.0 * f.kappa * half_dq(F) + 2.0 * (1.0 - 3.0 * f.kappa) * Fa * f.direction.transpose();
+    return s;
+}
+
+}  // namespace
+
+double fibre_energy_density(const Eigen::Matrix2d& F, const Fibres& f) {
+    if (!(F.determinant() > 0.0)) return kInf;
+    if (!(f.k1 > 0.0)) return 0.0;
+    const double E = fibre_strain(F, f).E;
+    if (E <= 0.0) return 0.0;  // slack fibres store nothing
+    const double x = f.k2 * E * E;
+    // expm1(x)/k2 -> E^2 as k2 -> 0, so the k2 = 0 limit is handled exactly.
+    return (f.k2 > kMinStiffening) ? 0.5 * f.k1 * std::expm1(x) / f.k2 : 0.5 * f.k1 * E * E;
+}
+
+Eigen::Matrix2d fibre_piola(const Eigen::Matrix2d& F, const Fibres& f) {
+    if (!(f.k1 > 0.0)) return Eigen::Matrix2d::Zero();
+    const FibreStrain s = fibre_strain(F, f);
+    if (s.E <= 0.0) return Eigen::Matrix2d::Zero();
+    return f.k1 * s.E * std::exp(f.k2 * s.E * s.E) * s.dE;
+}
+
+Mat4 fibre_stiffness(const Eigen::Matrix2d& F, const Fibres& f) {
+    if (!(f.k1 > 0.0)) return Mat4::Zero();
+    const FibreStrain s = fibre_strain(F, f);
+    if (s.E <= 0.0) return Mat4::Zero();
+    const double ex = std::exp(f.k2 * s.E * s.E);
+    const double dpsi = f.k1 * s.E * ex;
+    const double ddpsi = f.k1 * (1.0 + 2.0 * f.k2 * s.E * s.E) * ex;
+
+    const Eigen::Map<const Vec4> d(s.dE.data());
+    // d2I1/dF2: the Neo-Hookean stiffness divided by mu/2.
+    const double J = F.determinant();
+    const Eigen::Matrix2d C = cofactor(F);
+    const Eigen::Map<const Vec4> c(C.data());
+    const double J3 = J * J * J;
+    const Mat4 d2I1 = 2.0 * (Mat4::Identity() + (3.0 / (J3 * J)) * c * c.transpose() - cofactor_derivative() / J3);
+    // d2I4/dF2 = 2 (a a^T (x) I): entry (i + 2j, k + 2l) = 2 delta_ik a_j a_l.
+    Mat4 d2I4 = Mat4::Zero();
+    for (int j = 0; j < 2; ++j)
+        for (int l = 0; l < 2; ++l)
+            for (int i = 0; i < 2; ++i) d2I4(i + 2 * j, i + 2 * l) = 2.0 * f.direction[j] * f.direction[l];
+
+    return ddpsi * d * d.transpose() + dpsi * (f.kappa * d2I1 + (1.0 - 3.0 * f.kappa) * d2I4);
+}
+
 Mat4 project_psd(const Mat4& K) {
     Eigen::SelfAdjointEigenSolver<Mat4> eig(K);
     const Vec4 clipped = eig.eigenvalues().cwiseMax(0.0);

@@ -37,6 +37,14 @@ TissueParams sanitized(TissueParams p) {
     // Stiffening is capped: beyond ~100 the exponential overflows at strains
     // of a few percent, and no tissue is that extreme.
     p.stiffening = std::min(at_least(p.stiffening, 0.0), 100.0);
+    if (!std::isfinite(p.fibre_angle)) p.fibre_angle = 0.0;
+    p.fibre_stiffness = std::min(at_least(p.fibre_stiffness, 0.0), 100.0);
+    p.fibre_nonlinearity = std::min(at_least(p.fibre_nonlinearity, 0.0), 100.0);
+    p.fibre_dispersion = std::min(at_least(p.fibre_dispersion, 0.0), 1.0 / 3.0);
+    // Prestretch between 0.5 and 2: beyond that it is not skin any more.
+    p.prestretch_along = std::min(at_least(p.prestretch_along, 0.5), 2.0);
+    p.prestretch_across = std::min(at_least(p.prestretch_across, 0.5), 2.0);
+    p.undermined_tether = std::min(at_least(p.undermined_tether, 0.0), 1.0);
     return p;
 }
 
@@ -130,7 +138,9 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
     // std::vector<bool> is a special space-saving type with surprising
     // behaviour in C++, so a vector of char is the usual workaround.
     fixed_.assign(2 * n, 0);
+    undermining_ = Eigen::VectorXd::Zero(n);
     params_ = sanitized(params_);
+    update_material();
     apply_pins();
 
     // Which triangle each lip edge belongs to (exactly one: it's a boundary
@@ -149,8 +159,82 @@ void Simulation::set_params(const TissueParams& params) {
     const TissueParams p = sanitized(params);
     const bool pins_changed = p.pin_boundary != params_.pin_boundary;
     params_ = p;
+    update_material();
     if (pins_changed) apply_pins();
     converged_ = false;  // new parameters -> new equilibrium to find
+}
+
+// ---------------------------------------------------------------------------
+// Material law with prestretch and fibres
+// ---------------------------------------------------------------------------
+//
+// Prestretch: the rest mesh is skin as it is in the body (in vivo). Its
+// natural, unloaded shape is smaller: X_rest = G X_natural, with
+//   G = R diag(lambda_along, lambda_across) R^T,  R = rotation to the RSTL.
+// The skin's elastic stretch is measured from the natural shape, so it is
+//   F_e = F G      (F: rest -> current, G: natural -> rest).
+// At rest F = I and F_e = G: the skin is under tension even though nothing
+// moved. With the border pinned and no cuts that tension is in equilibrium;
+// a cut releases it and the lips gape.
+//
+// The energy per rest volume is W(F_e) (incompressible: the natural and rest
+// volumes are equal). By the chain rule
+//   P = dW/dF = P_e(F_e) G^T,      K = M^T K_e(F_e) M,  M = G^T (x) I,
+// since vec(F G) = (G^T (x) I) vec(F) ("(x)" = Kronecker product).
+// With G = I and no fibres this is exactly the plain M2/M3 material.
+
+void Simulation::update_material() {
+    const double a = params_.fibre_angle * 3.14159265358979323846 / 180.0;
+    Eigen::Matrix2d R;
+    R << std::cos(a), -std::sin(a), std::sin(a), std::cos(a);
+    prestretch_ = R * Eigen::Vector2d(params_.prestretch_along, params_.prestretch_across).asDiagonal() * R.transpose();
+    // Kronecker product G^T (x) I2, written out: block (j, l) = G(l, j) * I2.
+    prestretch_vec_.setZero();
+    for (int j = 0; j < 2; ++j)
+        for (int l = 0; l < 2; ++l)
+            for (int i = 0; i < 2; ++i) prestretch_vec_(i + 2 * j, i + 2 * l) = prestretch_(l, j);
+
+    fibres_.k1 = params_.fibre_stiffness;
+    fibres_.k2 = params_.fibre_nonlinearity;
+    fibres_.kappa = params_.fibre_dispersion;
+    // G maps the RSTL direction onto itself (it is a principal direction of
+    // G), so the fibre direction is the same in the natural and rest shapes.
+    fibres_.direction = Eigen::Vector2d(std::cos(a), std::sin(a));
+}
+
+double Simulation::element_energy_density(const Eigen::Matrix2d& F) const {
+    const Eigen::Matrix2d Fe = F * prestretch_;
+    const double W = membrane::energy_density(Fe, params_.shear_modulus, params_.stiffening);
+    if (W == kInf) return kInf;
+    return W + membrane::fibre_energy_density(Fe, fibres_);
+}
+
+Eigen::Matrix2d Simulation::element_piola(const Eigen::Matrix2d& F) const {
+    const Eigen::Matrix2d Fe = F * prestretch_;
+    const Eigen::Matrix2d Pe =
+        membrane::first_piola(Fe, params_.shear_modulus, params_.stiffening) + membrane::fibre_piola(Fe, fibres_);
+    return Pe * prestretch_.transpose();
+}
+
+membrane::Mat4 Simulation::element_stiffness(const Eigen::Matrix2d& F) const {
+    const Eigen::Matrix2d Fe = F * prestretch_;
+    const membrane::Mat4 Ke =
+        membrane::stiffness(Fe, params_.shear_modulus, params_.stiffening) + membrane::fibre_stiffness(Fe, fibres_);
+    return prestretch_vec_.transpose() * Ke * prestretch_vec_;
+}
+
+double Simulation::tether_weight(int node) const {
+    return node_area_[node] * (1.0 - undermining_[node] * (1.0 - params_.undermined_tether));
+}
+
+void Simulation::set_undermining(const Eigen::VectorXd& u) {
+    if (u.size() != undermining_.size()) return;
+    undermining_ = u.cwiseMax(0.0).cwiseMin(1.0);
+    converged_ = false;
+}
+
+Eigen::Vector2d Simulation::rest_position_of(const MaterialPoint& p) const {
+    return valid(p) ? point_at(p, rest_) : Eigen::Vector2d::Zero();
 }
 
 void Simulation::set_grab_params(const GrabParams& params) {
@@ -359,13 +443,11 @@ Eigen::Matrix2d Simulation::deformation_gradient(const Element& e, const Eigen::
 }
 
 double Simulation::energy(const Eigen::VectorXd& x) const {
-    const double mu = params_.shear_modulus;
-    const double b = params_.stiffening;
     const double h = params_.thickness;
     double E = 0.0;
 
     for (const Element& e : elements_) {
-        const double W = membrane::energy_density(deformation_gradient(e, x), mu, b);
+        const double W = element_energy_density(deformation_gradient(e, x));
         if (W == kInf) return kInf;  // inverted element: this state is not allowed
         E += h * e.area * W;
     }
@@ -373,7 +455,7 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
     const double k = params_.tether_stiffness;
     if (k > 0.0) {
         for (int i = 0; i < mesh_.vertex_count(); ++i) {
-            E += 0.5 * k * node_area_[i] * (x.segment<2>(2 * i) - rest_.segment<2>(2 * i)).squaredNorm();
+            E += 0.5 * k * tether_weight(i) * (x.segment<2>(2 * i) - rest_.segment<2>(2 * i)).squaredNorm();
         }
     }
 
@@ -386,13 +468,11 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
 }
 
 Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
-    const double mu = params_.shear_modulus;
-    const double b = params_.stiffening;
     const double h = params_.thickness;
     Eigen::VectorXd g = Eigen::VectorXd::Zero(x.size());
 
     for (const Element& e : elements_) {
-        const Eigen::Matrix2d P = membrane::first_piola(deformation_gradient(e, x), mu, b);
+        const Eigen::Matrix2d P = element_piola(deformation_gradient(e, x));
         // Chain rule: dE/dx_a = h * area * P * grad N_a. This is the internal
         // force the element exerts on node a (with the opposite sign).
         for (int a = 0; a < 3; ++a) {
@@ -403,7 +483,7 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
     const double k = params_.tether_stiffness;
     if (k > 0.0) {
         for (int i = 0; i < mesh_.vertex_count(); ++i) {
-            g.segment<2>(2 * i) += k * node_area_[i] * (x.segment<2>(2 * i) - rest_.segment<2>(2 * i));
+            g.segment<2>(2 * i) += k * tether_weight(i) * (x.segment<2>(2 * i) - rest_.segment<2>(2 * i));
         }
     }
 
@@ -426,8 +506,6 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
 }
 
 SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, bool include_grabs) const {
-    const double mu = params_.shear_modulus;
-    const double b = params_.stiffening;
     const double h = params_.thickness;
 
     // Sparse matrices are built from a list of (row, col, value) "triplets";
@@ -437,7 +515,7 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, boo
     trip.reserve(elements_.size() * 36 + x.size() + grabs_.size() * 18);
 
     for (const Element& e : elements_) {
-        membrane::Mat4 K = membrane::stiffness(deformation_gradient(e, x), mu, b);
+        membrane::Mat4 K = element_stiffness(deformation_gradient(e, x));
         if (project_psd) K = membrane::project_psd(K);
 
         // B maps the element's 6 nodal coordinates to the 4 entries of vec(F):
@@ -455,7 +533,7 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, boo
 
     const double k = params_.tether_stiffness;
     if (k > 0.0) {
-        for (int i = 0; i < static_cast<int>(x.size()); ++i) trip.emplace_back(i, i, k * node_area_[i / 2]);
+        for (int i = 0; i < static_cast<int>(x.size()); ++i) trip.emplace_back(i, i, k * tether_weight(i / 2));
     }
 
     for (const auto& [id, gr] : grabs_) {
@@ -521,7 +599,7 @@ double Simulation::residual_tolerance() const {
     // length, plus a tether spring over one element. "Converged" means the
     // largest leftover force is a tiny fraction of that.
     const double L = mean_edge_;
-    const double scale = params_.shear_modulus * params_.thickness * L +
+    const double scale = (params_.shear_modulus + params_.fibre_stiffness) * params_.thickness * L +
                          params_.tether_stiffness * L * L * L;
     return kRelativeTolerance * scale;
 }
@@ -543,15 +621,15 @@ Eigen::VectorXd Simulation::triangle_field(Field field) const {
     for (const Element& e : elements_) {
         const Eigen::Matrix2d F = deformation_gradient(e, x_);
         if (field == Field::AreaChange) {
-            out[e.triangle] = F.determinant();
+            out[e.triangle] = F.determinant();  // relative to the rest (in vivo) area
             continue;
         }
         // Cauchy ("true") stress: force per area of the *deformed* skin.
         // In general sigma = P F^T / det(F_3D); skin is incompressible, so the
-        // 3D volume ratio det(F_3D) is 1 and sigma = P F^T. Plane stress
-        // means the third (through-thickness) principal stress is 0.
-        const Eigen::Matrix2d P = membrane::first_piola(F, params_.shear_modulus, params_.stiffening);
-        const Eigen::Matrix2d sigma = P * F.transpose();
+        // 3D volume ratio det(F_3D) is 1 and sigma = P F^T. With prestretch,
+        // P F^T = P_e G^T F^T = P_e F_e^T. Plane stress means the third
+        // (through-thickness) principal stress is 0.
+        const Eigen::Matrix2d sigma = element_piola(F) * F.transpose();
         // Principal stresses: eigenvalues of the symmetric 2x2 tensor,
         // mean +/- radius of Mohr's circle.
         const double mean = 0.5 * (sigma(0, 0) + sigma(1, 1));

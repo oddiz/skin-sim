@@ -60,5 +60,44 @@ Mat4 stiffness(const Eigen::Matrix2d& F, double mu, double b);
 // eigenvalues to zero. Newton's fallback when the exact Hessian is indefinite.
 Mat4 project_psd(const Mat4& K);
 
+// ---------------------------------------------------------------------------
+// Collagen fibres: Gasser-Ogden-Holzapfel (GOH) model, one fibre family.
+//
+// Dermal collagen is not random: it is preferentially aligned, which is why
+// skin is stiffer in some directions than others and why incisions along the
+// relaxed skin tension lines (RSTL) behave differently from those across.
+// The GOH model adds, on top of the isotropic matrix above,
+//
+//   W_f = k1/(2 k2) (exp(k2 <E>^2) - 1)
+//   E   = kappa (I1 - 3) + (1 - 3 kappa)(I4 - 1)
+//
+//   I4 = |F a|^2       squared stretch of the fibre direction a (unit vector)
+//   I1 = Q + 3         as above (includes the thickness stretch 1/J)
+//   kappa in [0, 1/3]  dispersion: 0 = all fibres exactly along a,
+//                      1/3 = fibres in every direction (isotropic)
+//   <E> = max(E, 0)    fibres are wavy threads: they resist stretching but
+//                      buckle instead of carrying compression.
+//   k1 (MPa)           fibre stiffness; k2 (-) how steeply fibres stiffen.
+//                      As k2 -> 0, W_f -> k1/2 <E>^2.
+//
+// Derivatives, with dE/dF = 2 kappa (F - J^-3 cof F) + 2 (1 - 3 kappa) F a a^T:
+//   P_f = psi'(E) dE/dF,                 psi'  = k1 E exp(k2 E^2)
+//   K_f = psi'' vec(dE) vec(dE)^T + psi' d2E/dF2,
+//                                        psi'' = k1 (1 + 2 k2 E^2) exp(k2 E^2)
+//   d2E/dF2 = kappa d2I1 + (1 - 3 kappa) 2 (a a^T (x) I),
+//   d2I1    = 2 (I + 3 J^-4 c c^T - J^-3 Hc)       (same pieces as Neo-Hookean)
+// All zero while the fibres are slack (E <= 0).
+// ---------------------------------------------------------------------------
+struct Fibres {
+    double k1 = 0.0;     // MPa; 0 = no fibres
+    double k2 = 0.0;     // dimensionless
+    double kappa = 0.0;  // dispersion, 0..1/3
+    Eigen::Vector2d direction = Eigen::Vector2d(1.0, 0.0);  // unit vector (natural configuration)
+};
+
+double fibre_energy_density(const Eigen::Matrix2d& F, const Fibres& f);
+Eigen::Matrix2d fibre_piola(const Eigen::Matrix2d& F, const Fibres& f);
+Mat4 fibre_stiffness(const Eigen::Matrix2d& F, const Fibres& f);
+
 }  // namespace membrane
 }  // namespace skinsim

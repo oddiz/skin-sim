@@ -38,6 +38,26 @@ struct TissueParams {
     // Hold the outer edge of the sheet fixed (the sheet is a window into a
     // larger area of skin, which continues beyond the edges).
     bool pin_boundary = true;
+
+    // --- Collagen fibres along the relaxed skin tension lines (RSTL), GOH model.
+    // The defaults here switch them OFF (k1 = 0), so the solver's isotropic
+    // behaviour stays exactly as tested; the app's defaults and presets turn
+    // them on. See material.hpp for the formulas.
+    double fibre_angle = 0.0;         // RSTL direction, degrees anticlockwise from the x axis
+    double fibre_stiffness = 0.0;     // k1, MPa
+    double fibre_nonlinearity = 0.0;  // k2, dimensionless
+    double fibre_dispersion = 0.0;    // kappa, 0 (aligned) .. 1/3 (isotropic)
+
+    // --- In-vivo prestretch. Living skin is stretched beyond its natural,
+    // unloaded size, which is why incisions gape and excised skin shrinks.
+    // The rest mesh is the in-vivo state; the natural state is smaller by
+    // these factors along and across the RSTL. 1 = no prestress (default).
+    double prestretch_along = 1.0;
+    double prestretch_across = 1.0;
+
+    // --- Undermining: fraction of the tether stiffness left where the skin
+    // has been undermined (freed from the underlying tissue with the brush).
+    double undermined_tether = 0.05;
 };
 
 // How the user's "finger" (forceps / skin hook) acts on the skin.

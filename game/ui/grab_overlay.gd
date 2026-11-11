@@ -20,6 +20,9 @@ var cut_path := PackedVector2Array()
 var suture_line := PackedVector2Array()
 var suture_line_ok := true   # both ends on skin
 var selected_suture := -1
+## Undermining brush outline (x < 0: hidden).
+var brush_pos := Vector2(-1, -1)
+var brush_radius_px := 0.0
 
 ## Suture colour runs green -> yellow -> red up to this tension. Illustrative:
 ## a few newtons is a tight skin closure (a 4-0 nylon breaks at roughly 10 N).
@@ -49,6 +52,10 @@ func _draw() -> void:
 	var font := ThemeDB.fallback_font
 	_draw_sutures(font)
 	_draw_legend(font)
+	_draw_rstl(font)
+	if brush_pos.x >= 0.0:
+		draw_arc(brush_pos, brush_radius_px, 0.0, TAU, 48, Color(0.35, 0.15, 0.45, 0.9), 2.0, true)
+		draw_arc(brush_pos, 0.6 * brush_radius_px, 0.0, TAU, 48, Color(0.35, 0.15, 0.45, 0.5), 1.0, true)
 	# Orthographic camera: `size` mm spans the viewport height in pixels.
 	var px_per_mm := get_viewport_rect().size.y / camera.size
 	for g in sheet.get_grab_info():
@@ -118,3 +125,20 @@ func _draw_legend(font: Font) -> void:
 	draw_string(font, origin + Vector2(w + 6, 10), legend.high, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, white)
 	draw_string(font, origin + Vector2(w + 6, h), legend.low, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, white)
 	draw_string(font, origin + Vector2(0, h + 20), legend.extreme, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, white)
+
+
+## Small compass, top-right of the 3D view: the RSTL (fibre) direction.
+func _draw_rstl(font: Font) -> void:
+	if sheet.fibre_stiffness_kpa <= 0.0 and sheet.prestretch_along_pct <= 0.0 \
+			and sheet.prestretch_across_pct <= 0.0:
+		return
+	var centre := Vector2(get_viewport_rect().size.x - ControlPanel.PANEL_WIDTH - 60, 60)
+	# Screen y points down while the sheet's y points up: flip the angle.
+	var a := deg_to_rad(sheet.fibre_angle_deg)
+	var d := Vector2(cos(a), -sin(a)) * 28.0
+	draw_circle(centre, 40.0, Color(0, 0, 0, 0.45))
+	for off in [-10.0, 0.0, 10.0]:
+		var n: Vector2 = Vector2(-d.y, d.x).normalized() * off
+		draw_line(centre - d + n, centre + d + n, Color(0.95, 0.85, 0.7, 0.9), 2.0, true)
+	draw_string(font, centre + Vector2(-16, 34), "RSTL", HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
+		Color(0.95, 0.85, 0.7))

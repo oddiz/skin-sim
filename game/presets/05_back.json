@@ -4,9 +4,16 @@
   "description": "Thick dermis, moderately tethered. Illustrative values, not calibrated.",
   "params": {
     "shear_modulus_kpa": 80,
-    "stiffening": 10,
+    "stiffening": 5,
     "thickness": 3.5,
     "tether_stiffness_kpa_per_mm": 3.0,
-    "pin_boundary": true
+    "pin_boundary": true,
+    "fibre_angle_deg": 0,
+    "fibre_stiffness_kpa": 150,
+    "fibre_nonlinearity": 6,
+    "fibre_dispersion": 0.12,
+    "prestretch_along_pct": 12,
+    "prestretch_across_pct": 5,
+    "undermined_tethering_pct": 5
   }
 }

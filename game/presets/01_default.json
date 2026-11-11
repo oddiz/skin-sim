@@ -4,9 +4,16 @@
   "description": "Generic adult skin. Illustrative values, not calibrated.",
   "params": {
     "shear_modulus_kpa": 50,
-    "stiffening": 8,
+    "stiffening": 4,
     "thickness": 2.0,
     "tether_stiffness_kpa_per_mm": 1.0,
-    "pin_boundary": true
+    "pin_boundary": true,
+    "fibre_angle_deg": 0,
+    "fibre_stiffness_kpa": 50,
+    "fibre_nonlinearity": 5,
+    "fibre_dispersion": 0.15,
+    "prestretch_along_pct": 8,
+    "prestretch_across_pct": 3,
+    "undermined_tethering_pct": 5
   }
 }

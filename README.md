@@ -53,7 +53,8 @@ Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
 | Drag (Cut tool, C), or Shift + drag | Draw an incision; it is made when you release |
 | Drag (Suture tool, S) | Press at the needle entry, release at the exit: a suture tied with the panel's knot tightness |
 | Tap a suture (Suture tool) | Select it; the knot tightness slider then re-ties it live |
-| Z | Undo the last incision or suture |
+| Drag (Undermine tool, U) | Paint where the skin is freed from the tissue below (shaded darker) |
+| Z | Undo the last incision, suture or undermining stroke |
 | H | Cycle the heatmap: off / max principal stress / von Mises stress / area change |
 | W / R | Wireframe on/off / reset the deformation (incisions and sutures stay) |
 
@@ -70,6 +71,22 @@ shows the Cauchy (true) stress in the skin; the colour scale is set by the
 Stress right at a suture or forceps point is a point-load peak that grows as
 the mesh is refined; suture tension and the stress field away from those points
 are mesh-independent.
+
+## Tissue model (M6)
+
+The skin is an incompressible membrane: an isotropic strain-stiffening matrix
+(Demiray) plus one family of collagen fibres along the relaxed skin tension lines
+(RSTL), Gasser-Ogden-Holzapfel model. Living skin is pre-stretched (by default 8%
+along the RSTL, 3% across): the sheet is in equilibrium while intact, and an
+incision releases that tension and gapes, more when it runs across the RSTL. The
+compass at the top right shows the RSTL direction.
+
+Undermining lowers the attachment to the tissue below (to "Tethering left").
+That matters most when skin has to be *advanced* (closing a defect, insetting a
+flap); re-approximating a plain incision only restores the in-vivo state, so its
+closing tension is set by the skin's own prestress.
+
+All values are illustrative, not calibrated against measurements.
 
 ## Tests
 

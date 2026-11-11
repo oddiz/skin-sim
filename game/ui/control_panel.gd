@@ -15,7 +15,7 @@ extends PanelContainer
 
 ## Emitted when the user presses a button that changes the scene.
 signal reset_requested
-## Emitted when the user picks a tool (main.gd's Tool enum: 0 grab, 1 cut, 2 suture).
+## Emitted when the user picks a tool (main.gd's Tool enum: 0 grab, 1 cut, 2 suture, 3 undermine).
 signal tool_selected(tool: int)
 ## Undo the last cut or suture (main.gd keeps the history).
 signal undo_requested
@@ -23,6 +23,7 @@ signal undo_requested
 signal tightness_changed(tightness: float)
 signal remove_suture_requested
 signal cuts_cleared
+signal undermining_cleared
 signal sutures_cleared
 
 const PANEL_WIDTH := 300
@@ -34,6 +35,8 @@ const PRESET_FORMAT_VERSION := 1
 ## grab settings (those are personal preference, not anatomy).
 const PRESET_KEYS := [
 	"shear_modulus_kpa", "stiffening", "thickness", "tether_stiffness_kpa_per_mm", "pin_boundary",
+	"fibre_angle_deg", "fibre_stiffness_kpa", "fibre_nonlinearity", "fibre_dispersion",
+	"prestretch_along_pct", "prestretch_across_pct", "undermined_tethering_pct",
 ]
 
 ## One row per control. "exp" = logarithmic slider, for values spanning decades.
@@ -52,6 +55,26 @@ const PARAMS := [
 		"tip": "Attachment to the underlying tissue. Low = mobile, undermined skin."},
 	{"prop": "pin_boundary", "label": "Pin outer edge", "type": "bool",
 		"tip": "Hold the sheet's outer edge fixed (skin continues beyond it)."},
+	{"section": "Collagen fibres (RSTL)"},
+	{"prop": "fibre_angle_deg", "label": "RSTL direction", "min": -90.0, "max": 90.0, "step": 1.0,
+		"fmt": "%.0f deg", "tip": "Direction of the relaxed skin tension lines (0 = horizontal)."},
+	{"prop": "fibre_stiffness_kpa", "label": "Fibre stiffness k1", "min": 0.0, "max": 500.0,
+		"step": 0.5, "fmt": "%.0f kPa", "tip": "How strongly the aligned collagen resists stretch. 0 = no fibres."},
+	{"prop": "fibre_nonlinearity", "label": "Fibre stiffening k2", "min": 0.0, "max": 30.0,
+		"step": 0.1, "fmt": "%.1f", "tip": "How steeply the fibres stiffen as they straighten."},
+	{"prop": "fibre_dispersion", "label": "Fibre dispersion", "min": 0.0, "max": 0.333,
+		"step": 0.005, "fmt": "%.3f",
+		"tip": "0 = all fibres along the RSTL; 0.333 = fibres in every direction (isotropic)."},
+	{"section": "In-vivo prestretch"},
+	{"prop": "prestretch_along_pct", "label": "Along RSTL", "min": 0.0, "max": 30.0, "step": 0.5,
+		"fmt": "%.1f %%", "tip": "How much living skin is stretched beyond its unloaded size. Makes incisions gape."},
+	{"prop": "prestretch_across_pct", "label": "Across RSTL", "min": 0.0, "max": 30.0, "step": 0.5,
+		"fmt": "%.1f %%", "tip": "Usually less than along the RSTL."},
+	{"section": "Undermining"},
+	{"prop": "undermine_radius", "label": "Brush radius", "min": 1.0, "max": 30.0, "step": 0.5,
+		"fmt": "%.1f mm", "tip": "Size of the undermining brush."},
+	{"prop": "undermined_tethering_pct", "label": "Tethering left", "min": 0.0, "max": 100.0,
+		"step": 1.0, "fmt": "%.0f %%", "tip": "Attachment left in undermined skin, % of normal."},
 	{"section": "Grab (forceps)"},
 	{"prop": "grab_radius", "label": "Grab radius", "min": 0.0, "max": 10.0, "step": 0.1,
 		"fmt": "%.1f mm", "tip": "Area the pull is spread over. Applies to the next grab."},
@@ -160,11 +183,13 @@ func _build_tools(box: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
 	# A ButtonGroup makes toggle buttons mutually exclusive, like radio buttons.
 	var group := ButtonGroup.new()
-	for i in 3:
+	for i in 4:
 		var b := Button.new()
-		b.text = ["Grab", "Cut", "Suture"][i]
+		b.text = ["Grab", "Cut", "Suture", "Undermine"][i]
+		b.add_theme_font_size_override("font_size", 13)
 		b.tooltip_text = ["Forceps: drag the skin [G]", "Scalpel: draw an incision [C]",
-			"Tap a lip: suture across. Drag lip to lip: key suture [S]"][i]
+			"Drag from needle entry to exit; tap a suture to select it [S]",
+			"Brush: free the skin from the tissue below [U]"][i]
 		b.toggle_mode = true
 		b.button_group = group
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -198,6 +223,15 @@ func _build_tools(box: VBoxContainer) -> void:
 		sutures_cleared.emit())
 	cuts.add_child(clear_sutures)
 	box.add_child(cuts)
+	var undermine_row := HBoxContainer.new()
+	var clear_undermining := Button.new()
+	clear_undermining.text = "Clear undermining"
+	clear_undermining.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clear_undermining.pressed.connect(func():
+		sheet.clear_undermining()
+		undermining_cleared.emit())
+	undermine_row.add_child(clear_undermining)
+	box.add_child(undermine_row)
 	_build_knot(box)
 
 
@@ -217,9 +251,12 @@ func _build_knot(box: VBoxContainer) -> void:
 	header.add_child(_tightness_label)
 	v.add_child(header)
 	_tightness_slider = HSlider.new()
+	# Step first: a Range snaps its value to min + n * step, and with the
+	# default step of 1 setting min = -0.5 would snap the value 0 to 0.5.
+	_tightness_slider.step = 0.01
 	_tightness_slider.min_value = -0.5
 	_tightness_slider.max_value = 0.6
-	_tightness_slider.step = 0.01
+	_tightness_slider.value = 0.0
 	_tightness_slider.custom_minimum_size.y = 24
 	_tightness_slider.value_changed.connect(func(t: float):
 		tightness = t
@@ -291,9 +328,9 @@ func _make_slider(spec: Dictionary) -> Control:
 	v.add_child(header)
 
 	var slider := HSlider.new()
+	slider.step = spec.step  # before min/max: see the note in _build_knot
 	slider.min_value = spec.min
 	slider.max_value = spec.max
-	slider.step = spec.step
 	slider.exp_edit = spec.get("exp", false)  # logarithmic: equal slider travel per decade
 	slider.custom_minimum_size.y = 24  # comfortable touch target
 	var prop: String = spec.prop
