@@ -10,9 +10,9 @@ extends Node3D
 ## Three tools:
 ##   GRAB    touches grab and pull the skin (forceps).
 ##   CUT     a touch draws an incision (scalpel); it is made on release.
-##   SUTURE  tap an incision lip: a suture straight across to the matching
-##           point of the other lip. Drag from one lip to another: a suture
-##           between those two points (e.g. a key suture moving a flap corner).
+##   SUTURE  press where the needle goes in, drag, release where it comes out:
+##           the thread is tied with the knot tightness set in the panel.
+##           Tap a suture to select it; the tightness slider then re-ties it.
 ## On desktop, Shift + drag cuts whatever the tool.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
@@ -20,8 +20,9 @@ extends Node3D
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
 ##   --demo-cut                cut a 30 mm vertical incision, then pull its
 ##                             right lip 8 mm right so it gapes (for checks)
-##   --demo-suture             as --demo-cut, then three sutures close the
-##                             wound against the pull; heatmap on (for checks)
+##   --demo-suture             cut, close with three sutures (3 mm bites, the
+##                             middle one tied 30% tight), then pull the right
+##                             side; heatmap on (for checks)
 
 enum Tool { GRAB, CUT, SUTURE }
 
@@ -36,16 +37,17 @@ const FRAME_MARGIN := 1.3
 ## A new point is added to the scalpel path once the finger has moved this
 ## many pixels: enough to follow curves, few enough to keep the path short.
 const CUT_SAMPLE_PX := 4.0
-## A suture end snaps to a lip within this many pixels of the finger.
-const SUTURE_SNAP_PX := 18.0
-## A suture gesture shorter than this is a tap: suture straight across.
+## A suture gesture shorter than this is a tap: it selects a suture instead.
 const TAP_PX := 10.0
+## A tap within this many pixels of a suture's thread selects it.
+const PICK_PX := 14.0
 
 var tool: Tool = Tool.GRAB
 var _cut_touch := -1                      # touch index drawing the incision, -1 = none
 var _cut_path := PackedVector2Array()     # screen positions of the stroke so far
 var _suture_touch := -1                   # touch index placing a suture, -1 = none
 var _suture_start := Vector2.ZERO
+var _selected_suture := -1                # id, -1 = none
 var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"} or {"kind": "suture", "id": n}
 var _status := ""                         # last action's result, shown in the HUD
 
@@ -56,8 +58,17 @@ func _ready() -> void:
 	panel.reset_requested.connect(sheet.reset_simulation)
 	panel.tool_selected.connect(_set_tool)
 	panel.undo_requested.connect(_undo)
+	panel.tightness_changed.connect(func(t: float):
+		if _selected_suture >= 0:
+			sheet.set_suture_tightness(_selected_suture, t))
+	panel.remove_suture_requested.connect(func():
+		if _selected_suture >= 0:
+			sheet.remove_suture(_selected_suture)
+			_select_suture(-1))
 	panel.cuts_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "cut"))
-	panel.sutures_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "suture"))
+	panel.sutures_cleared.connect(func():
+		_history = _history.filter(func(h): return h.kind != "suture")
+		_select_suture(-1))
 	overlay.sheet = sheet
 	overlay.camera = camera
 	sheet.mesh_rebuilt.connect(_frame_sheet)
@@ -99,6 +110,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			overlay.cut_path = _cut_path
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
+			overlay.suture_line_ok = _on_skin(_suture_start) \
+				and _on_skin(event.position)
 		else:
 			sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
 	elif event is InputEventKey and event.pressed and not event.echo:
@@ -162,19 +175,35 @@ func _commit_cut() -> void:
 
 
 func _commit_suture(end: Vector2) -> void:
-	var snap_mm := SUTURE_SNAP_PX * camera.size / get_viewport().get_visible_rect().size.y
-	var id: int
-	if end.distance_to(_suture_start) < TAP_PX:
-		id = sheet.suture_across(_screen_to_sheet_plane(_suture_start), snap_mm)
-	else:
-		id = sheet.suture(_screen_to_sheet_plane(_suture_start), _screen_to_sheet_plane(end), snap_mm)
-	if id >= 0:
-		_history.append({"kind": "suture", "id": id})
-		_status = "Suture placed."
-	else:
-		_status = "No suture: start (and end) on an incision lip, not at its very tip."
 	_suture_touch = -1
 	overlay.suture_line = PackedVector2Array()
+	if end.distance_to(_suture_start) < TAP_PX:
+		# A tap: select the suture under the finger (or deselect).
+		var pick_mm := PICK_PX * camera.size / get_viewport().get_visible_rect().size.y
+		_select_suture(sheet.pick_suture(_screen_to_sheet_plane(end), pick_mm))
+		return
+	var id := sheet.suture(_screen_to_sheet_plane(_suture_start), _screen_to_sheet_plane(end),
+		panel.tightness)
+	if id >= 0:
+		_history.append({"kind": "suture", "id": id})
+		_select_suture(id)
+		_status = "Suture tied (%+.0f%%)." % (panel.tightness * 100.0)
+	else:
+		_status = "No suture: the needle must go in and come out on skin."
+
+
+func _select_suture(id: int) -> void:
+	_selected_suture = id
+	overlay.selected_suture = id
+	if id >= 0:
+		for su in sheet.get_suture_info():
+			if su.id == id:
+				panel.show_suture_tightness(su.tightness)
+
+
+## True if the screen point is over skin (not over an open wound or outside).
+func _on_skin(screen_pos: Vector2) -> bool:
+	return sheet.is_on_skin(_screen_to_sheet_plane(screen_pos))
 
 
 ## Undo the most recent cut or suture.
@@ -188,6 +217,8 @@ func _undo() -> void:
 		_status = "Incision undone."
 	else:
 		sheet.remove_suture(last.id)
+		if last.id == _selected_suture:
+			_select_suture(-1)
 		_status = "Suture removed."
 
 
@@ -211,10 +242,11 @@ func _process(_delta: float) -> void:
 		flags += " projected"
 	if s.regularized:
 		flags += " regularized"
+	panel.show_selected_suture(_selected_info())
 	var tool_line: String = [
 		"Tool: GRAB - drag the skin.",
 		"Tool: CUT - draw an incision.",
-		"Tool: SUTURE - tap a lip (across) or drag lip to lip.",
+		"Tool: SUTURE - drag from needle entry to exit; tap a suture to select it.",
 	][tool]
 	info.text = "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
 			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
@@ -279,17 +311,32 @@ func _demo_cut() -> void:
 	_drag(0, Vector2(11, 0))
 
 
-## The cut demo, then (still pulling) three sutures tapped across the left
-## lip; they close the wound against the pull. Von Mises heatmap on.
+## Cut, close it with three sutures (needle 3 mm either side of the wound,
+## the middle one tied 30% tight), then pull the right side away: the
+## sutures hold the wound closed. Von Mises heatmap on.
 func _demo_suture() -> void:
-	await _demo_cut()
-	for _frame in 30:
-		await get_tree().process_frame  # let the wound open
+	await get_tree().process_frame
+	_set_tool(Tool.CUT)
+	_touch(0, Vector2(0, -15), true)
+	for k in range(1, 31):
+		_drag(0, Vector2(0, -15 + k))
+	_touch(0, Vector2(0, 15), false)
+	await get_tree().process_frame
 	_set_tool(Tool.SUTURE)
 	for y in [-8.0, 0.0, 8.0]:
-		# Touch index 1: finger 0 is still holding the forceps.
-		_touch(1, Vector2(-0.3, y), true)
-		_touch(1, Vector2(-0.3, y), false)
+		# The slider re-ties the *selected* suture: deselect first, so it only
+		# sets the tightness for the next one.
+		_select_suture(-1)
+		panel.set_tightness(0.3 if y == 0.0 else 0.0)
+		_touch(0, Vector2(-3, y), true)
+		_drag(0, Vector2(3, y))
+		_touch(0, Vector2(3, y), false)
+		# Injected events are queued and handled on the next frame: wait, so
+		# they are handled with this tool and this tightness.
+		await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	_touch(0, Vector2(8, 0), true)
+	_drag(0, Vector2(15, 0))
 	sheet.heatmap = 2
 	panel.refresh()
 
@@ -312,3 +359,13 @@ func _save_screenshot_and_quit(path: String) -> void:
 	var err := get_viewport().get_texture().get_image().save_png(path)
 	print("Screenshot saved to %s (error code %d)" % [path, err])
 	get_tree().quit()
+
+
+func _selected_info() -> Dictionary:
+	if _selected_suture < 0:
+		return {}
+	for su in sheet.get_suture_info():
+		if su.id == _selected_suture:
+			return su
+	_select_suture(-1)  # it disappeared (e.g. its skin was re-meshed away)
+	return {}

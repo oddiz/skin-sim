@@ -19,6 +19,9 @@ signal reset_requested
 signal tool_selected(tool: int)
 ## Undo the last cut or suture (main.gd keeps the history).
 signal undo_requested
+## Knot tightness slider moved (applies to the selected suture, and to new ones).
+signal tightness_changed(tightness: float)
+signal remove_suture_requested
 signal cuts_cleared
 signal sutures_cleared
 
@@ -82,6 +85,13 @@ var _preset_list: OptionButton
 var _preset_name: LineEdit
 var _status: Label
 var _tool_buttons: Array[Button] = []
+## Knot tightness for new sutures: 0 = edges just meet, +0.2 = tied 20%
+## shorter (squeezing the tissue in the loop), negative = loose.
+var tightness := 0.0
+var _tightness_slider: HSlider
+var _tightness_label: Label
+var _suture_label: Label
+var _remove_suture: Button
 
 
 ## Called by main.gd once the sheet exists.
@@ -188,6 +198,72 @@ func _build_tools(box: VBoxContainer) -> void:
 		sutures_cleared.emit())
 	cuts.add_child(clear_sutures)
 	box.add_child(cuts)
+	_build_knot(box)
+
+
+## Knot tightness: how short the thread is tied, relative to the length at
+## which the wound edges just meet (the two bites added together).
+func _build_knot(box: VBoxContainer) -> void:
+	var v := VBoxContainer.new()
+	v.tooltip_text = "How tight the knot is tied. 0% = the edges just meet; " \
+		+ "more = the loop is shorter than the two bites, squeezing the tissue; " \
+		+ "less than 0 = loose, the wound stays partly open."
+	var header := HBoxContainer.new()
+	var name_label := Label.new()
+	name_label.text = "Knot tightness"
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(name_label)
+	_tightness_label = Label.new()
+	header.add_child(_tightness_label)
+	v.add_child(header)
+	_tightness_slider = HSlider.new()
+	_tightness_slider.min_value = -0.5
+	_tightness_slider.max_value = 0.6
+	_tightness_slider.step = 0.01
+	_tightness_slider.custom_minimum_size.y = 24
+	_tightness_slider.value_changed.connect(func(t: float):
+		tightness = t
+		_tightness_label.text = "%+.0f%%" % (t * 100.0)
+		tightness_changed.emit(t))
+	v.add_child(_tightness_slider)
+	box.add_child(v)
+	_tightness_label.text = "+0%"
+
+	var row := HBoxContainer.new()
+	_suture_label = Label.new()
+	_suture_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_suture_label.add_theme_font_size_override("font_size", 12)
+	row.add_child(_suture_label)
+	_remove_suture = Button.new()
+	_remove_suture.text = "Remove"
+	_remove_suture.tooltip_text = "Remove the selected suture."
+	_remove_suture.pressed.connect(func(): remove_suture_requested.emit())
+	row.add_child(_remove_suture)
+	box.add_child(row)
+	show_selected_suture({})
+
+
+## Move the slider to a selected suture's tightness, without re-tying it.
+func show_suture_tightness(t: float) -> void:
+	tightness = t
+	_tightness_slider.set_value_no_signal(t)
+	_tightness_label.text = "%+.0f%%" % (t * 100.0)
+
+
+## Set the tightness for the next suture (and the selected one), as the slider would.
+func set_tightness(t: float) -> void:
+	_tightness_slider.value = t
+
+
+## Called every frame by main.gd with the selected suture's info ({} = none).
+func show_selected_suture(info: Dictionary) -> void:
+	if info.is_empty():
+		_suture_label.text = "No suture selected (tap one)."
+		_remove_suture.disabled = true
+	else:
+		_suture_label.text = "Suture #%d: %s" % [info.id,
+			"slack" if info.slack else "%.2f N" % info.force]
+		_remove_suture.disabled = false
 
 
 ## Show which tool is active (when it was changed by keyboard, not by a button).

@@ -11,7 +11,7 @@
 //   E(x) = sum over triangles   thickness * area * W(F)          (skin)
 //        + sum over nodes       1/2 k A_i |x_i - X_i|^2          (tethers)
 //        + sum over grabs       psi(|p(x) - target|)             (fingers)
-//        + sum over sutures     1/2 k_s |a(x) - b(x)|^2          (stitches)
+//        + sum over sutures     1/2 k_s max(0, |a(x) - b(x)| - L)^2   (stitches tied to length L)
 //
 // where p(x) is the weighted centre of the grabbed patch of skin and psi is a
 // spring that saturates at the maximum pull force (see simulation.cpp).
@@ -53,7 +53,9 @@ struct MaterialPoint {
 struct SutureInfo {
     int id = 0;
     Eigen::Vector2d a, b;  // current positions of its two ends, mm
-    double force = 0.0;    // tension, N
+    double force = 0.0;    // tension, N (0 when slack)
+    double rest_length = 0.0;  // the length it was tied to, mm
+    double bites = 0.0;        // bite(a) + bite(b): the length at which the edges just meet, mm
 };
 
 // Per-point output fields for the heatmap.
@@ -123,9 +125,12 @@ public:
     void adopt_grabs(const Simulation& other);
 
     // --- sutures ---
-    // Tie a suture between two points of the skin. Returns its id, or -1 if
-    // a point is invalid. The solver pulls the two points together.
-    int add_suture(const MaterialPoint& a, const MaterialPoint& b);
+    // Tie a suture from entry point a to exit point b, with the thread tied
+    // to rest_length (mm). Returns its id, or -1 if a point is invalid.
+    // While |a - b| > rest_length the solver pulls them together.
+    int add_suture(const MaterialPoint& a, const MaterialPoint& b, double rest_length = 0.0);
+    // Re-tie an existing suture to a new length (tighter = shorter).
+    bool set_suture_rest_length(int id, double rest_length);
     bool remove_suture(int id);
     void clear_sutures();
     int suture_count() const { return static_cast<int>(sutures_.size()); }
@@ -143,6 +148,11 @@ public:
     bool opposite_lip_point(const MaterialPoint& p, MaterialPoint& out) const;
     // Current position of a material point.
     Eigen::Vector2d position_of(const MaterialPoint& p) const;
+    // The material point under `point` (current shape). False if not on skin.
+    bool material_point_at(const Eigen::Vector2d& point, MaterialPoint& out) const;
+    // Distance at rest from a material point to the nearest incision: the
+    // "bite" of a suture entering the skin there. 0 if there are no incisions.
+    double bite(const MaterialPoint& p) const;
 
     // --- output ---
     // One value per mesh triangle (0 for degenerate triangles, which the
@@ -199,10 +209,15 @@ private:
     Eigen::Matrix2d grab_stiffness(const Eigen::Vector2d& r) const;
     struct Suture {
         MaterialPoint a, b;
+        double rest_length = 0.0;  // mm
     };
     // Suture gap r = a(x) - b(x) is linear in x: r = sum_i c_i x_node_i.
     // The six (node, coefficient) pairs: +weights of a, -weights of b.
     void suture_terms(const Suture& s, std::array<int, 6>& nodes, std::array<double, 6>& coeffs) const;
+    // The thread as a function of the gap vector r = a - b, tied to length L:
+    double suture_energy(const Eigen::Vector2d& r, double L) const;
+    Eigen::Vector2d suture_force(const Eigen::Vector2d& r, double L) const;      // dE/dr
+    Eigen::Matrix2d suture_stiffness(const Eigen::Vector2d& r, double L) const;  // d2E/dr2
     Eigen::Vector2d point_at(const MaterialPoint& p, const Eigen::VectorXd& x) const;
     bool valid(const MaterialPoint& p) const;
     void apply_pins();

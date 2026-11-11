@@ -51,8 +51,8 @@ Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
 |---|---|
 | Drag (Grab tool, G) | Grab and pull the skin with forceps; several fingers on a touch screen |
 | Drag (Cut tool, C), or Shift + drag | Draw an incision; it is made when you release |
-| Tap a lip (Suture tool, S) | Suture straight across to the matching point of the other lip |
-| Drag lip to lip (Suture tool) | Suture between those two points (key suture, flap inset) |
+| Drag (Suture tool, S) | Press at the needle entry, release at the exit: a suture tied with the panel's knot tightness |
+| Tap a suture (Suture tool) | Select it; the knot tightness slider then re-ties it live |
 | Z | Undo the last incision or suture |
 | H | Cycle the heatmap: off / max principal stress / von Mises stress / area change |
 | W / R | Wireframe on/off / reset the deformation (incisions and sutures stay) |
@@ -61,7 +61,10 @@ Incisions are stored in rest (tissue) coordinates, so you can cut skin that is
 being pulled. They stay one element away from the pinned outer border, and a
 stroke starting within ~2 mm of an existing cut snaps onto it, so flap limbs join cleanly.
 
-Each suture shows its tension in newtons (green to red up to 3 N). The heatmap
+Knot tightness is relative to the two bites (entry and exit distances from the
+incision): at 0% the thread is exactly their sum, so the edges just meet; +20%
+ties it 20% shorter, squeezing the tissue in the loop; negative leaves it loose.
+Each suture shows its tension in newtons (green to red up to 3 N, grey = slack). The heatmap
 shows the Cauchy (true) stress in the skin; the colour scale is set by the
 "Stress scale" slider so that different closures can be compared on one scale.
 Stress right at a suture or forceps point is a point-load peak that grows as

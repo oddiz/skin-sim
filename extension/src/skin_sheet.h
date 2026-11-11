@@ -105,17 +105,23 @@ public:
     void clear_cuts();
     int get_cut_count() const { return sheet_ ? sheet_->cut_count() : 0; }
 
-    // --- Sutures (world-space points; max distance from a lip in mm) ---
-    // From the lip point nearest p_from to the lip point nearest p_to.
-    // Returns the suture id, or -1 if either point is not near a lip.
-    int suture(const Vector3& p_from, const Vector3& p_to, double p_max_distance_mm);
-    // Straight across: from the lip point nearest p_point to its counterpart
-    // on the opposite lip (the point it was joined to before the cut).
-    int suture_across(const Vector3& p_point, double p_max_distance_mm);
+    // --- Sutures (world-space points) ---
+    // A thread from the entry point to the exit point (both on the skin), tied
+    // with the given tightness: 0 = the wound edges just meet, 0.2 = the loop
+    // is 20% shorter than that (squeezing the tissue in it), < 0 = loose.
+    // Returns the suture id, or -1 if a point is not on the skin.
+    int suture(const Vector3& p_entry, const Vector3& p_exit, double p_tightness);
+    // Re-tie a suture with a new tightness (same meaning as above).
+    bool set_suture_tightness(int p_id, double p_tightness);
+    // True if there is skin under the point (not an open wound, not outside).
+    bool is_on_skin(const Vector3& p_world_point) const;
+    // The suture whose thread passes within p_max_distance_mm of the point, or -1.
+    int pick_suture(const Vector3& p_world_point, double p_max_distance_mm) const;
     bool remove_suture(int p_id);
     void clear_sutures();
     int get_suture_count() const;
-    // One Dictionary per suture: id, a, b (world space), force (N).
+    // One Dictionary per suture: id, a (entry), b (exit) in world space,
+    // force (N), tightness, slack (bool).
     Array get_suture_info() const;
 
     // --- Info for the HUD ---

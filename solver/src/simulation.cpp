@@ -381,10 +381,7 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
         E += grab_energy(grab_point(g, x) - g.target);
     }
 
-    for (const auto& [id, su] : sutures_) {
-        const Eigen::Vector2d r = point_at(su.a, x) - point_at(su.b, x);
-        E += 0.5 * suture_params_.stiffness * r.squaredNorm();
-    }
+    for (const auto& [id, su] : sutures_) E += suture_energy(point_at(su.a, x) - point_at(su.b, x), su.rest_length);
     return E;
 }
 
@@ -422,7 +419,7 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
         std::array<int, 6> nodes;
         std::array<double, 6> c;
         suture_terms(su, nodes, c);
-        const Eigen::Vector2d f = suture_params_.stiffness * (point_at(su.a, x) - point_at(su.b, x));
+        const Eigen::Vector2d f = suture_force(point_at(su.a, x) - point_at(su.b, x), su.rest_length);
         for (int i = 0; i < 6; ++i) g.segment<2>(2 * nodes[i]) += c[i] * f;
     }
     return g;
@@ -476,15 +473,19 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, boo
     }
 
     for (const auto& [id, su] : sutures_) {
-        // r = sum c_i x_i, so d2E/dx_i dx_j = k c_i c_j I: a small 12 x 12
-        // block (6 nodes), cheap to assemble directly, unlike grab patches.
+        // r = sum c_i x_i, so d2E/dx_i dx_j = c_i c_j K (K = 2x2 thread
+        // stiffness): a small 12 x 12 block (6 nodes), cheap to assemble
+        // directly, unlike grab patches.
         std::array<int, 6> nodes;
         std::array<double, 6> c;
         suture_terms(su, nodes, c);
-        const double ks = suture_params_.stiffness;
+        const Eigen::Matrix2d K = suture_stiffness(point_at(su.a, x) - point_at(su.b, x), su.rest_length);
+        if (K.isZero()) continue;  // slack thread: no stiffness
         for (int i = 0; i < 6; ++i)
             for (int j = 0; j < 6; ++j)
-                for (int d = 0; d < 2; ++d) trip.emplace_back(2 * nodes[i] + d, 2 * nodes[j] + d, ks * c[i] * c[j]);
+                for (int d = 0; d < 2; ++d)
+                    for (int e = 0; e < 2; ++e)
+                        trip.emplace_back(2 * nodes[i] + d, 2 * nodes[j] + e, c[i] * c[j] * K(d, e));
     }
 
     SparseMatrix H(x.size(), x.size());
@@ -606,12 +607,80 @@ void Simulation::suture_terms(const Suture& su, std::array<int, 6>& nodes, std::
     }
 }
 
-int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b) {
-    if (!valid(a) || !valid(b)) return -1;
+// The thread, as a function of the gap r between its two ends, tied to
+// length L. With s = |r|:
+//   s <= L:  slack, E = 0
+//   s >  L:  E = k/2 (s - L)^2, pulling with force k (s - L) along r.
+// Its Hessian splits into the direction along the thread (stiffness k) and
+// across it (k (1 - L/s)): a taut string resists being stretched more than
+// being swung sideways. For L = 0 both are k: the plain spring k I.
+// E is continuous with a continuous slope at s = L, and convex, so Newton and
+// the line search handle the switch between slack and taut.
+double Simulation::suture_energy(const Eigen::Vector2d& r, double L) const {
+    const double stretch = r.norm() - L;
+    return stretch > 0.0 ? 0.5 * suture_params_.stiffness * stretch * stretch : 0.0;
+}
+
+Eigen::Vector2d Simulation::suture_force(const Eigen::Vector2d& r, double L) const {
+    const double k = suture_params_.stiffness;
+    if (L <= 0.0) return k * r;
+    const double s = r.norm();
+    return s > L ? Eigen::Vector2d(k * (s - L) * r / s) : Eigen::Vector2d::Zero();
+}
+
+Eigen::Matrix2d Simulation::suture_stiffness(const Eigen::Vector2d& r, double L) const {
+    const double k = suture_params_.stiffness;
+    if (L <= 0.0) return k * Eigen::Matrix2d::Identity();
+    const double s = r.norm();
+    if (!(s > L)) return Eigen::Matrix2d::Zero();
+    const Eigen::Vector2d n = r / s;
+    const Eigen::Matrix2d along = n * n.transpose();
+    return k * (along + (1.0 - L / s) * (Eigen::Matrix2d::Identity() - along));
+}
+
+int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b, double rest_length) {
+    if (!valid(a) || !valid(b) || !std::isfinite(rest_length)) return -1;
     const int id = next_suture_id_++;
-    sutures_[id] = Suture{a, b};
+    sutures_[id] = Suture{a, b, std::max(rest_length, 0.0)};
     converged_ = false;
     return id;
+}
+
+bool Simulation::set_suture_rest_length(int id, double rest_length) {
+    auto it = sutures_.find(id);
+    if (it == sutures_.end() || !std::isfinite(rest_length)) return false;
+    it->second.rest_length = std::max(rest_length, 0.0);
+    converged_ = false;
+    return true;
+}
+
+bool Simulation::material_point_at(const Eigen::Vector2d& point, MaterialPoint& out) const {
+    for (const Element& e : elements_) {
+        const Eigen::Vector2d a = x_.segment<2>(2 * e.v[0]);
+        const Eigen::Vector2d b = x_.segment<2>(2 * e.v[1]);
+        const Eigen::Vector2d c = x_.segment<2>(2 * e.v[2]);
+        if (!(signed_area(a, b, c) > 0.0)) continue;
+        const Eigen::Vector3d w = barycentric(a, b, c, point);
+        if (w.minCoeff() >= -1e-9) {
+            out.triangle = e.triangle;
+            out.weights = w;
+            return true;
+        }
+    }
+    return false;
+}
+
+double Simulation::bite(const MaterialPoint& p) const {
+    if (!valid(p) || mesh_.cut_edges.empty()) return 0.0;
+    const Eigen::Vector2d X = point_at(p, rest_);
+    double best = kInf;
+    for (const Edge& e : mesh_.cut_edges) {
+        const Eigen::Vector2d A = rest_.segment<2>(2 * e[0]), AB = rest_.segment<2>(2 * e[1]) - A;
+        const double len2 = AB.squaredNorm();
+        const double t = len2 > 0.0 ? std::clamp((X - A).dot(AB) / len2, 0.0, 1.0) : 0.0;
+        best = std::min(best, (A + t * AB - X).norm());
+    }
+    return best;
 }
 
 bool Simulation::remove_suture(int id) {
@@ -632,7 +701,9 @@ std::vector<SutureInfo> Simulation::suture_info() const {
         info.id = id;
         info.a = point_at(su.a, x_);
         info.b = point_at(su.b, x_);
-        info.force = suture_params_.stiffness * (info.a - info.b).norm();
+        info.force = suture_force(info.a - info.b, su.rest_length).norm();
+        info.rest_length = su.rest_length;
+        info.bites = bite(su.a) + bite(su.b);
         out.push_back(info);
     }
     return out;
@@ -723,6 +794,7 @@ void Simulation::adopt_sutures(const Simulation& other) {
     };
     for (const auto& [id, su] : other.sutures_) {
         Suture copy;
+        copy.rest_length = su.rest_length;
         if (relocate(su.a, copy.a) && relocate(su.b, copy.b)) sutures_[id] = copy;
     }
     next_suture_id_ = std::max(next_suture_id_, other.next_suture_id_);

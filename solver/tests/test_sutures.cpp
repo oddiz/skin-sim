@@ -266,3 +266,138 @@ TEST_CASE("invalid sutures are refused; removing and clearing work") {
     sim.clear_sutures();
     CHECK(sim.suture_count() == 0);
 }
+
+// ---------------------------------------------------------------------------
+// Sutures tied to a length (entry/exit bites, knot tightness)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+Sheet vertical_cut() {
+    Sheet s(kGeometry);
+    REQUIRE(s.cut_rest({V(0, -15), V(0, 15)}) > 0);
+    return s;
+}
+
+MaterialPoint at(const Simulation& sim, const V& p) {
+    MaterialPoint m;
+    REQUIRE(sim.material_point_at(p, m));
+    return m;
+}
+
+}  // namespace
+
+TEST_CASE("taut suture with a tied length: gradient and Hessian match finite differences") {
+    Sheet s = vertical_cut();
+    Simulation& sim = s.simulation();
+    TissueParams p;
+    p.pin_boundary = false;
+    sim.set_params(p);
+    SutureParams sp;
+    sp.stiffness = 3.0;
+    sim.set_suture_params(sp);
+    const MaterialPoint a = at(sim, V(-2.7, 1.1)), b = at(sim, V(3.4, -0.6));
+    // Tied to half the current distance: well inside the taut regime (the
+    // slack/taut switch is a kink where finite differences don't apply).
+    REQUIRE(sim.add_suture(a, b, 0.5 * (sim.position_of(a) - sim.position_of(b)).norm()) > 0);
+
+    // Small noise: the triangles along the incision are only 1.25 mm, and an
+    // inverted one would make the energy infinite (nothing to differentiate).
+    std::mt19937 rng(5);
+    std::uniform_real_distribution<double> noise(-0.1, 0.1);
+    Eigen::VectorXd x = sim.dofs();
+    for (int i = 0; i < x.size(); ++i) x[i] += noise(rng);
+    const Eigen::VectorXd g = sim.gradient(x);
+    const Eigen::MatrixXd H = Eigen::MatrixXd(sim.hessian(x, false));
+    CHECK((H - H.transpose()).norm() < 1e-10);
+    const double h = 1e-6;
+    int checked = 0;
+    for (int i = 0; i < x.size(); ++i) {
+        if (sim.mesh().rest_positions.col(i / 2).norm() > 6.0) continue;
+        Eigen::VectorXd xp = x, xm = x;
+        xp[i] += h;
+        xm[i] -= h;
+        CHECK(g[i] == doctest::Approx((sim.energy(xp) - sim.energy(xm)) / (2 * h)).epsilon(1e-5).scale(1e-3));
+        const Eigen::VectorXd col = (sim.gradient(xp) - sim.gradient(xm)) / (2 * h);
+        CHECK((H.col(i) - col).norm() < 1e-5 * (1.0 + col.norm()));
+        ++checked;
+    }
+    CHECK(checked > 20);
+}
+
+TEST_CASE("a slack suture exerts no force") {
+    Sheet s = vertical_cut();
+    Simulation& sim = s.simulation();
+    const Eigen::VectorXd before = sim.gradient(sim.dofs());
+    REQUIRE(sim.add_suture(at(sim, V(-3, 0)), at(sim, V(3, 0)), 10.0) > 0);  // 6 mm apart, 10 mm of thread
+    CHECK((sim.gradient(sim.dofs()) - before).norm() == 0.0);
+    CHECK(sim.suture_info().at(0).force == 0.0);
+}
+
+TEST_CASE("bite: distance of a suture's entry point from the incision") {
+    Sheet s = vertical_cut();
+    const Simulation& sim = s.simulation();
+    CHECK(sim.bite(at(sim, V(-3, 5))) == doctest::Approx(3.0));
+    CHECK(sim.bite(at(sim, V(2, 0))) == doctest::Approx(2.0));
+    CHECK(sim.bite(at(sim, V(0, 20))) == doctest::Approx(5.0));  // beyond the tip
+    Sheet uncut(kGeometry);
+    CHECK(uncut.simulation().bite(at(uncut.simulation(), V(1, 1))) == 0.0);
+    MaterialPoint m;
+    CHECK_FALSE(uncut.simulation().material_point_at(V(80, 0), m));  // off the sheet
+}
+
+TEST_CASE("knot tightness: edges just meet at the bite length; tighter means more tension") {
+    // Entry 3 mm left of the incision, exit 3 mm right: the edges meet when
+    // the thread is 6 mm. Tying shorter squeezes the tissue in the loop.
+    double previous = -1.0;
+    for (double tightness : {0.0, 0.2, 0.4}) {
+        CAPTURE(tightness);
+        Sheet s = vertical_cut();
+        Simulation& sim = s.simulation();
+        const MaterialPoint a = at(sim, V(-3, 0)), b = at(sim, V(3, 0));
+        const double bites = sim.bite(a) + sim.bite(b);
+        CHECK(bites == doctest::Approx(6.0));
+        REQUIRE(sim.add_suture(a, b, bites * (1.0 - tightness)) > 0);
+        settle(sim);
+        const double force = sim.suture_info().at(0).force;
+        MESSAGE("tightness " << tightness * 100 << "%: tension " << force << " N");
+        if (tightness == 0.0) CHECK(force < 1e-9);
+        CHECK(force > previous);
+        CHECK(sim.min_area_ratio() > 0.0);
+        previous = force;
+    }
+}
+
+TEST_CASE("a loose knot leaves a gap; re-tying closes it") {
+    Sheet s = vertical_cut();
+    Simulation& sim = s.simulation();
+    const MaterialPoint a = at(sim, V(-3, 0)), b = at(sim, V(3, 0));
+    const int id = sim.add_suture(a, b, 9.0);  // 3 mm more thread than the bites
+    REQUIRE(id > 0);
+    REQUIRE(sim.grab(0, V(6, 0)));
+    sim.move_grab(0, V(14, 0));  // pull the right side away and hold
+    settle(sim);
+
+    MaterialPoint lip, twin;
+    REQUIRE(sim.nearest_lip_point(V(-0.1, 0), 3.0, lip));
+    REQUIRE(sim.opposite_lip_point(lip, twin));
+    const double loose_gap = (sim.position_of(lip) - sim.position_of(twin)).norm();
+    const double loose_force = sim.suture_info().at(0).force;
+
+    REQUIRE(sim.set_suture_rest_length(id, 6.0));  // re-tie: edges should meet
+    settle(sim);
+    const double tied_gap = (sim.position_of(lip) - sim.position_of(twin)).norm();
+    const double tied_force = sim.suture_info().at(0).force;
+    MESSAGE("loose knot: gap " << loose_gap << " mm, " << loose_force << " N; re-tied: gap " << tied_gap << " mm, "
+                               << tied_force << " N");
+    CHECK(loose_gap > 2.0);
+    CHECK(tied_gap < 0.5);
+    CHECK(tied_force > loose_force);
+}
+
+TEST_CASE("the tied length survives re-meshing") {
+    Sheet s = vertical_cut();
+    REQUIRE(s.simulation().add_suture(at(s.simulation(), V(-3, 2)), at(s.simulation(), V(3, 2)), 4.5) > 0);
+    REQUIRE(s.cut_rest({V(30, -10), V(30, 10)}) > 0);
+    CHECK(s.simulation().suture_info().at(0).rest_length == 4.5);
+}

@@ -1,5 +1,6 @@
 #include "skin_sheet.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include <godot_cpp/classes/time.hpp>
@@ -102,8 +103,10 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("clear_cuts"), &SkinSheet::clear_cuts);
     ClassDB::bind_method(D_METHOD("get_cut_count"), &SkinSheet::get_cut_count);
     ClassDB::bind_method(D_METHOD("get_last_cut_ms"), &SkinSheet::get_last_cut_ms);
-    ClassDB::bind_method(D_METHOD("suture", "from", "to", "max_distance_mm"), &SkinSheet::suture);
-    ClassDB::bind_method(D_METHOD("suture_across", "point", "max_distance_mm"), &SkinSheet::suture_across);
+    ClassDB::bind_method(D_METHOD("suture", "entry", "exit", "tightness"), &SkinSheet::suture);
+    ClassDB::bind_method(D_METHOD("set_suture_tightness", "id", "tightness"), &SkinSheet::set_suture_tightness);
+    ClassDB::bind_method(D_METHOD("pick_suture", "point", "max_distance_mm"), &SkinSheet::pick_suture);
+    ClassDB::bind_method(D_METHOD("is_on_skin", "point"), &SkinSheet::is_on_skin);
     ClassDB::bind_method(D_METHOD("remove_suture", "id"), &SkinSheet::remove_suture);
     ClassDB::bind_method(D_METHOD("clear_sutures"), &SkinSheet::clear_sutures);
     ClassDB::bind_method(D_METHOD("get_suture_count"), &SkinSheet::get_suture_count);
@@ -364,22 +367,50 @@ void SkinSheet::clear_cuts() {
     topology_changed();
 }
 
-int SkinSheet::suture(const Vector3& p_from, const Vector3& p_to, double p_max_distance_mm) {
+// Tightness <-> tied length. The thread's natural length is the sum of the
+// two bites (entry and exit distance from the incision): tied to exactly
+// that, the edges just meet. Tightness t ties it to (1 - t) times that.
+int SkinSheet::suture(const Vector3& p_entry, const Vector3& p_exit, double p_tightness) {
     skinsim::Simulation* s = sim();
     skinsim::MaterialPoint a, b;
-    if (!s || !s->nearest_lip_point(world_to_sheet(p_from), p_max_distance_mm, a) ||
-        !s->nearest_lip_point(world_to_sheet(p_to), p_max_distance_mm, b))
+    if (!s || !s->material_point_at(world_to_sheet(p_entry), a) || !s->material_point_at(world_to_sheet(p_exit), b))
         return -1;
     if ((s->position_of(a) - s->position_of(b)).norm() < 1e-6) return -1;  // both ends on the same spot
-    return s->add_suture(a, b);
+    const double bites = s->bite(a) + s->bite(b);
+    return s->add_suture(a, b, bites * (1.0 - p_tightness));
 }
 
-int SkinSheet::suture_across(const Vector3& p_point, double p_max_distance_mm) {
+bool SkinSheet::set_suture_tightness(int p_id, double p_tightness) {
     skinsim::Simulation* s = sim();
-    skinsim::MaterialPoint a, b;
-    if (!s || !s->nearest_lip_point(world_to_sheet(p_point), p_max_distance_mm, a) || !s->opposite_lip_point(a, b))
-        return -1;
-    return s->add_suture(a, b);
+    if (!s) return false;
+    for (const skinsim::SutureInfo& su : s->suture_info())
+        if (su.id == p_id) return s->set_suture_rest_length(p_id, su.bites * (1.0 - p_tightness));
+    return false;
+}
+
+bool SkinSheet::is_on_skin(const Vector3& p_world_point) const {
+    const skinsim::Simulation* s = sim();
+    skinsim::MaterialPoint m;
+    return s && s->material_point_at(world_to_sheet(p_world_point), m);
+}
+
+int SkinSheet::pick_suture(const Vector3& p_world_point, double p_max_distance_mm) const {
+    const skinsim::Simulation* s = sim();
+    if (!s) return -1;
+    const Eigen::Vector2d p = world_to_sheet(p_world_point);
+    int best = -1;
+    double best_d = p_max_distance_mm;
+    for (const skinsim::SutureInfo& su : s->suture_info()) {
+        const Eigen::Vector2d ab = su.b - su.a;
+        const double len2 = ab.squaredNorm();
+        const double t = len2 > 0.0 ? std::clamp((p - su.a).dot(ab) / len2, 0.0, 1.0) : 0.0;
+        const double d = (su.a + t * ab - p).norm();
+        if (d < best_d) {
+            best_d = d;
+            best = su.id;
+        }
+    }
+    return best;
 }
 
 bool SkinSheet::remove_suture(int p_id) {
@@ -406,6 +437,8 @@ Array SkinSheet::get_suture_info() const {
         d["a"] = to_global(to_godot(su.a));
         d["b"] = to_global(to_godot(su.b));
         d["force"] = su.force;
+        d["tightness"] = su.bites > 0.0 ? 1.0 - su.rest_length / su.bites : 0.0;
+        d["slack"] = su.force == 0.0;
         out.push_back(d);
     }
     return out;

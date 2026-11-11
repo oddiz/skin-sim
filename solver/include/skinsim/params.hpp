@@ -57,11 +57,13 @@ struct GrabParams {
     double max_force = 5.0;  // N (use infinity for "unlimited")
 };
 
-// Sutures: each is a stiff spring of zero rest length between two points of
-// the skin. Stiff, so a tied suture holds the edges (almost) together; the
-// force it carries is the tension on the closure at that point.
+// Sutures: each is a thread from an entry point to an exit point, tied to a
+// certain length. When the two points are farther apart than that, the
+// thread pulls them together like a stiff spring; when closer, it is slack
+// (a thread cannot push). The force it carries is the tension on the closure.
 struct SutureParams {
-    // 20 N/mm: at a typical 1 N closure tension, the edges stay 0.05 mm apart.
+    // Stiffness of the thread plus the tissue it bites into. 20 N/mm: at a
+    // typical 1 N tension, the thread is only 0.05 mm longer than tied.
     double stiffness = 20.0;  // N/mm
 };
 
