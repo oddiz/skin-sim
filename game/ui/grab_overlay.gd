@@ -99,7 +99,9 @@ func _draw_sutures(font: Font) -> void:
 		draw_line(a, b, Color(0.05, 0.05, 0.15), 2.5, true)
 		draw_circle(a, 3.0, color)
 		draw_circle(b, 3.0, color)
-		var label := "slack" if su.slack else "%.2f N" % su.force
+		# Tension, then the loop stress (stress along the thread in the tissue
+		# the loop holds: + stretched, - squeezed).
+		var label := ("slack" if su.slack else "%.2f N" % su.force) + "  %+.0f kPa" % su.loop_stress_kpa
 		var pos := (a + b) * 0.5 + Vector2(8, -6)
 		draw_string_outline(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 4, Color(0, 0, 0, 0.85))
 		draw_string(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)

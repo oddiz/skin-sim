@@ -86,6 +86,9 @@ const PARAMS := [
 	{"prop": "suture_stiffness", "label": "Suture stiffness", "min": 0.1, "max": 200.0,
 		"step": 0.1, "exp": true, "fmt": "%.1f N/mm",
 		"tip": "How firmly a suture holds the edges together. The force it carries is the closure tension."},
+	{"prop": "suture_strip_width", "label": "Bite strip width", "min": 0.1, "max": 6.0, "step": 0.1,
+		"fmt": "%.1f mm",
+		"tip": "Width of the strip of dermis each bite pulls on (needle hole to wound edge)."},
 	{"section": "Heatmap"},
 	{"prop": "heatmap", "label": "Show", "type": "enum",
 		"options": ["Off (skin)", "Max principal stress", "Von Mises stress", "Area change"],
@@ -298,8 +301,8 @@ func show_selected_suture(info: Dictionary) -> void:
 		_suture_label.text = "No suture selected (tap one)."
 		_remove_suture.disabled = true
 	else:
-		_suture_label.text = "Suture #%d: %s" % [info.id,
-			"slack" if info.slack else "%.2f N" % info.force]
+		_suture_label.text = "Suture #%d: %s, loop %+.0f kPa" % [info.id,
+			"slack" if info.slack else "%.2f N" % info.force, info.loop_stress_kpa]
 		_remove_suture.disabled = false
 
 

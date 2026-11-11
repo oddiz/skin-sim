@@ -11,7 +11,8 @@
 //   E(x) = sum over triangles   thickness * area * W(F)          (skin)
 //        + sum over nodes       1/2 k A_i |x_i - X_i|^2          (tethers)
 //        + sum over grabs       psi(|p(x) - target|)             (fingers)
-//        + sum over sutures     1/2 k_s max(0, |a(x) - b(x)| - L)^2   (stitches tied to length L)
+//        + sum over sutures     1/2 k_s max(0, |a(x) - b(x)| - L)^2   (stitches tied to length L;
+//                                a, b = centres of the two bite strips)
 //
 // where p(x) is the weighted centre of the grabbed patch of skin and psi is a
 // spring that saturates at the maximum pull force (see simulation.cpp).
@@ -55,8 +56,14 @@ struct SutureInfo {
     int id = 0;
     Eigen::Vector2d a, b;  // current positions of its two ends, mm
     double force = 0.0;    // tension, N (0 when slack)
-    double rest_length = 0.0;  // the length it was tied to, mm
-    double bites = 0.0;        // bite(a) + bite(b): the length at which the edges just meet, mm
+    double tightness = 0.0;    // as tied (see add_suture)
+    double rest_length = 0.0;  // tied length between the two bite strips' centres, mm
+    double bites = 0.0;        // bite(a) + bite(b), mm
+    // Loop stress: average normal stress along the thread's direction in the
+    // tissue the loop holds (both bite strips), MPa. Negative = the knot
+    // squeezes that tissue; strongly negative suggests strangulation or the
+    // suture cutting through.
+    double loop_stress = 0.0;
 };
 
 // Per-point output fields for the heatmap.
@@ -126,12 +133,18 @@ public:
     void adopt_grabs(const Simulation& other);
 
     // --- sutures ---
-    // Tie a suture from entry point a to exit point b, with the thread tied
-    // to rest_length (mm). Returns its id, or -1 if a point is invalid.
-    // While |a - b| > rest_length the solver pulls them together.
-    int add_suture(const MaterialPoint& a, const MaterialPoint& b, double rest_length = 0.0);
-    // Re-tie an existing suture to a new length (tighter = shorter).
-    bool set_suture_rest_length(int id, double rest_length);
+    // Tie a suture from needle entry a to exit b. Each side pulls on its
+    // "bite": a strip of tissue (SutureParams::strip_width wide) from the
+    // needle hole to the nearest wound edge. The thread is tied so that at
+    // tightness 0 the wound edges just meet; tightness t shortens the loop by
+    // t x (bite a + bite b) (squeezing the tissue in it), t < 0 leaves it loose.
+    // Returns the suture id, or -1 if a point is invalid.
+    int add_suture(const MaterialPoint& a, const MaterialPoint& b, double tightness = 0.0);
+    // Re-tie an existing suture with a new tightness.
+    bool set_suture_tightness(int id, double tightness);
+    // The nodes and weights (summing to 1) of one side's bite strip
+    // (side 0 = entry, 1 = exit). For tests and drawing.
+    bool suture_strip(int id, int side, std::vector<int>& nodes, std::vector<double>& weights) const;
     bool remove_suture(int id);
     void clear_sutures();
     int suture_count() const { return static_cast<int>(sutures_.size()); }
@@ -217,13 +230,27 @@ private:
     double grab_energy(const Eigen::Vector2d& r) const;
     Eigen::Vector2d grab_force(const Eigen::Vector2d& r) const;  // d(energy)/dr
     Eigen::Matrix2d grab_stiffness(const Eigen::Vector2d& r) const;
-    struct Suture {
-        MaterialPoint a, b;
-        double rest_length = 0.0;  // mm
+    // One side of a suture: the strip of tissue between needle hole and wound edge.
+    struct Bite {
+        std::vector<int> nodes;
+        std::vector<double> weights;  // sum to 1: the strip's centre is sum w_i x_i
+        double depth = 0.0;           // needle hole to wound edge, at rest, mm
+        double centre_offset = 0.0;   // strip centre to wound edge, at rest, mm
     };
-    // Suture gap r = a(x) - b(x) is linear in x: r = sum_i c_i x_node_i.
-    // The six (node, coefficient) pairs: +weights of a, -weights of b.
-    void suture_terms(const Suture& s, std::array<int, 6>& nodes, std::array<double, 6>& coeffs) const;
+    struct Suture {
+        MaterialPoint a, b;        // needle entry and exit (the material points)
+        double tightness = 0.0;
+        Bite bite_a, bite_b;       // derived from a, b and the mesh
+        double rest_length = 0.0;  // derived from the bites and tightness
+    };
+    Bite build_bite(const MaterialPoint& entry) const;
+    void rebuild_suture(Suture& s) const;  // bites + rest length, after any change
+    Eigen::Vector2d strip_point(const Bite& b, const Eigen::VectorXd& x) const;
+    // Distance at rest from X to the nearest incision, and that nearest point.
+    double nearest_cut_point(const Eigen::Vector2d& X, Eigen::Vector2d& W) const;
+    // Suture gap r = a(x) - b(x) is linear in x: r = sum_i c_i x_node_i,
+    // with +weights of strip a and -weights of strip b.
+    void suture_terms(const Suture& s, std::vector<int>& nodes, std::vector<double>& coeffs) const;
     // The thread as a function of the gap vector r = a - b, tied to length L:
     double suture_energy(const Eigen::Vector2d& r, double L) const;
     Eigen::Vector2d suture_force(const Eigen::Vector2d& r, double L) const;      // dE/dr
@@ -252,6 +279,8 @@ private:
     Eigen::VectorXd x_;          // current positions
     Eigen::VectorXd node_area_;  // lumped area per node (1/3 of each adjacent triangle)
     std::vector<std::vector<int>> neighbours_;  // vertex -> vertices sharing an edge
+    std::vector<std::vector<int>> vertex_elements_;  // vertex -> indices into elements_
+    TriangleLocator rest_locator_;                   // point -> triangle, rest shape
     std::vector<int> boundary_nodes_;           // outer border only (incision lips are free)
     std::vector<char> fixed_;    // per dof: 1 = pinned (char, not bool: see .cpp)
     Eigen::VectorXd undermining_;  // per node, 0..1

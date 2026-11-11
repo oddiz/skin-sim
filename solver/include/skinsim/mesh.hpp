@@ -70,6 +70,7 @@ class TriangleLocator {
 public:
     // positions: 2 x N vertex positions (rest or current shape). Copied, so
     // the locator stays valid if the caller's positions change later.
+    TriangleLocator() = default;  // empty: locate() always returns -1
     TriangleLocator(const Eigen::Matrix2Xd& positions, const std::vector<Triangle>& triangles);
 
     // Index of the triangle containing p, or -1. If several qualify (p on a

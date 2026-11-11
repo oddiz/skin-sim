@@ -301,12 +301,12 @@ TEST_CASE("undermining reduces the force needed to advance skin") {
         if (undermined)  // the tissue to be advanced: left of the incision
             for (double y = -20; y <= 20; y += 2) CHECK(s.undermine_at(V(-12, y), 14.0, y == -20));
         Simulation& sim = s.simulation();
-        // Advance the left side 6 mm: a suture from 8 mm left of the
-        // incision to 2 mm right of it, tied so the edges just meet.
+        // Advance the left side 6 mm: a suture with bites of 8 and 2 mm,
+        // tied 60% tight, shortening the loop by 0.6 x 10 = 6 mm.
         MaterialPoint a, b;
         REQUIRE(sim.material_point_at(V(-8, 0), a));
         REQUIRE(sim.material_point_at(V(2, 0), b));
-        REQUIRE(sim.add_suture(a, b, 4.0) > 0);
+        REQUIRE(sim.add_suture(a, b, 0.6) > 0);
         settle(sim);
         tension[undermined] = sim.suture_info().at(0).force;
         CHECK(sim.min_area_ratio() > 0.0);

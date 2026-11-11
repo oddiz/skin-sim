@@ -89,6 +89,8 @@ public:
     // --- Sutures ---
     void set_suture_stiffness(double p_n_per_mm);
     double get_suture_stiffness() const { return suture_params_.stiffness; }
+    void set_suture_strip_width(double p_mm);
+    double get_suture_strip_width() const { return suture_params_.strip_width; }
 
     // --- Solver ---
     void set_iterations_per_frame(int p_iterations);
@@ -147,7 +149,8 @@ public:
     void clear_sutures();
     int get_suture_count() const;
     // One Dictionary per suture: id, a (entry), b (exit) in world space,
-    // force (N), tightness, slack (bool).
+    // force (N), tightness, slack (bool), loop_stress_kpa (stress along the
+    // thread in the tissue the loop holds; negative = squeezed).
     Array get_suture_info() const;
 
     // --- Info for the HUD ---

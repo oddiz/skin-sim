@@ -173,7 +173,9 @@ TEST_CASE("a suture closes an incision held open") {
     const double gap_after = (info.a - info.b).norm();
     MESSAGE("gap " << gap_before << " mm -> " << gap_after << " mm, suture tension " << info.force << " N");
     CHECK(gap_before > 2.0);
-    CHECK(gap_after < 0.1);
+    // Not exactly 0: the thread pulls on the strip of tissue in each bite,
+    // which stretches a little under ~1.8 N, as real wound edges do.
+    CHECK(gap_after < 0.3);
     CHECK(info.force > 0.1);
     CHECK(sim.min_area_ratio() > 0.0);
 }
@@ -297,9 +299,9 @@ TEST_CASE("taut suture with a tied length: gradient and Hessian match finite dif
     sp.stiffness = 3.0;
     sim.set_suture_params(sp);
     const MaterialPoint a = at(sim, V(-2.7, 1.1)), b = at(sim, V(3.4, -0.6));
-    // Tied to half the current distance: well inside the taut regime (the
-    // slack/taut switch is a kink where finite differences don't apply).
-    REQUIRE(sim.add_suture(a, b, 0.5 * (sim.position_of(a) - sim.position_of(b)).norm()) > 0);
+    // Tied 30% tight: well inside the taut regime (the slack/taut switch is
+    // a kink where finite differences don't apply).
+    REQUIRE(sim.add_suture(a, b, 0.3) > 0);
 
     // Small noise: the triangles along the incision are only 1.25 mm, and an
     // inverted one would make the energy infinite (nothing to differentiate).
@@ -329,7 +331,7 @@ TEST_CASE("a slack suture exerts no force") {
     Sheet s = vertical_cut();
     Simulation& sim = s.simulation();
     const Eigen::VectorXd before = sim.gradient(sim.dofs());
-    REQUIRE(sim.add_suture(at(sim, V(-3, 0)), at(sim, V(3, 0)), 10.0) > 0);  // 6 mm apart, 10 mm of thread
+    REQUIRE(sim.add_suture(at(sim, V(-3, 0)), at(sim, V(3, 0)), -1.0) > 0);  // 6 mm of extra thread
     CHECK((sim.gradient(sim.dofs()) - before).norm() == 0.0);
     CHECK(sim.suture_info().at(0).force == 0.0);
 }
@@ -357,7 +359,7 @@ TEST_CASE("knot tightness: edges just meet at the bite length; tighter means mor
         const MaterialPoint a = at(sim, V(-3, 0)), b = at(sim, V(3, 0));
         const double bites = sim.bite(a) + sim.bite(b);
         CHECK(bites == doctest::Approx(6.0));
-        REQUIRE(sim.add_suture(a, b, bites * (1.0 - tightness)) > 0);
+        REQUIRE(sim.add_suture(a, b, tightness) > 0);
         settle(sim);
         const double force = sim.suture_info().at(0).force;
         MESSAGE("tightness " << tightness * 100 << "%: tension " << force << " N");
@@ -372,7 +374,7 @@ TEST_CASE("a loose knot leaves a gap; re-tying closes it") {
     Sheet s = vertical_cut();
     Simulation& sim = s.simulation();
     const MaterialPoint a = at(sim, V(-3, 0)), b = at(sim, V(3, 0));
-    const int id = sim.add_suture(a, b, 9.0);  // 3 mm more thread than the bites
+    const int id = sim.add_suture(a, b, -0.5);  // loose: 3 mm more thread than the bites
     REQUIRE(id > 0);
     REQUIRE(sim.grab(0, V(6, 0)));
     sim.move_grab(0, V(14, 0));  // pull the right side away and hold
@@ -384,7 +386,7 @@ TEST_CASE("a loose knot leaves a gap; re-tying closes it") {
     const double loose_gap = (sim.position_of(lip) - sim.position_of(twin)).norm();
     const double loose_force = sim.suture_info().at(0).force;
 
-    REQUIRE(sim.set_suture_rest_length(id, 6.0));  // re-tie: edges should meet
+    REQUIRE(sim.set_suture_tightness(id, 0.0));  // re-tie: edges should meet
     settle(sim);
     const double tied_gap = (sim.position_of(lip) - sim.position_of(twin)).norm();
     const double tied_force = sim.suture_info().at(0).force;
@@ -395,9 +397,148 @@ TEST_CASE("a loose knot leaves a gap; re-tying closes it") {
     CHECK(tied_force > loose_force);
 }
 
-TEST_CASE("the tied length survives re-meshing") {
+TEST_CASE("the knot's tightness survives re-meshing") {
     Sheet s = vertical_cut();
-    REQUIRE(s.simulation().add_suture(at(s.simulation(), V(-3, 2)), at(s.simulation(), V(3, 2)), 4.5) > 0);
+    REQUIRE(s.simulation().add_suture(at(s.simulation(), V(-3, 2)), at(s.simulation(), V(3, 2)), 0.25) > 0);
     REQUIRE(s.cut_rest({V(30, -10), V(30, 10)}) > 0);
-    CHECK(s.simulation().suture_info().at(0).rest_length == 4.5);
+    CHECK(s.simulation().suture_info().at(0).tightness == 0.25);
 }
+
+// ---------------------------------------------------------------------------
+// Bite strips: distributed suture load, loop stress
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A prestressed sheet (RSTL horizontal) with a vertical incision, which
+// gapes; one suture across its middle, placed before the wound opens.
+struct ClosedWound {
+    Sheet sheet;
+    int id = -1;
+    ClosedWound(double element_size, double bite_mm, double strip_width, double tightness)
+        : sheet(SheetGeometry{60.0, 40.0, element_size}) {
+        TissueParams p;
+        p.prestretch_along = 1.10;
+        p.prestretch_across = 1.04;
+        sheet.simulation().set_params(p);
+        REQUIRE(sheet.cut_rest({V(0, -12), V(0, 12)}) > 0);
+        Simulation& sim = sheet.simulation();
+        SutureParams sp;
+        sp.strip_width = strip_width;
+        sim.set_suture_params(sp);
+        MaterialPoint a, b;
+        REQUIRE(sim.material_point_at(V(-bite_mm, 0), a));
+        REQUIRE(sim.material_point_at(V(bite_mm, 0), b));
+        id = sim.add_suture(a, b, tightness);
+        REQUIRE(id > 0);
+        settle(sim);
+    }
+    // Largest von Mises stress at vertices within r of the suture (rest).
+    double peak_near_suture(double r) const {
+        const Simulation& sim = sheet.simulation();
+        const Eigen::VectorXd vm = sim.vertex_field(Field::VonMisesStress);
+        double peak = 0.0;
+        for (int v = 0; v < sim.mesh().vertex_count(); ++v)
+            if (sim.mesh().rest_positions.col(v).norm() < r) peak = std::max(peak, vm[v]);
+        return peak;
+    }
+    SutureInfo info() const { return sheet.simulation().suture_info().at(0); }
+};
+
+}  // namespace
+
+// Where the thread pulls on the tissue (around the needle holes), a load
+// spread over a strip gives a finite stress that settles as the mesh is
+// refined; a near-point load (a 0.05 mm strip, like the old model) keeps
+// rising. (Right at the wound edge, where the closed point meets the still
+// gaping wound on either side, the edges form a sharp notch: the stress there
+// is singular in any continuum model, so it is not used for this check.)
+TEST_CASE("bite strips: stress around the needle holes converges as the mesh is refined") {
+    auto needle_peak = [](const ClosedWound& w) {
+        const Simulation& sim = w.sheet.simulation();
+        const Eigen::VectorXd vm = sim.vertex_field(Field::VonMisesStress);
+        double peak = 0.0;
+        for (int v = 0; v < sim.mesh().vertex_count(); ++v)
+            if ((sim.mesh().rest_positions.col(v) - V(-3.5, 0)).norm() < 1.2) peak = std::max(peak, vm[v]);
+        return peak;
+    };
+    double strip[2], thin[2], loop[2], tension[2];
+    const double sizes[2] = {1.0, 0.7};
+    for (int i = 0; i < 2; ++i) {
+        const ClosedWound w(sizes[i], 3.0, 2.0, 0.0);
+        strip[i] = needle_peak(w);
+        loop[i] = w.info().loop_stress;
+        tension[i] = w.info().force;
+        thin[i] = needle_peak(ClosedWound(sizes[i], 3.0, 0.05, 0.0));
+        MESSAGE("element " << sizes[i] << " mm: needle-hole peak " << strip[i] * 1000 << " kPa (2 mm strips), "
+                           << thin[i] * 1000 << " kPa (0.05 mm strips); loop stress " << loop[i] * 1000
+                           << " kPa, tension " << tension[i] << " N");
+    }
+    CHECK(std::abs(strip[1] / strip[0] - 1.0) < 0.08);
+    CHECK(thin[1] / thin[0] > 1.10);  // the near-point load does not converge
+    CHECK(loop[1] == doctest::Approx(loop[0]).epsilon(0.05));
+    CHECK(tension[1] == doctest::Approx(tension[0]).epsilon(0.03));
+}
+
+TEST_CASE("bite strips: wider bites spread the load and lower the stress") {
+    double prev_peak = 1e9, prev_loop = 1e9;
+    for (double bite : {1.5, 3.0, 5.0}) {
+        CAPTURE(bite);
+        const ClosedWound w(1.6, bite, 2.0, 0.0);
+        const double peak = w.peak_near_suture(bite + 3.0), loop = w.info().loop_stress;
+        MESSAGE("bites " << bite << " mm: tension " << w.info().force << " N, peak " << peak * 1000
+                         << " kPa, loop stress " << loop * 1000 << " kPa");
+        CHECK(peak < prev_peak);
+        CHECK(loop < prev_loop);
+        prev_peak = peak;
+        prev_loop = loop;
+    }
+}
+
+// NOTE: the lips have no contact yet. A knot tied tighter than "edges
+// touching" makes them overlap rather than press together, so the tissue in
+// the loop is stretched, not squeezed. This test pins the current behaviour.
+TEST_CASE("bite strips: loop stress is zero for a just-closing knot and rises when tighter") {
+    double previous = -1.0;
+    for (double t : {0.0, 0.2, 0.4}) {
+        CAPTURE(t);
+        Sheet s = vertical_cut();
+        Simulation& sim = s.simulation();
+        REQUIRE(sim.add_suture(at(sim, V(-3, 0)), at(sim, V(3, 0)), t) > 0);
+        settle(sim);
+        const double loop = sim.suture_info().at(0).loop_stress;
+        MESSAGE("no load, tightness " << t * 100 << "%: loop stress " << loop * 1000 << " kPa");
+        if (t == 0.0) CHECK(std::abs(loop) < 1e-9);
+        CHECK(loop > previous);
+        previous = loop;
+    }
+}
+
+TEST_CASE("bite strips stay on their own side of the incision") {
+    Sheet s = vertical_cut();
+    Simulation& sim = s.simulation();
+    const int id = sim.add_suture(at(sim, V(-3, 1)), at(sim, V(3, 1)), 0.0);
+    REQUIRE(id > 0);
+    const TriMesh& m = sim.mesh();
+    for (int side = 0; side < 2; ++side) {
+        std::vector<int> nodes;
+        std::vector<double> w;
+        REQUIRE(sim.suture_strip(id, side, nodes, w));
+        CHECK(nodes.size() > 4);
+        double total = 0.0;
+        for (double x : w) total += x;
+        CHECK(total == doctest::Approx(1.0));
+        const double sign = side == 0 ? -1.0 : 1.0;
+        for (int v : nodes) {
+            CHECK(sign * m.rest_positions(0, v) >= -1e-9);  // never on the far side
+            if (std::abs(m.rest_positions(0, v)) > 1e-9) continue;
+            // On the incision: must be this side's copy (its triangles lie on this side).
+            bool own = false;
+            for (const Triangle& t : m.triangles)
+                if (t[0] == v || t[1] == v || t[2] == v)
+                    own = own || sign * (m.rest_positions(0, t[0]) + m.rest_positions(0, t[1]) + m.rest_positions(0, t[2])) > 0.0;
+            CHECK(own);
+        }
+    }
+}
+

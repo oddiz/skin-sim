@@ -65,7 +65,14 @@ stroke starting within ~2 mm of an existing cut snaps onto it, so flap limbs joi
 Knot tightness is relative to the two bites (entry and exit distances from the
 incision): at 0% the thread is exactly their sum, so the edges just meet; +20%
 ties it 20% shorter, squeezing the tissue in the loop; negative leaves it loose.
-Each suture shows its tension in newtons (green to red up to 3 N, grey = slack). The heatmap
+Each bite pulls on a strip of dermis from the needle hole to the wound edge
+("Bite strip width", default 2 mm), not on a single point, so the stress around
+the needle holes is finite and settles as the mesh is refined.
+Each suture shows its tension in newtons (green to red up to 3 N, grey = slack)
+and its loop stress: the stress along the thread in the tissue the loop holds
+(+ stretched, - squeezed). Known limitation: the lips have no contact yet, so a
+knot tied tighter than "edges touching" makes them overlap instead of pressing
+together, and the loop is never squeezed. The heatmap
 shows the Cauchy (true) stress in the skin; the colour scale is set by the
 "Stress scale" slider so that different closures can be compared on one scale.
 Stress right at a suture or forceps point is a point-load peak that grows as

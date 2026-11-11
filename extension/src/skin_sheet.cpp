@@ -119,6 +119,8 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_pin_boundary"), &SkinSheet::get_pin_boundary);
     ClassDB::bind_method(D_METHOD("set_suture_stiffness", "n_per_mm"), &SkinSheet::set_suture_stiffness);
     ClassDB::bind_method(D_METHOD("get_suture_stiffness"), &SkinSheet::get_suture_stiffness);
+    ClassDB::bind_method(D_METHOD("set_suture_strip_width", "mm"), &SkinSheet::set_suture_strip_width);
+    ClassDB::bind_method(D_METHOD("get_suture_strip_width"), &SkinSheet::get_suture_strip_width);
     ClassDB::bind_method(D_METHOD("set_heatmap", "mode"), &SkinSheet::set_heatmap);
     ClassDB::bind_method(D_METHOD("get_heatmap"), &SkinSheet::get_heatmap);
     ClassDB::bind_method(D_METHOD("set_heatmap_range_kpa", "kpa"), &SkinSheet::set_heatmap_range_kpa);
@@ -212,6 +214,8 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "suture_stiffness", PROPERTY_HINT_RANGE,
                               "0.1,200,0.1,exp,suffix:N/mm"),
                  "set_suture_stiffness", "get_suture_stiffness");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "suture_strip_width", PROPERTY_HINT_RANGE, "0.1,6,0.1,suffix:mm"),
+                 "set_suture_strip_width", "get_suture_strip_width");
 
     ADD_GROUP("Solver", "");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "iterations_per_frame", PROPERTY_HINT_RANGE, "1,50,1"),
@@ -373,6 +377,11 @@ void SkinSheet::set_suture_stiffness(double p_n_per_mm) {
     push_params();
 }
 
+void SkinSheet::set_suture_strip_width(double p_mm) {
+    suture_params_.strip_width = p_mm;
+    push_params();
+}
+
 void SkinSheet::set_heatmap(int p_mode) {
     heatmap_ = (p_mode < HEATMAP_OFF || p_mode > HEATMAP_AREA_CHANGE) ? HEATMAP_OFF : p_mode;
     update_skin_material();
@@ -481,25 +490,21 @@ void SkinSheet::clear_cuts() {
     topology_changed();
 }
 
-// Tightness <-> tied length. The thread's natural length is the sum of the
-// two bites (entry and exit distance from the incision): tied to exactly
-// that, the edges just meet. Tightness t ties it to (1 - t) times that.
+// Tightness: 0 = the wound edges just meet; t shortens the loop by
+// t x (bite a + bite b). The solver turns it into a tied length between the
+// two bite strips (see Simulation::add_suture).
 int SkinSheet::suture(const Vector3& p_entry, const Vector3& p_exit, double p_tightness) {
     skinsim::Simulation* s = sim();
     skinsim::MaterialPoint a, b;
     if (!s || !s->material_point_at(world_to_sheet(p_entry), a) || !s->material_point_at(world_to_sheet(p_exit), b))
         return -1;
     if ((s->position_of(a) - s->position_of(b)).norm() < 1e-6) return -1;  // both ends on the same spot
-    const double bites = s->bite(a) + s->bite(b);
-    return s->add_suture(a, b, bites * (1.0 - p_tightness));
+    return s->add_suture(a, b, p_tightness);
 }
 
 bool SkinSheet::set_suture_tightness(int p_id, double p_tightness) {
     skinsim::Simulation* s = sim();
-    if (!s) return false;
-    for (const skinsim::SutureInfo& su : s->suture_info())
-        if (su.id == p_id) return s->set_suture_rest_length(p_id, su.bites * (1.0 - p_tightness));
-    return false;
+    return s && s->set_suture_tightness(p_id, p_tightness);
 }
 
 bool SkinSheet::is_on_skin(const Vector3& p_world_point) const {
@@ -551,8 +556,9 @@ Array SkinSheet::get_suture_info() const {
         d["a"] = to_global(to_godot(su.a));
         d["b"] = to_global(to_godot(su.b));
         d["force"] = su.force;
-        d["tightness"] = su.bites > 0.0 ? 1.0 - su.rest_length / su.bites : 0.0;
+        d["tightness"] = su.tightness;
         d["slack"] = su.force == 0.0;
+        d["loop_stress_kpa"] = su.loop_stress * 1000.0;
         out.push_back(d);
     }
     return out;

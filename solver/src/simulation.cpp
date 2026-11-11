@@ -8,6 +8,7 @@
 #include <Eigen/LU>  // provides Matrix::inverse(); Eigen/Core only declares it
 #include <Eigen/SparseCholesky>
 
+#include "skinsim/cuts.hpp"  // point_segment_distance
 #include "skinsim/material.hpp"
 #include "skinsim/mesh.hpp"
 
@@ -51,6 +52,7 @@ TissueParams sanitized(TissueParams p) {
 SutureParams sanitized(SutureParams p) {
     // Capped so a typo can't wreck the conditioning of the stiffness matrix.
     p.stiffness = std::min(at_least(p.stiffness, 1e-6), 1e4);
+    p.strip_width = std::min(at_least(p.strip_width, 0.05), 20.0);
     return p;
 }
 
@@ -112,6 +114,11 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
 
         for (int a = 0; a < 3; ++a) node_area_[t[a]] += area / 3.0;
     }
+
+    rest_locator_ = TriangleLocator(mesh_.rest_positions, mesh_.triangles);
+    vertex_elements_.assign(n, {});
+    for (int ei = 0; ei < static_cast<int>(elements_.size()); ++ei)
+        for (int v : elements_[ei].v) vertex_elements_[v].push_back(ei);
 
     const std::vector<Edge> edges = unique_edges(mesh_);
     neighbours_.assign(n, {});
@@ -243,7 +250,11 @@ void Simulation::set_grab_params(const GrabParams& params) {
 }
 
 void Simulation::set_suture_params(const SutureParams& params) {
-    suture_params_ = sanitized(params);
+    const SutureParams p = sanitized(params);
+    const bool strips_changed = p.strip_width != suture_params_.strip_width;
+    suture_params_ = p;
+    if (strips_changed)
+        for (auto& [id, su] : sutures_) rebuild_suture(su);
     converged_ = false;
 }
 
@@ -463,7 +474,8 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
         E += grab_energy(grab_point(g, x) - g.target);
     }
 
-    for (const auto& [id, su] : sutures_) E += suture_energy(point_at(su.a, x) - point_at(su.b, x), su.rest_length);
+    for (const auto& [id, su] : sutures_)
+        E += suture_energy(strip_point(su.bite_a, x) - strip_point(su.bite_b, x), su.rest_length);
     return E;
 }
 
@@ -494,13 +506,13 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
     }
 
     for (const auto& [id, su] : sutures_) {
-        // The suture pulls a towards b and b towards a with force k r,
-        // shared among each end's nodes by their weights.
-        std::array<int, 6> nodes;
-        std::array<double, 6> c;
+        // The thread pulls each bite strip towards the other, the force
+        // shared along the strip by its weights (a distributed load).
+        std::vector<int> nodes;
+        std::vector<double> c;
         suture_terms(su, nodes, c);
-        const Eigen::Vector2d f = suture_force(point_at(su.a, x) - point_at(su.b, x), su.rest_length);
-        for (int i = 0; i < 6; ++i) g.segment<2>(2 * nodes[i]) += c[i] * f;
+        const Eigen::Vector2d f = suture_force(strip_point(su.bite_a, x) - strip_point(su.bite_b, x), su.rest_length);
+        for (size_t i = 0; i < nodes.size(); ++i) g.segment<2>(2 * nodes[i]) += c[i] * f;
     }
     return g;
 }
@@ -552,15 +564,15 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, boo
 
     for (const auto& [id, su] : sutures_) {
         // r = sum c_i x_i, so d2E/dx_i dx_j = c_i c_j K (K = 2x2 thread
-        // stiffness): a small 12 x 12 block (6 nodes), cheap to assemble
-        // directly, unlike grab patches.
-        std::array<int, 6> nodes;
-        std::array<double, 6> c;
+        // stiffness). This couples every node of both strips (a dense block),
+        // but a strip has only ~10-30 nodes, so it is assembled directly.
+        std::vector<int> nodes;
+        std::vector<double> c;
         suture_terms(su, nodes, c);
-        const Eigen::Matrix2d K = suture_stiffness(point_at(su.a, x) - point_at(su.b, x), su.rest_length);
+        const Eigen::Matrix2d K = suture_stiffness(strip_point(su.bite_a, x) - strip_point(su.bite_b, x), su.rest_length);
         if (K.isZero()) continue;  // slack thread: no stiffness
-        for (int i = 0; i < 6; ++i)
-            for (int j = 0; j < 6; ++j)
+        for (size_t i = 0; i < nodes.size(); ++i)
+            for (size_t j = 0; j < nodes.size(); ++j)
                 for (int d = 0; d < 2; ++d)
                     for (int e = 0; e < 2; ++e)
                         trip.emplace_back(2 * nodes[i] + d, 2 * nodes[j] + e, c[i] * c[j] * K(d, e));
@@ -674,15 +686,128 @@ Eigen::Vector2d Simulation::position_of(const MaterialPoint& p) const {
     return valid(p) ? point_at(p, x_) : Eigen::Vector2d::Zero();
 }
 
-void Simulation::suture_terms(const Suture& su, std::array<int, 6>& nodes, std::array<double, 6>& c) const {
-    const Triangle& ta = mesh_.triangles[su.a.triangle];
-    const Triangle& tb = mesh_.triangles[su.b.triangle];
-    for (int k = 0; k < 3; ++k) {
-        nodes[k] = ta[k];
-        c[k] = su.a.weights[k];
-        nodes[3 + k] = tb[k];
-        c[3 + k] = -su.b.weights[k];
+void Simulation::suture_terms(const Suture& su, std::vector<int>& nodes, std::vector<double>& c) const {
+    nodes = su.bite_a.nodes;
+    c = su.bite_a.weights;
+    for (size_t i = 0; i < su.bite_b.nodes.size(); ++i) {
+        nodes.push_back(su.bite_b.nodes[i]);
+        c.push_back(-su.bite_b.weights[i]);
     }
+}
+
+Eigen::Vector2d Simulation::strip_point(const Bite& b, const Eigen::VectorXd& x) const {
+    Eigen::Vector2d p = Eigen::Vector2d::Zero();
+    for (size_t i = 0; i < b.nodes.size(); ++i) p += b.weights[i] * x.segment<2>(2 * b.nodes[i]);
+    return p;
+}
+
+double Simulation::nearest_cut_point(const Eigen::Vector2d& X, Eigen::Vector2d& W) const {
+    W = X;
+    double best = kInf;
+    for (const Edge& e : mesh_.cut_edges) {
+        const Eigen::Vector2d A = rest_.segment<2>(2 * e[0]), AB = rest_.segment<2>(2 * e[1]) - A;
+        const double len2 = AB.squaredNorm();
+        const double t = len2 > 0.0 ? std::clamp((X - A).dot(AB) / len2, 0.0, 1.0) : 0.0;
+        const double d = (A + t * AB - X).norm();
+        if (d < best) {
+            best = d;
+            W = A + t * AB;
+        }
+    }
+    return best == kInf ? 0.0 : best;
+}
+
+// The bite of one side: the strip of tissue from the needle hole X to the
+// nearest wound edge point W (at rest), strip_width wide, with rounded ends.
+// The thread's pull is spread over that area as a distributed load q, with
+// a bell-shaped profile across the strip (full on the centre line, fading to
+// zero at the sides). In finite elements a distributed load reaches the nodes
+// as the "consistent load vector"  f_i = integral of N_i q dA,  N_i being the
+// node's shape function. It is computed here by sampling the strip densely
+// (much finer than the elements): each sample finds its triangle and shares
+// its weight among the three corners by its barycentric coordinates, which
+// are exactly the N_i. Unlike picking "nodes inside the strip", this works at
+// any mesh size and converges as the mesh is refined.
+//
+// Samples must stay on the needle's side of the incision (near W the strip
+// touches the cut, where both lips share rest positions). So only triangles
+// reachable from the needle hole along mesh edges, without crossing the cut,
+// may receive load.
+Simulation::Bite Simulation::build_bite(const MaterialPoint& entry) const {
+    Bite bite;
+    const Eigen::Vector2d X = point_at(entry, rest_);
+    Eigen::Vector2d W;
+    bite.depth = nearest_cut_point(X, W);
+    const double hw = 0.5 * suture_params_.strip_width;
+
+    // 1. Nodes reachable from the needle hole without crossing an incision,
+    //    within reach of the strip.
+    const int n = mesh_.vertex_count();
+    const double reach = hw + 1.5 * mean_edge_;
+    std::vector<char> reachable(n, 0);
+    const Triangle& start = mesh_.triangles[entry.triangle];
+    std::vector<int> queue(start.begin(), start.end());
+    for (int v : queue) reachable[v] = 1;
+    for (size_t qi = 0; qi < queue.size(); ++qi) {
+        const int i = queue[qi];
+        if (point_segment_distance(rest_.segment<2>(2 * i), X, W) > reach) continue;
+        for (int j : neighbours_[i])
+            if (!reachable[j]) {
+                reachable[j] = 1;
+                queue.push_back(j);
+            }
+    }
+
+    // 2. Sample the strip on a fine grid aligned with it.
+    const Eigen::Vector2d axis = (bite.depth > 1e-9) ? Eigen::Vector2d((W - X) / bite.depth) : Eigen::Vector2d(1, 0);
+    const Eigen::Vector2d side(-axis.y(), axis.x());
+    const double ds = hw / 6.0;
+    std::map<int, double> load;  // node -> weight
+    const int nu = static_cast<int>(std::ceil((bite.depth + 2.0 * hw) / ds));
+    const int nv = static_cast<int>(std::ceil(2.0 * hw / ds));
+    for (int iu = 0; iu < nu; ++iu) {
+        for (int iv = 0; iv < nv; ++iv) {
+            // Cell centres, from hw behind the needle hole to hw past W.
+            const double u = -hw + (iu + 0.5) * ds, v = -hw + (iv + 0.5) * ds;
+            const Eigen::Vector2d p = X + u * axis + v * side;
+            const double d = point_segment_distance(p, X, W) / hw;
+            if (d >= 1.0) continue;
+            const double q = (1.0 - d * d) * (1.0 - d * d);  // load profile
+            Eigen::Vector3d w;
+            const int t = rest_locator_.locate(p, &w, 1e-9);
+            if (t < 0) continue;  // off the sheet, or in the gap of an incision
+            const Triangle& tri = mesh_.triangles[t];
+            if (!reachable[tri[0]] || !reachable[tri[1]] || !reachable[tri[2]]) continue;  // other lip
+            for (int k = 0; k < 3; ++k) load[tri[k]] += q * w[k];
+        }
+    }
+
+    double total = 0.0;
+    for (const auto& [node, w] : load)
+        if (w > 0.0) {
+            bite.nodes.push_back(node);
+            bite.weights.push_back(w);
+            total += w;
+        }
+    if (bite.nodes.empty() || !(total > 0.0)) {
+        // Nothing sampled (a strip narrower than rounding, say): fall back to
+        // the needle hole itself.
+        bite.nodes.assign(start.begin(), start.end());
+        bite.weights = {entry.weights[0], entry.weights[1], entry.weights[2]};
+        total = 1.0;
+    }
+    for (double& w : bite.weights) w /= total;
+    bite.centre_offset = (strip_point(bite, rest_) - W).norm();
+    return bite;
+}
+
+void Simulation::rebuild_suture(Suture& s) const {
+    s.bite_a = build_bite(s.a);
+    s.bite_b = build_bite(s.b);
+    // With the wound edges touching, the two strip centres sit their offsets
+    // apart (straight across the wound). Tying tighter shortens the loop.
+    s.rest_length = std::max(
+        0.0, s.bite_a.centre_offset + s.bite_b.centre_offset - s.tightness * (s.bite_a.depth + s.bite_b.depth));
 }
 
 // The thread, as a function of the gap r between its two ends, tied to
@@ -716,19 +841,34 @@ Eigen::Matrix2d Simulation::suture_stiffness(const Eigen::Vector2d& r, double L)
     return k * (along + (1.0 - L / s) * (Eigen::Matrix2d::Identity() - along));
 }
 
-int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b, double rest_length) {
-    if (!valid(a) || !valid(b) || !std::isfinite(rest_length)) return -1;
+int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b, double tightness) {
+    if (!valid(a) || !valid(b) || !std::isfinite(tightness)) return -1;
+    Suture s;
+    s.a = a;
+    s.b = b;
+    s.tightness = tightness;
+    rebuild_suture(s);
     const int id = next_suture_id_++;
-    sutures_[id] = Suture{a, b, std::max(rest_length, 0.0)};
+    sutures_[id] = std::move(s);
     converged_ = false;
     return id;
 }
 
-bool Simulation::set_suture_rest_length(int id, double rest_length) {
+bool Simulation::set_suture_tightness(int id, double tightness) {
     auto it = sutures_.find(id);
-    if (it == sutures_.end() || !std::isfinite(rest_length)) return false;
-    it->second.rest_length = std::max(rest_length, 0.0);
+    if (it == sutures_.end() || !std::isfinite(tightness)) return false;
+    it->second.tightness = tightness;
+    rebuild_suture(it->second);
     converged_ = false;
+    return true;
+}
+
+bool Simulation::suture_strip(int id, int side, std::vector<int>& nodes, std::vector<double>& weights) const {
+    auto it = sutures_.find(id);
+    if (it == sutures_.end()) return false;
+    const Bite& b = side == 0 ? it->second.bite_a : it->second.bite_b;
+    nodes = b.nodes;
+    weights = b.weights;
     return true;
 }
 
@@ -749,16 +889,9 @@ bool Simulation::material_point_at(const Eigen::Vector2d& point, MaterialPoint& 
 }
 
 double Simulation::bite(const MaterialPoint& p) const {
-    if (!valid(p) || mesh_.cut_edges.empty()) return 0.0;
-    const Eigen::Vector2d X = point_at(p, rest_);
-    double best = kInf;
-    for (const Edge& e : mesh_.cut_edges) {
-        const Eigen::Vector2d A = rest_.segment<2>(2 * e[0]), AB = rest_.segment<2>(2 * e[1]) - A;
-        const double len2 = AB.squaredNorm();
-        const double t = len2 > 0.0 ? std::clamp((X - A).dot(AB) / len2, 0.0, 1.0) : 0.0;
-        best = std::min(best, (A + t * AB - X).norm());
-    }
-    return best;
+    if (!valid(p)) return 0.0;
+    Eigen::Vector2d W;
+    return nearest_cut_point(point_at(p, rest_), W);
 }
 
 bool Simulation::remove_suture(int id) {
@@ -779,9 +912,33 @@ std::vector<SutureInfo> Simulation::suture_info() const {
         info.id = id;
         info.a = point_at(su.a, x_);
         info.b = point_at(su.b, x_);
-        info.force = suture_force(info.a - info.b, su.rest_length).norm();
+        const Eigen::Vector2d ca = strip_point(su.bite_a, x_), cb = strip_point(su.bite_b, x_);
+        info.force = suture_force(ca - cb, su.rest_length).norm();
+        info.tightness = su.tightness;
         info.rest_length = su.rest_length;
-        info.bites = bite(su.a) + bite(su.b);
+        info.bites = su.bite_a.depth + su.bite_b.depth;
+
+        // Loop stress: the Cauchy stress component along the thread,
+        // n^T sigma n, averaged over the elements of both bite strips with the
+        // strips' own weights (each node shares its weight among its elements).
+        // An average rather than a peak: it does not depend on the mesh.
+        Eigen::Vector2d dir = cb - ca;
+        if (dir.norm() < 1e-9) dir = info.b - info.a;
+        const Eigen::Vector2d nrm = dir.norm() > 1e-12 ? Eigen::Vector2d(dir.normalized()) : Eigen::Vector2d(1, 0);
+        std::map<int, double> element_weight;
+        for (const Bite* b : {&su.bite_a, &su.bite_b})
+            for (size_t i = 0; i < b->nodes.size(); ++i) {
+                const auto& els = vertex_elements_[b->nodes[i]];
+                for (int ei : els) element_weight[ei] += b->weights[i] / static_cast<double>(els.size());
+            }
+        double sum = 0.0, wsum = 0.0;
+        for (const auto& [ei, w] : element_weight) {
+            const Eigen::Matrix2d F = deformation_gradient(elements_[ei], x_);
+            const Eigen::Matrix2d sigma = element_piola(F) * F.transpose();
+            sum += w * nrm.dot(sigma * nrm);
+            wsum += w;
+        }
+        info.loop_stress = wsum > 0.0 ? sum / wsum : 0.0;
         out.push_back(info);
     }
     return out;
@@ -872,8 +1029,10 @@ void Simulation::adopt_sutures(const Simulation& other) {
     };
     for (const auto& [id, su] : other.sutures_) {
         Suture copy;
-        copy.rest_length = su.rest_length;
-        if (relocate(su.a, copy.a) && relocate(su.b, copy.b)) sutures_[id] = copy;
+        copy.tightness = su.tightness;
+        if (!relocate(su.a, copy.a) || !relocate(su.b, copy.b)) continue;
+        rebuild_suture(copy);  // new mesh: new bite strips, same tissue
+        sutures_[id] = std::move(copy);
     }
     next_suture_id_ = std::max(next_suture_id_, other.next_suture_id_);
     converged_ = false;

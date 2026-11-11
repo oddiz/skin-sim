@@ -85,6 +85,13 @@ struct SutureParams {
     // Stiffness of the thread plus the tissue it bites into. 20 N/mm: at a
     // typical 1 N tension, the thread is only 0.05 mm longer than tied.
     double stiffness = 20.0;  // N/mm
+
+    // Width of the strip of dermis each bite pulls on (the bite runs from the
+    // needle hole to the wound edge). A real thread is ~0.15 mm across, but the
+    // dermis around it shares the load, and a 2D membrane cannot resolve a
+    // thread anyway. A finite width keeps the stress finite and, because the
+    // load is integrated over the elements, independent of the mesh.
+    double strip_width = 2.0;  // mm
 };
 
 }  // namespace skinsim
