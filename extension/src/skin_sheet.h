@@ -24,6 +24,7 @@
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_color_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
 
 #include "skinsim/params.hpp"
@@ -68,6 +69,10 @@ public:
     void set_max_pull_force(double p_newton);
     double get_max_pull_force() const { return grab_params_.max_force; }
 
+    // --- Sutures ---
+    void set_suture_stiffness(double p_n_per_mm);
+    double get_suture_stiffness() const { return suture_params_.stiffness; }
+
     // --- Solver ---
     void set_iterations_per_frame(int p_iterations);
     int get_iterations_per_frame() const { return iterations_per_frame_; }
@@ -77,6 +82,13 @@ public:
     bool get_show_wireframe() const { return show_wireframe_; }
     void set_skin_color(const Color& p_color);
     Color get_skin_color() const { return skin_color_; }
+    // Heatmap: 0 = off, 1 = max principal stress, 2 = von Mises stress,
+    // 3 = area change. The range sets the colour scale for the stresses (kPa);
+    // area change always spans 1/1.5 .. 1.5x.
+    void set_heatmap(int p_mode);
+    int get_heatmap() const { return heatmap_; }
+    void set_heatmap_range_kpa(double p_kpa);
+    double get_heatmap_range_kpa() const { return heatmap_range_kpa_; }
 
     // --- Interaction (positions in Godot world space) ---
     bool grab(int p_id, const Vector3& p_world_point);
@@ -93,12 +105,28 @@ public:
     void clear_cuts();
     int get_cut_count() const { return sheet_ ? sheet_->cut_count() : 0; }
 
+    // --- Sutures (world-space points; max distance from a lip in mm) ---
+    // From the lip point nearest p_from to the lip point nearest p_to.
+    // Returns the suture id, or -1 if either point is not near a lip.
+    int suture(const Vector3& p_from, const Vector3& p_to, double p_max_distance_mm);
+    // Straight across: from the lip point nearest p_point to its counterpart
+    // on the opposite lip (the point it was joined to before the cut).
+    int suture_across(const Vector3& p_point, double p_max_distance_mm);
+    bool remove_suture(int p_id);
+    void clear_sutures();
+    int get_suture_count() const;
+    // One Dictionary per suture: id, a, b (world space), force (N).
+    Array get_suture_info() const;
+
     // --- Info for the HUD ---
     int get_vertex_count() const { return mesh_.vertex_count(); }
     int get_triangle_count() const { return mesh_.triangle_count(); }
     String get_solver_info() const;
     Dictionary get_step_info() const;
     double get_last_cut_ms() const { return last_cut_ms_; }
+    // For drawing a colour bar: title, colors (PackedColorArray, low to high),
+    // low/high labels, and the current extreme value as text.
+    Dictionary get_heatmap_legend() const;
     // One Dictionary per active grab: point/target (world space), force (N),
     // force_limited (bool), radius (mm).
     Array get_grab_info() const;
@@ -113,6 +141,8 @@ private:
     void update_render_mesh();       // copy current positions into the ArrayMesh
     void ensure_render_objects();
     Eigen::Vector2d world_to_sheet(const Vector3& p_world) const;
+    Color heat_color(double p_value) const;  // colour scale of the current heatmap mode
+    void update_skin_material();
     // The sheet's current simulation. Cutting replaces it, so never keep this
     // pointer across a cut: call sim() again.
     skinsim::Simulation* sim() const { return sheet_ ? &sheet_->simulation() : nullptr; }
@@ -122,9 +152,12 @@ private:
     double element_size_ = 2.5;
     skinsim::TissueParams params_;      // the one struct of tissue parameters
     skinsim::GrabParams grab_params_;   // how the user's finger acts
+    skinsim::SutureParams suture_params_;
     int iterations_per_frame_ = 5;
     bool show_wireframe_ = true;
     Color skin_color_ = Color(0.85, 0.64, 0.53);
+    int heatmap_ = 0;
+    double heatmap_range_kpa_ = 50.0;
 
     // Cached copies of the mesh topology: it only changes when cutting.
     skinsim::TriMesh mesh_;

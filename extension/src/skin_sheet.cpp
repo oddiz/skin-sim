@@ -1,5 +1,7 @@
 #include "skin_sheet.h"
 
+#include <cmath>
+
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
@@ -24,6 +26,30 @@ constexpr real_t kWoundBedDepth = 0.5f;  // mm
 Vector3 to_godot(const Eigen::Vector2d& p, real_t lift = 0.0f) {
     return Vector3(static_cast<real_t>(p.x()), lift, static_cast<real_t>(-p.y()));
 }
+
+// Heatmap modes, matching the `heatmap` property's enum hint.
+enum HeatmapMode { HEATMAP_OFF = 0, HEATMAP_MAX_PRINCIPAL, HEATMAP_VON_MISES, HEATMAP_AREA_CHANGE };
+
+// Area change heatmap spans 1/kAreaRange .. kAreaRange (log scale).
+constexpr double kAreaRange = 1.5;
+
+// Piecewise-linear colour scale through evenly spaced stops; t in [0, 1].
+Color ramp(const Color* stops, int count, double t) {
+    t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+    const double f = t * (count - 1);
+    const int i = f >= count - 1 ? count - 2 : static_cast<int>(f);
+    return stops[i].lerp(stops[i + 1], static_cast<real_t>(f - i));
+}
+
+// Diverging blue-white-red (after Moreland's "cool to warm"): for signed
+// quantities, compression/shrinking blue, tension/stretching red. Pale
+// in the middle so "nothing happening" reads as neutral.
+const Color kDiverging[] = {Color(0.23, 0.30, 0.75), Color(0.55, 0.69, 0.99), Color(0.87, 0.87, 0.87),
+                            Color(0.96, 0.60, 0.48), Color(0.71, 0.02, 0.15)};
+// Sequential pale yellow -> dark red (after ColorBrewer "YlOrRd"): for
+// magnitudes. Monotone in lightness, so it also reads in greyscale.
+const Color kSequential[] = {Color(1.0, 1.0, 0.80), Color(0.996, 0.85, 0.46), Color(0.99, 0.55, 0.24),
+                             Color(0.89, 0.10, 0.11), Color(0.50, 0.0, 0.15)};
 
 }  // namespace
 
@@ -53,6 +79,12 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_grab_stiffness"), &SkinSheet::get_grab_stiffness);
     ClassDB::bind_method(D_METHOD("set_pin_boundary", "pin"), &SkinSheet::set_pin_boundary);
     ClassDB::bind_method(D_METHOD("get_pin_boundary"), &SkinSheet::get_pin_boundary);
+    ClassDB::bind_method(D_METHOD("set_suture_stiffness", "n_per_mm"), &SkinSheet::set_suture_stiffness);
+    ClassDB::bind_method(D_METHOD("get_suture_stiffness"), &SkinSheet::get_suture_stiffness);
+    ClassDB::bind_method(D_METHOD("set_heatmap", "mode"), &SkinSheet::set_heatmap);
+    ClassDB::bind_method(D_METHOD("get_heatmap"), &SkinSheet::get_heatmap);
+    ClassDB::bind_method(D_METHOD("set_heatmap_range_kpa", "kpa"), &SkinSheet::set_heatmap_range_kpa);
+    ClassDB::bind_method(D_METHOD("get_heatmap_range_kpa"), &SkinSheet::get_heatmap_range_kpa);
     ClassDB::bind_method(D_METHOD("set_iterations_per_frame", "n"), &SkinSheet::set_iterations_per_frame);
     ClassDB::bind_method(D_METHOD("get_iterations_per_frame"), &SkinSheet::get_iterations_per_frame);
     ClassDB::bind_method(D_METHOD("set_show_wireframe", "show"), &SkinSheet::set_show_wireframe);
@@ -70,6 +102,13 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("clear_cuts"), &SkinSheet::clear_cuts);
     ClassDB::bind_method(D_METHOD("get_cut_count"), &SkinSheet::get_cut_count);
     ClassDB::bind_method(D_METHOD("get_last_cut_ms"), &SkinSheet::get_last_cut_ms);
+    ClassDB::bind_method(D_METHOD("suture", "from", "to", "max_distance_mm"), &SkinSheet::suture);
+    ClassDB::bind_method(D_METHOD("suture_across", "point", "max_distance_mm"), &SkinSheet::suture_across);
+    ClassDB::bind_method(D_METHOD("remove_suture", "id"), &SkinSheet::remove_suture);
+    ClassDB::bind_method(D_METHOD("clear_sutures"), &SkinSheet::clear_sutures);
+    ClassDB::bind_method(D_METHOD("get_suture_count"), &SkinSheet::get_suture_count);
+    ClassDB::bind_method(D_METHOD("get_suture_info"), &SkinSheet::get_suture_info);
+    ClassDB::bind_method(D_METHOD("get_heatmap_legend"), &SkinSheet::get_heatmap_legend);
 
     ClassDB::bind_method(D_METHOD("get_vertex_count"), &SkinSheet::get_vertex_count);
     ClassDB::bind_method(D_METHOD("get_triangle_count"), &SkinSheet::get_triangle_count);
@@ -111,6 +150,11 @@ void SkinSheet::_bind_methods() {
                               "0.1,50,0.1,exp,suffix:N"),
                  "set_max_pull_force", "get_max_pull_force");
 
+    ADD_GROUP("Sutures", "");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "suture_stiffness", PROPERTY_HINT_RANGE,
+                              "0.1,200,0.1,exp,suffix:N/mm"),
+                 "set_suture_stiffness", "get_suture_stiffness");
+
     ADD_GROUP("Solver", "");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "iterations_per_frame", PROPERTY_HINT_RANGE, "1,50,1"),
                  "set_iterations_per_frame", "get_iterations_per_frame");
@@ -118,6 +162,12 @@ void SkinSheet::_bind_methods() {
     ADD_GROUP("Display", "");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_wireframe"), "set_show_wireframe", "get_show_wireframe");
     ADD_PROPERTY(PropertyInfo(Variant::COLOR, "skin_color"), "set_skin_color", "get_skin_color");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "heatmap", PROPERTY_HINT_ENUM,
+                              "Off,Max principal stress,Von Mises stress,Area change"),
+                 "set_heatmap", "get_heatmap");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heatmap_range_kpa", PROPERTY_HINT_RANGE,
+                              "1,2000,1,exp,suffix:kPa"),
+                 "set_heatmap_range_kpa", "get_heatmap_range_kpa");
 
     ADD_SIGNAL(MethodInfo("mesh_rebuilt"));   // new sheet (geometry changed)
     ADD_SIGNAL(MethodInfo("cuts_changed"));   // incision made, undone or cleared
@@ -203,6 +253,34 @@ void SkinSheet::set_pin_boundary(bool p_pin) {
     push_params();
 }
 
+void SkinSheet::set_suture_stiffness(double p_n_per_mm) {
+    suture_params_.stiffness = p_n_per_mm;
+    push_params();
+}
+
+void SkinSheet::set_heatmap(int p_mode) {
+    heatmap_ = (p_mode < HEATMAP_OFF || p_mode > HEATMAP_AREA_CHANGE) ? HEATMAP_OFF : p_mode;
+    update_skin_material();
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::set_heatmap_range_kpa(double p_kpa) {
+    heatmap_range_kpa_ = p_kpa > 1e-3 ? p_kpa : 1e-3;
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::update_skin_material() {
+    if (skin_material_.is_null()) return;
+    const bool heat = heatmap_ != HEATMAP_OFF;
+    // With a heatmap the vertex colours *are* the data: draw them unlit, so
+    // lighting can't shift a colour and change its meaning.
+    skin_material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, heat);
+    skin_material_->set_flag(BaseMaterial3D::FLAG_SRGB_VERTEX_COLOR, heat);
+    skin_material_->set_shading_mode(heat ? BaseMaterial3D::SHADING_MODE_UNSHADED
+                                          : BaseMaterial3D::SHADING_MODE_PER_PIXEL);
+    skin_material_->set_albedo(heat ? Color(1, 1, 1) : skin_color_);
+}
+
 void SkinSheet::set_iterations_per_frame(int p_iterations) {
     iterations_per_frame_ = p_iterations < 1 ? 1 : p_iterations;
 }
@@ -214,7 +292,7 @@ void SkinSheet::set_show_wireframe(bool p_show) {
 
 void SkinSheet::set_skin_color(const Color& p_color) {
     skin_color_ = p_color;
-    if (skin_material_.is_valid()) skin_material_->set_albedo(skin_color_);
+    update_skin_material();
 }
 
 void SkinSheet::push_params() {
@@ -222,6 +300,7 @@ void SkinSheet::push_params() {
     if (!s) return;
     s->set_params(params_);
     s->set_grab_params(grab_params_);
+    s->set_suture_params(suture_params_);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,9 +364,113 @@ void SkinSheet::clear_cuts() {
     topology_changed();
 }
 
+int SkinSheet::suture(const Vector3& p_from, const Vector3& p_to, double p_max_distance_mm) {
+    skinsim::Simulation* s = sim();
+    skinsim::MaterialPoint a, b;
+    if (!s || !s->nearest_lip_point(world_to_sheet(p_from), p_max_distance_mm, a) ||
+        !s->nearest_lip_point(world_to_sheet(p_to), p_max_distance_mm, b))
+        return -1;
+    if ((s->position_of(a) - s->position_of(b)).norm() < 1e-6) return -1;  // both ends on the same spot
+    return s->add_suture(a, b);
+}
+
+int SkinSheet::suture_across(const Vector3& p_point, double p_max_distance_mm) {
+    skinsim::Simulation* s = sim();
+    skinsim::MaterialPoint a, b;
+    if (!s || !s->nearest_lip_point(world_to_sheet(p_point), p_max_distance_mm, a) || !s->opposite_lip_point(a, b))
+        return -1;
+    return s->add_suture(a, b);
+}
+
+bool SkinSheet::remove_suture(int p_id) {
+    skinsim::Simulation* s = sim();
+    return s && s->remove_suture(p_id);
+}
+
+void SkinSheet::clear_sutures() {
+    if (skinsim::Simulation* s = sim()) s->clear_sutures();
+}
+
+int SkinSheet::get_suture_count() const {
+    const skinsim::Simulation* s = sim();
+    return s ? s->suture_count() : 0;
+}
+
+Array SkinSheet::get_suture_info() const {
+    Array out;
+    const skinsim::Simulation* s = sim();
+    if (!s) return out;
+    for (const skinsim::SutureInfo& su : s->suture_info()) {
+        Dictionary d;
+        d["id"] = su.id;
+        d["a"] = to_global(to_godot(su.a));
+        d["b"] = to_global(to_godot(su.b));
+        d["force"] = su.force;
+        out.push_back(d);
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Info
 // ---------------------------------------------------------------------------
+
+Color SkinSheet::heat_color(double p_value) const {
+    const double range = heatmap_range_kpa_ / 1000.0;  // solver stresses are in MPa
+    switch (heatmap_) {
+        case HEATMAP_MAX_PRINCIPAL: return ramp(kDiverging, 5, 0.5 + 0.5 * p_value / range);
+        case HEATMAP_VON_MISES: return ramp(kSequential, 5, p_value / range);
+        case HEATMAP_AREA_CHANGE:
+            // Log scale: halving and doubling are equally far from "unchanged".
+            return ramp(kDiverging, 5, 0.5 + 0.5 * std::log(p_value > 1e-9 ? p_value : 1e-9) / std::log(kAreaRange));
+        default: return skin_color_;
+    }
+}
+
+Dictionary SkinSheet::get_heatmap_legend() const {
+    Dictionary d;
+    if (heatmap_ == HEATMAP_OFF || !sim()) return d;
+    const double range = heatmap_range_kpa_ / 1000.0;
+    double lo = 0.0, hi = range;
+    String title, unit = " kPa";
+    double scale = 1000.0;  // MPa -> kPa for display
+    skinsim::Field field = skinsim::Field::VonMisesStress;
+    if (heatmap_ == HEATMAP_MAX_PRINCIPAL) {
+        title = "Max principal stress";
+        field = skinsim::Field::MaxPrincipalStress;
+        lo = -range;
+    } else if (heatmap_ == HEATMAP_VON_MISES) {
+        title = "Von Mises stress";
+    } else {
+        title = "Area change";
+        field = skinsim::Field::AreaChange;
+        lo = 1.0 / kAreaRange;
+        hi = kAreaRange;
+        unit = "x";
+        scale = 1.0;
+    }
+    PackedColorArray colors;
+    for (int i = 0; i < 32; ++i) {
+        const double t = i / 31.0;
+        // Sample along the legend's own axis (log for area change).
+        const double v = (heatmap_ == HEATMAP_AREA_CHANGE) ? lo * std::pow(hi / lo, t) : lo + t * (hi - lo);
+        colors.push_back(heat_color(v));
+    }
+    const Eigen::VectorXd values = sim()->vertex_field(field);
+    String extreme;
+    if (values.size() > 0) {
+        if (heatmap_ == HEATMAP_AREA_CHANGE)
+            extreme = vformat("now %.2f-%.2f%s", values.minCoeff(), values.maxCoeff(), unit);
+        else
+            extreme = vformat("peak %.1f%s", values.maxCoeff() * scale, unit);
+    }
+    d["title"] = title;
+    d["colors"] = colors;
+    d["low"] = vformat(heatmap_ == HEATMAP_AREA_CHANGE ? "%.2f%s" : "%.0f%s", lo * scale, unit);
+    d["high"] = vformat(heatmap_ == HEATMAP_AREA_CHANGE ? "%.2f%s" : "%.0f%s", hi * scale, unit);
+    d["extreme"] = extreme;
+    return d;
+}
 
 String SkinSheet::get_solver_info() const {
     return String(skinsim::build_info().c_str());
@@ -343,6 +526,7 @@ void SkinSheet::ensure_render_objects() {
     skin_material_.instantiate();
     skin_material_->set_albedo(skin_color_);
     skin_material_->set_roughness(0.85);
+    update_skin_material();
 
     wire_material_.instantiate();
     wire_material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
@@ -436,6 +620,20 @@ void SkinSheet::update_render_mesh() {
     arrays[Mesh::ARRAY_VERTEX] = vertices;
     arrays[Mesh::ARRAY_NORMAL] = normals;
     arrays[Mesh::ARRAY_INDEX] = indices;
+
+    // Heatmap: one colour per vertex; the GPU blends them smoothly across
+    // each triangle. Values come from the solver's vertex-averaged field.
+    if (heatmap_ != HEATMAP_OFF) {
+        const skinsim::Field field = heatmap_ == HEATMAP_MAX_PRINCIPAL ? skinsim::Field::MaxPrincipalStress
+                                     : heatmap_ == HEATMAP_VON_MISES   ? skinsim::Field::VonMisesStress
+                                                                       : skinsim::Field::AreaChange;
+        const Eigen::VectorXd values = s->vertex_field(field);
+        PackedColorArray colors;
+        colors.resize(n_verts);
+        Color* cw = colors.ptrw();
+        for (int i = 0; i < n_verts; ++i) cw[i] = heat_color(values[i]);
+        arrays[Mesh::ARRAY_COLOR] = colors;
+    }
 
     render_mesh_->clear_surfaces();
     render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);

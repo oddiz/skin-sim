@@ -15,8 +15,12 @@ extends PanelContainer
 
 ## Emitted when the user presses a button that changes the scene.
 signal reset_requested
-## Emitted when the user picks a tool (main.gd's Tool enum: 0 = grab, 1 = cut).
+## Emitted when the user picks a tool (main.gd's Tool enum: 0 grab, 1 cut, 2 suture).
 signal tool_selected(tool: int)
+## Undo the last cut or suture (main.gd keeps the history).
+signal undo_requested
+signal cuts_cleared
+signal sutures_cleared
 
 const PANEL_WIDTH := 300
 const BUILTIN_PRESET_DIR := "res://presets"
@@ -52,6 +56,16 @@ const PARAMS := [
 		"exp": true, "fmt": "%.1f N", "tip": "Beyond this the skin lags behind the finger."},
 	{"prop": "grab_stiffness", "label": "Grab stiffness", "min": 0.1, "max": 100.0, "step": 0.1,
 		"exp": true, "fmt": "%.1f N/mm", "tip": "How tightly the skin follows the finger."},
+	{"section": "Sutures"},
+	{"prop": "suture_stiffness", "label": "Suture stiffness", "min": 0.1, "max": 200.0,
+		"step": 0.1, "exp": true, "fmt": "%.1f N/mm",
+		"tip": "How firmly a suture holds the edges together. The force it carries is the closure tension."},
+	{"section": "Heatmap"},
+	{"prop": "heatmap", "label": "Show", "type": "enum",
+		"options": ["Off (skin)", "Max principal stress", "Von Mises stress", "Area change"],
+		"tip": "Colour the skin by a result. Max principal: red = tension, blue = compression. [H]"},
+	{"prop": "heatmap_range_kpa", "label": "Stress scale", "min": 1.0, "max": 2000.0, "step": 1.0,
+		"exp": true, "fmt": "%.0f kPa", "tip": "Stress at the end of the colour scale."},
 	{"section": "Solver"},
 	{"prop": "iterations_per_frame", "label": "Iterations / frame", "min": 1.0, "max": 30.0,
 		"step": 1.0, "fmt": "%d", "tip": "More = faster settling, more CPU per frame."},
@@ -62,6 +76,7 @@ var sheet: SkinSheet
 var _sliders := {}        # property name -> HSlider
 var _value_labels := {}   # property name -> Label showing the value
 var _checkboxes := {}     # property name -> CheckBox
+var _enums := {}          # property name -> OptionButton
 var _presets: Array[Dictionary] = []
 var _preset_list: OptionButton
 var _preset_name: LineEdit
@@ -109,6 +124,8 @@ func _build() -> void:
 			box.add_child(_section_label(spec.section))
 		elif spec.get("type", "") == "bool":
 			box.add_child(_make_checkbox(spec))
+		elif spec.get("type", "") == "enum":
+			box.add_child(_make_enum(spec))
 		else:
 			box.add_child(_make_slider(spec))
 
@@ -133,9 +150,11 @@ func _build_tools(box: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
 	# A ButtonGroup makes toggle buttons mutually exclusive, like radio buttons.
 	var group := ButtonGroup.new()
-	for i in 2:
+	for i in 3:
 		var b := Button.new()
-		b.text = ["Grab (forceps)", "Cut (scalpel)"][i]
+		b.text = ["Grab", "Cut", "Suture"][i]
+		b.tooltip_text = ["Forceps: drag the skin [G]", "Scalpel: draw an incision [C]",
+			"Tap a lip: suture across. Drag lip to lip: key suture [S]"][i]
 		b.toggle_mode = true
 		b.button_group = group
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -148,17 +167,26 @@ func _build_tools(box: VBoxContainer) -> void:
 
 	var cuts := HBoxContainer.new()
 	var undo := Button.new()
-	undo.text = "Undo cut"
-	undo.tooltip_text = "Remove the most recent incision [Z]."
+	undo.text = "Undo"
+	undo.tooltip_text = "Undo the last incision or suture [Z]."
 	undo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	undo.pressed.connect(func(): sheet.undo_cut())
+	undo.pressed.connect(func(): undo_requested.emit())
 	cuts.add_child(undo)
 	var clear := Button.new()
 	clear.text = "Clear cuts"
-	clear.tooltip_text = "Remove all incisions (the deformation is kept)."
+	clear.tooltip_text = "Remove all incisions (the deformation and sutures are kept)."
 	clear.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	clear.pressed.connect(func(): sheet.clear_cuts())
+	clear.pressed.connect(func():
+		sheet.clear_cuts()
+		cuts_cleared.emit())
 	cuts.add_child(clear)
+	var clear_sutures := Button.new()
+	clear_sutures.text = "Clear sutures"
+	clear_sutures.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clear_sutures.pressed.connect(func():
+		sheet.clear_sutures()
+		sutures_cleared.emit())
+	cuts.add_child(clear_sutures)
 	box.add_child(cuts)
 
 
@@ -216,6 +244,23 @@ func _make_checkbox(spec: Dictionary) -> Control:
 	return cb
 
 
+func _make_enum(spec: Dictionary) -> Control:
+	var h := HBoxContainer.new()
+	h.tooltip_text = spec.get("tip", "")
+	var l := Label.new()
+	l.text = spec.label
+	h.add_child(l)
+	var ob := OptionButton.new()
+	ob.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for o in spec.options:
+		ob.add_item(o)
+	var prop: String = spec.prop
+	ob.item_selected.connect(func(i: int): sheet.set(prop, i))
+	h.add_child(ob)
+	_enums[prop] = ob
+	return h
+
+
 func _update_value_label(spec: Dictionary, value: float) -> void:
 	var fmt: String = spec.fmt
 	_value_labels[spec.prop].text = fmt % (int(value) if fmt.contains("%d") else value)
@@ -230,6 +275,8 @@ func refresh() -> void:
 		var value = sheet.get(spec.prop)
 		if spec.get("type", "") == "bool":
 			_checkboxes[spec.prop].set_pressed_no_signal(value)
+		elif spec.get("type", "") == "enum":
+			_enums[spec.prop].select(value)  # select() does not emit item_selected
 		else:
 			_sliders[spec.prop].set_value_no_signal(value)
 			_update_value_label(spec, value)

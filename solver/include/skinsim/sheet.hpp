@@ -8,7 +8,7 @@
 //   2. add it to the cut graph (cleaned up, see cuts.hpp),
 //   3. re-mesh the whole sheet with all incisions (see mesher.hpp),
 //   4. carry the current deformation over to the new mesh, so the skin does
-//      not jump when cut, and re-attach any grabs that are being held,
+//      not jump when cut, and re-attach held grabs and tied sutures,
 //   5. let the solver relax: the lips are now free and separate.
 #pragma once
 

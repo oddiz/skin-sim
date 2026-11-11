@@ -1,14 +1,18 @@
 extends Node3D
-## Main scene logic: touch/mouse input -> grabs and incisions, camera framing, HUD.
+## Main scene logic: touch/mouse input -> grabs, incisions and sutures,
+## camera framing, HUD.
 ##
 ## Input is handled as *touch* events. With the project setting
 ## input_devices/pointing/emulate_touch_from_mouse on, a mouse click/drag
 ## arrives as touch index 0, so the same code works on desktop and iPhone,
 ## and several fingers can grab the skin at once on a touch screen.
 ##
-## Two tools:
-##   GRAB  touches grab and pull the skin (forceps).
-##   CUT   a touch draws an incision (scalpel); it is made on release.
+## Three tools:
+##   GRAB    touches grab and pull the skin (forceps).
+##   CUT     a touch draws an incision (scalpel); it is made on release.
+##   SUTURE  tap an incision lip: a suture straight across to the matching
+##           point of the other lip. Drag from one lip to another: a suture
+##           between those two points (e.g. a key suture moving a flap corner).
 ## On desktop, Shift + drag cuts whatever the tool.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
@@ -16,8 +20,10 @@ extends Node3D
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
 ##   --demo-cut                cut a 30 mm vertical incision, then pull its
 ##                             right lip 8 mm right so it gapes (for checks)
+##   --demo-suture             as --demo-cut, then three sutures close the
+##                             wound against the pull; heatmap on (for checks)
 
-enum Tool { GRAB, CUT }
+enum Tool { GRAB, CUT, SUTURE }
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
@@ -30,11 +36,18 @@ const FRAME_MARGIN := 1.3
 ## A new point is added to the scalpel path once the finger has moved this
 ## many pixels: enough to follow curves, few enough to keep the path short.
 const CUT_SAMPLE_PX := 4.0
+## A suture end snaps to a lip within this many pixels of the finger.
+const SUTURE_SNAP_PX := 18.0
+## A suture gesture shorter than this is a tap: suture straight across.
+const TAP_PX := 10.0
 
 var tool: Tool = Tool.GRAB
 var _cut_touch := -1                      # touch index drawing the incision, -1 = none
 var _cut_path := PackedVector2Array()     # screen positions of the stroke so far
-var _status := ""                         # last cut result, shown in the HUD
+var _suture_touch := -1                   # touch index placing a suture, -1 = none
+var _suture_start := Vector2.ZERO
+var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"} or {"kind": "suture", "id": n}
+var _status := ""                         # last action's result, shown in the HUD
 
 
 func _ready() -> void:
@@ -42,9 +55,13 @@ func _ready() -> void:
 	panel.setup(sheet)
 	panel.reset_requested.connect(sheet.reset_simulation)
 	panel.tool_selected.connect(_set_tool)
+	panel.undo_requested.connect(_undo)
+	panel.cuts_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "cut"))
+	panel.sutures_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "suture"))
 	overlay.sheet = sheet
 	overlay.camera = camera
 	sheet.mesh_rebuilt.connect(_frame_sheet)
+	sheet.mesh_rebuilt.connect(func(): _history.clear())  # new geometry: nothing to undo
 	get_viewport().size_changed.connect(_frame_sheet)
 	_frame_sheet()
 
@@ -53,6 +70,8 @@ func _ready() -> void:
 		_demo_pull()
 	if args.has("--demo-cut"):
 		_demo_cut()
+	if args.has("--demo-suture"):
+		_demo_suture()
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
@@ -70,22 +89,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.pressed and panel.get_global_rect().has_point(event.position):
 			return
 		if event.pressed:
-			var cutting := tool == Tool.CUT or Input.is_key_pressed(KEY_SHIFT)
-			if cutting and _cut_touch == -1:
-				_cut_touch = event.index
-				_cut_path = PackedVector2Array([event.position])
-			elif not cutting:
-				sheet.grab(event.index, _screen_to_sheet_plane(event.position))
-		elif event.index == _cut_touch:
-			_cut_path.append(event.position)
-			_commit_cut()
+			_on_press(event.index, event.position)
 		else:
-			sheet.release_grab(event.index)
+			_on_release(event.index, event.position)
 	elif event is InputEventScreenDrag:
 		if event.index == _cut_touch:
 			if event.position.distance_to(_cut_path[_cut_path.size() - 1]) >= CUT_SAMPLE_PX:
 				_cut_path.append(event.position)
 			overlay.cut_path = _cut_path
+		elif event.index == _suture_touch:
+			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 		else:
 			sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
 	elif event is InputEventKey and event.pressed and not event.echo:
@@ -94,11 +107,41 @@ func _unhandled_input(event: InputEvent) -> void:
 				sheet.show_wireframe = not sheet.show_wireframe
 			KEY_R:
 				sheet.reset_simulation()
+			KEY_G:
+				_set_tool(Tool.GRAB)
 			KEY_C:
-				_set_tool(Tool.GRAB if tool == Tool.CUT else Tool.CUT)
+				_set_tool(Tool.CUT)
+			KEY_S:
+				_set_tool(Tool.SUTURE)
+			KEY_H:
+				sheet.heatmap = (sheet.heatmap + 1) % 4
+				panel.refresh()
 			KEY_Z:
-				if sheet.undo_cut():
-					_status = "Last incision undone."
+				_undo()
+
+
+func _on_press(index: int, pos: Vector2) -> void:
+	var cutting := tool == Tool.CUT or Input.is_key_pressed(KEY_SHIFT)
+	if cutting:
+		if _cut_touch == -1:
+			_cut_touch = index
+			_cut_path = PackedVector2Array([pos])
+	elif tool == Tool.SUTURE:
+		if _suture_touch == -1:
+			_suture_touch = index
+			_suture_start = pos
+	else:
+		sheet.grab(index, _screen_to_sheet_plane(pos))
+
+
+func _on_release(index: int, pos: Vector2) -> void:
+	if index == _cut_touch:
+		_cut_path.append(pos)
+		_commit_cut()
+	elif index == _suture_touch:
+		_commit_suture(pos)
+	else:
+		sheet.release_grab(index)
 
 
 ## Turn the finished stroke into an incision. The solver does the rest:
@@ -109,12 +152,43 @@ func _commit_cut() -> void:
 		world.append(_screen_to_sheet_plane(p))
 	var segments := sheet.cut(world)
 	if segments > 0:
+		_history.append({"kind": "cut"})
 		_status = "Incision: %d segments, re-meshed in %.1f ms." % [segments, sheet.get_last_cut_ms()]
 	else:
 		_status = "Nothing cut (too short, or not on the skin)."
 	_cut_touch = -1
 	_cut_path = PackedVector2Array()
 	overlay.cut_path = _cut_path
+
+
+func _commit_suture(end: Vector2) -> void:
+	var snap_mm := SUTURE_SNAP_PX * camera.size / get_viewport().get_visible_rect().size.y
+	var id: int
+	if end.distance_to(_suture_start) < TAP_PX:
+		id = sheet.suture_across(_screen_to_sheet_plane(_suture_start), snap_mm)
+	else:
+		id = sheet.suture(_screen_to_sheet_plane(_suture_start), _screen_to_sheet_plane(end), snap_mm)
+	if id >= 0:
+		_history.append({"kind": "suture", "id": id})
+		_status = "Suture placed."
+	else:
+		_status = "No suture: start (and end) on an incision lip, not at its very tip."
+	_suture_touch = -1
+	overlay.suture_line = PackedVector2Array()
+
+
+## Undo the most recent cut or suture.
+func _undo() -> void:
+	if _history.is_empty():
+		_status = "Nothing to undo."
+		return
+	var last: Dictionary = _history.pop_back()
+	if last.kind == "cut":
+		sheet.undo_cut()
+		_status = "Incision undone."
+	else:
+		sheet.remove_suture(last.id)
+		_status = "Suture removed."
 
 
 ## Turn a screen position into the 3D point on the sheet's plane under it:
@@ -137,17 +211,20 @@ func _process(_delta: float) -> void:
 		flags += " projected"
 	if s.regularized:
 		flags += " regularized"
-	var tool_line := "Tool: GRAB - drag the skin." if tool == Tool.GRAB \
-		else "Tool: CUT - draw an incision."
-	info.text = "%s\n%d vertices, %d triangles, %d incisions\n" % [
+	var tool_line: String = [
+		"Tool: GRAB - drag the skin.",
+		"Tool: CUT - draw an incision.",
+		"Tool: SUTURE - tap a lip (across) or drag lip to lip.",
+	][tool]
+	info.text = "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
 			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
-			sheet.get_cut_count()] \
+			sheet.get_cut_count(), sheet.get_suture_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [
 			status, s.iterations, s.step_ms, _sci(s.residual), flags] \
 		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
 		+ (_status + "\n" if _status != "" else "") \
-		+ tool_line + "\n[C] grab/cut  [Shift+drag] cut  [Z] undo cut  [W] wireframe  [R] reset"
+		+ tool_line + "\n[G]rab [C]ut [S]uture  [Shift+drag] cut  [Z] undo  [H] heatmap  [W] wireframe  [R] reset"
 
 
 ## Compact scientific notation, e.g. 1.2e-14 (GDScript's % has no %e).
@@ -202,6 +279,21 @@ func _demo_cut() -> void:
 	_drag(0, Vector2(11, 0))
 
 
+## The cut demo, then (still pulling) three sutures tapped across the left
+## lip; they close the wound against the pull. Von Mises heatmap on.
+func _demo_suture() -> void:
+	await _demo_cut()
+	for _frame in 30:
+		await get_tree().process_frame  # let the wound open
+	_set_tool(Tool.SUTURE)
+	for y in [-8.0, 0.0, 8.0]:
+		# Touch index 1: finger 0 is still holding the forceps.
+		_touch(1, Vector2(-0.3, y), true)
+		_touch(1, Vector2(-0.3, y), false)
+	sheet.heatmap = 2
+	panel.refresh()
+
+
 ## An orthographic camera's `size` is the visible *height* in world units (mm).
 ## Fit the sheet into the part of the window not covered by the side panel,
 ## then slide the camera right so the sheet is centred in that free area.
@@ -214,8 +306,8 @@ func _frame_sheet() -> void:
 
 
 func _save_screenshot_and_quit(path: String) -> void:
-	# Let the solver run for a moment (about 1 s at 60 fps), then capture.
-	for _frame in 60:
+	# Let the solver run for a moment (about 2 s at 60 fps), then capture.
+	for _frame in 120:
 		await RenderingServer.frame_post_draw
 	var err := get_viewport().get_texture().get_image().save_png(path)
 	print("Screenshot saved to %s (error code %d)" % [path, err])

@@ -9,6 +9,7 @@
 #include <Eigen/SparseCholesky>
 
 #include "skinsim/material.hpp"
+#include "skinsim/mesh.hpp"
 
 namespace skinsim {
 
@@ -36,6 +37,12 @@ TissueParams sanitized(TissueParams p) {
     // Stiffening is capped: beyond ~100 the exponential overflows at strains
     // of a few percent, and no tissue is that extreme.
     p.stiffening = std::min(at_least(p.stiffening, 0.0), 100.0);
+    return p;
+}
+
+SutureParams sanitized(SutureParams p) {
+    // Capped so a typo can't wreck the conditioning of the stiffness matrix.
+    p.stiffness = std::min(at_least(p.stiffness, 1e-6), 1e4);
     return p;
 }
 
@@ -68,7 +75,8 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
     // Precompute everything about each triangle that depends only on its rest
     // shape, so the per-iteration work is as small as possible.
     elements_.reserve(mesh_.triangles.size());
-    for (const Triangle& t : mesh_.triangles) {
+    for (int ti = 0; ti < mesh_.triangle_count(); ++ti) {
+        const Triangle& t = mesh_.triangles[ti];
         const Eigen::Vector2d X0 = mesh_.rest_positions.col(t[0]);
         const Eigen::Vector2d X1 = mesh_.rest_positions.col(t[1]);
         const Eigen::Vector2d X2 = mesh_.rest_positions.col(t[2]);
@@ -86,6 +94,7 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
         // element too: F = sum_a x_a (grad N_a)^T. The gradients come from Dm^-1.
         const Eigen::Matrix2d Dinv = Dm.inverse();
         Element e;
+        e.triangle = ti;
         e.v = t;
         e.area = area;
         e.grad_n.row(1) = Dinv.row(0);
@@ -123,6 +132,17 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
     fixed_.assign(2 * n, 0);
     params_ = sanitized(params_);
     apply_pins();
+
+    // Which triangle each lip edge belongs to (exactly one: it's a boundary
+    // edge). Sutures attach to the lips through these triangles.
+    for (int ti = 0; ti < mesh_.triangle_count(); ++ti) {
+        const Triangle& t = mesh_.triangles[ti];
+        for (int k = 0; k < 3; ++k) {
+            const int a = t[k], b = t[(k + 1) % 3];
+            const Edge e = a < b ? Edge{a, b} : Edge{b, a};
+            if (lips.count(e)) lip_triangle_[e] = ti;
+        }
+    }
 }
 
 void Simulation::set_params(const TissueParams& params) {
@@ -135,6 +155,11 @@ void Simulation::set_params(const TissueParams& params) {
 
 void Simulation::set_grab_params(const GrabParams& params) {
     grab_params_ = sanitized(params);
+    converged_ = false;
+}
+
+void Simulation::set_suture_params(const SutureParams& params) {
+    suture_params_ = sanitized(params);
     converged_ = false;
 }
 
@@ -355,6 +380,11 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
     for (const auto& [id, g] : grabs_) {  // C++17 "structured binding" over map entries
         E += grab_energy(grab_point(g, x) - g.target);
     }
+
+    for (const auto& [id, su] : sutures_) {
+        const Eigen::Vector2d r = point_at(su.a, x) - point_at(su.b, x);
+        E += 0.5 * suture_params_.stiffness * r.squaredNorm();
+    }
     return E;
 }
 
@@ -384,6 +414,16 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
         // Each patch node carries its weighted share of the finger's force.
         const Eigen::Vector2d f = grab_force(grab_point(gr, x) - gr.target);
         for (size_t a = 0; a < gr.nodes.size(); ++a) g.segment<2>(2 * gr.nodes[a]) += gr.weights[a] * f;
+    }
+
+    for (const auto& [id, su] : sutures_) {
+        // The suture pulls a towards b and b towards a with force k r,
+        // shared among each end's nodes by their weights.
+        std::array<int, 6> nodes;
+        std::array<double, 6> c;
+        suture_terms(su, nodes, c);
+        const Eigen::Vector2d f = suture_params_.stiffness * (point_at(su.a, x) - point_at(su.b, x));
+        for (int i = 0; i < 6; ++i) g.segment<2>(2 * nodes[i]) += c[i] * f;
     }
     return g;
 }
@@ -435,6 +475,18 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, boo
                                           gr.weights[na] * gr.weights[nb] * Kg(i, j));
     }
 
+    for (const auto& [id, su] : sutures_) {
+        // r = sum c_i x_i, so d2E/dx_i dx_j = k c_i c_j I: a small 12 x 12
+        // block (6 nodes), cheap to assemble directly, unlike grab patches.
+        std::array<int, 6> nodes;
+        std::array<double, 6> c;
+        suture_terms(su, nodes, c);
+        const double ks = suture_params_.stiffness;
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j)
+                for (int d = 0; d < 2; ++d) trip.emplace_back(2 * nodes[i] + d, 2 * nodes[j] + d, ks * c[i] * c[j]);
+    }
+
     SparseMatrix H(x.size(), x.size());
     H.setFromTriplets(trip.begin(), trip.end());
     return H;
@@ -483,6 +535,198 @@ double Simulation::max_area_ratio() const {
     double m = -kInf;
     for (const Element& e : elements_) m = std::max(m, deformation_gradient(e, x_).determinant());
     return m;
+}
+
+Eigen::VectorXd Simulation::triangle_field(Field field) const {
+    Eigen::VectorXd out = Eigen::VectorXd::Zero(mesh_.triangle_count());
+    for (const Element& e : elements_) {
+        const Eigen::Matrix2d F = deformation_gradient(e, x_);
+        if (field == Field::AreaChange) {
+            out[e.triangle] = F.determinant();
+            continue;
+        }
+        // Cauchy ("true") stress: force per area of the *deformed* skin.
+        // In general sigma = P F^T / det(F_3D); skin is incompressible, so the
+        // 3D volume ratio det(F_3D) is 1 and sigma = P F^T. Plane stress
+        // means the third (through-thickness) principal stress is 0.
+        const Eigen::Matrix2d P = membrane::first_piola(F, params_.shear_modulus, params_.stiffening);
+        const Eigen::Matrix2d sigma = P * F.transpose();
+        // Principal stresses: eigenvalues of the symmetric 2x2 tensor,
+        // mean +/- radius of Mohr's circle.
+        const double mean = 0.5 * (sigma(0, 0) + sigma(1, 1));
+        const double half_diff = 0.5 * (sigma(0, 0) - sigma(1, 1));
+        const double shear = 0.5 * (sigma(0, 1) + sigma(1, 0));
+        const double radius = std::sqrt(half_diff * half_diff + shear * shear);
+        const double s1 = mean + radius, s2 = mean - radius;
+        out[e.triangle] = (field == Field::MaxPrincipalStress) ? s1 : std::sqrt(s1 * s1 - s1 * s2 + s2 * s2);
+    }
+    return out;
+}
+
+Eigen::VectorXd Simulation::vertex_field(Field field) const {
+    const Eigen::VectorXd per_triangle = triangle_field(field);
+    Eigen::VectorXd sum = Eigen::VectorXd::Zero(mesh_.vertex_count());
+    Eigen::VectorXd weight = Eigen::VectorXd::Zero(mesh_.vertex_count());
+    for (const Element& e : elements_)
+        for (int v : e.v) {
+            sum[v] += e.area * per_triangle[e.triangle];
+            weight[v] += e.area;
+        }
+    for (int v = 0; v < sum.size(); ++v)
+        if (weight[v] > 0.0) sum[v] /= weight[v];
+    return sum;
+}
+
+// ---------------------------------------------------------------------------
+// Sutures
+// ---------------------------------------------------------------------------
+
+bool Simulation::valid(const MaterialPoint& p) const {
+    return p.triangle >= 0 && p.triangle < mesh_.triangle_count() && p.weights.allFinite();
+}
+
+Eigen::Vector2d Simulation::point_at(const MaterialPoint& p, const Eigen::VectorXd& x) const {
+    const Triangle& t = mesh_.triangles[p.triangle];
+    return p.weights[0] * x.segment<2>(2 * t[0]) + p.weights[1] * x.segment<2>(2 * t[1]) +
+           p.weights[2] * x.segment<2>(2 * t[2]);
+}
+
+Eigen::Vector2d Simulation::position_of(const MaterialPoint& p) const {
+    return valid(p) ? point_at(p, x_) : Eigen::Vector2d::Zero();
+}
+
+void Simulation::suture_terms(const Suture& su, std::array<int, 6>& nodes, std::array<double, 6>& c) const {
+    const Triangle& ta = mesh_.triangles[su.a.triangle];
+    const Triangle& tb = mesh_.triangles[su.b.triangle];
+    for (int k = 0; k < 3; ++k) {
+        nodes[k] = ta[k];
+        c[k] = su.a.weights[k];
+        nodes[3 + k] = tb[k];
+        c[3 + k] = -su.b.weights[k];
+    }
+}
+
+int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b) {
+    if (!valid(a) || !valid(b)) return -1;
+    const int id = next_suture_id_++;
+    sutures_[id] = Suture{a, b};
+    converged_ = false;
+    return id;
+}
+
+bool Simulation::remove_suture(int id) {
+    if (sutures_.erase(id) == 0) return false;
+    converged_ = false;
+    return true;
+}
+
+void Simulation::clear_sutures() {
+    if (!sutures_.empty()) converged_ = false;
+    sutures_.clear();
+}
+
+std::vector<SutureInfo> Simulation::suture_info() const {
+    std::vector<SutureInfo> out;
+    for (const auto& [id, su] : sutures_) {
+        SutureInfo info;
+        info.id = id;
+        info.a = point_at(su.a, x_);
+        info.b = point_at(su.b, x_);
+        info.force = suture_params_.stiffness * (info.a - info.b).norm();
+        out.push_back(info);
+    }
+    return out;
+}
+
+bool Simulation::nearest_lip_point(const Eigen::Vector2d& point, double max_distance, MaterialPoint& out) const {
+    double best = max_distance;
+    bool found = false;
+    for (const auto& [edge, tri] : lip_triangle_) {
+        const Eigen::Vector2d a = x_.segment<2>(2 * edge[0]), b = x_.segment<2>(2 * edge[1]);
+        const Eigen::Vector2d ab = b - a;
+        const double len2 = ab.squaredNorm();
+        const double t = len2 > 0.0 ? std::clamp((point - a).dot(ab) / len2, 0.0, 1.0) : 0.0;
+        const double d = (a + t * ab - point).norm();
+        if (d < best) {
+            best = d;
+            found = true;
+            // Weights: (1 - t) on edge[0], t on edge[1], 0 on the third corner.
+            out.triangle = tri;
+            for (int k = 0; k < 3; ++k) {
+                const int v = mesh_.triangles[tri][k];
+                out.weights[k] = (v == edge[0]) ? 1.0 - t : (v == edge[1]) ? t : 0.0;
+            }
+        }
+    }
+    return found;
+}
+
+bool Simulation::opposite_lip_point(const MaterialPoint& p, MaterialPoint& out) const {
+    if (!valid(p)) return false;
+    const Eigen::Vector2d X = point_at(p, rest_);
+    const Eigen::Vector2d here = point_at(p, x_);
+    // The nodes p actually depends on (non-zero weight).
+    const Triangle& tp = mesh_.triangles[p.triangle];
+    auto uses = [&](int v) {
+        for (int k = 0; k < 3; ++k)
+            if (tp[k] == v && std::abs(p.weights[k]) > 1e-12) return true;
+        return false;
+    };
+    // Candidates: lip edges through the same rest point X, built from
+    // *different* nodes. A neighbouring edge of the same lip shares p's node;
+    // at a cut's tip both lips share the single tip node: neither qualifies.
+    // Where several cuts meet there can be more than one candidate: take the
+    // one farthest away right now (the gap a suture would have to close).
+    double best = -1.0;
+    for (const auto& [edge, tri] : lip_triangle_) {
+        const Eigen::Vector2d A = rest_.segment<2>(2 * edge[0]), B = rest_.segment<2>(2 * edge[1]);
+        const Eigen::Vector2d AB = B - A;
+        const double len2 = AB.squaredNorm();
+        if (!(len2 > 0.0)) continue;
+        const double t = std::clamp((X - A).dot(AB) / len2, 0.0, 1.0);
+        if ((A + t * AB - X).norm() > 1e-7 * mean_edge_) continue;  // not through X
+        if ((t < 1.0 - 1e-12 && uses(edge[0])) || (t > 1e-12 && uses(edge[1]))) continue;
+        MaterialPoint q;
+        q.triangle = tri;
+        for (int k = 0; k < 3; ++k) {
+            const int v = mesh_.triangles[tri][k];
+            q.weights[k] = (v == edge[0]) ? 1.0 - t : (v == edge[1]) ? t : 0.0;
+        }
+        const double d = (point_at(q, x_) - here).norm();
+        if (d > best) {
+            best = d;
+            out = q;
+        }
+    }
+    return best >= 0.0;
+}
+
+void Simulation::adopt_sutures(const Simulation& other) {
+    // Each end is a material point of the other mesh. Its rest position X
+    // is a point of the tissue, so it can be found again in this mesh. On an
+    // incision both lips share X: look up a point nudged into the end's own
+    // triangle instead, which lies on the correct side (as in Sheet::transfer).
+    const TriangleLocator locator(mesh_.rest_positions, mesh_.triangles);
+    auto relocate = [&](const MaterialPoint& p, MaterialPoint& q) {
+        const Triangle& t = other.mesh_.triangles[p.triangle];
+        const Eigen::Vector2d X = other.point_at(p, other.rest_);
+        const Eigen::Vector2d centroid = (other.rest_.segment<2>(2 * t[0]) + other.rest_.segment<2>(2 * t[1]) +
+                                          other.rest_.segment<2>(2 * t[2])) / 3.0;
+        int tri = locator.locate(X + 1e-3 * (centroid - X), nullptr, 1e-6);
+        if (tri < 0) tri = locator.locate(X, nullptr, 1e-3);
+        if (tri < 0) return false;
+        const Triangle& nt = mesh_.triangles[tri];
+        q.triangle = tri;
+        q.weights = barycentric(mesh_.rest_positions.col(nt[0]), mesh_.rest_positions.col(nt[1]),
+                                mesh_.rest_positions.col(nt[2]), X);
+        return true;
+    };
+    for (const auto& [id, su] : other.sutures_) {
+        Suture copy;
+        if (relocate(su.a, copy.a) && relocate(su.b, copy.b)) sutures_[id] = copy;
+    }
+    next_suture_id_ = std::max(next_suture_id_, other.next_suture_id_);
+    converged_ = false;
 }
 
 // ---------------------------------------------------------------------------

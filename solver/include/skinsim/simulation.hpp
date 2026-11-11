@@ -11,6 +11,7 @@
 //   E(x) = sum over triangles   thickness * area * W(F)          (skin)
 //        + sum over nodes       1/2 k A_i |x_i - X_i|^2          (tethers)
 //        + sum over grabs       psi(|p(x) - target|)             (fingers)
+//        + sum over sutures     1/2 k_s |a(x) - b(x)|^2          (stitches)
 //
 // where p(x) is the weighted centre of the grabbed patch of skin and psi is a
 // spring that saturates at the maximum pull force (see simulation.cpp).
@@ -41,6 +42,27 @@ struct StepInfo {
     double residual = 0.0;     // largest net force on any free node, N
 };
 
+// A point of the skin (a "material point"): a triangle of the mesh and
+// barycentric weights inside it. It moves with the skin as it deforms.
+struct MaterialPoint {
+    int triangle = -1;                                     // index into mesh().triangles
+    Eigen::Vector3d weights = Eigen::Vector3d::Constant(1.0 / 3.0);  // sum to 1
+};
+
+// A suture, as reported for drawing and tension readout.
+struct SutureInfo {
+    int id = 0;
+    Eigen::Vector2d a, b;  // current positions of its two ends, mm
+    double force = 0.0;    // tension, N
+};
+
+// Per-point output fields for the heatmap.
+enum class Field {
+    MaxPrincipalStress,  // largest principal Cauchy stress, MPa (< 0 = compression)
+    VonMisesStress,      // von Mises equivalent stress, MPa (always >= 0)
+    AreaChange,          // current / rest area, J (1 = unchanged)
+};
+
 // What a grab is doing right now (for drawing and for reporting forces).
 struct GrabInfo {
     int id = 0;
@@ -64,6 +86,8 @@ public:
     const TissueParams& params() const { return params_; }
     void set_grab_params(const GrabParams& params);
     const GrabParams& grab_params() const { return grab_params_; }
+    void set_suture_params(const SutureParams& params);
+    const SutureParams& suture_params() const { return suture_params_; }
 
     // --- state ---
     const TriMesh& mesh() const { return mesh_; }
@@ -76,7 +100,7 @@ public:
     // Set all positions (e.g. carried over from a previous mesh). Pinned nodes
     // are put back at rest: by definition they cannot be anywhere else.
     void set_dofs(const Eigen::VectorXd& x);
-    void reset();                             // back to rest, grabs released
+    void reset();  // back to rest, grabs released (sutures stay: they are surgery, not handling)
 
     // --- interaction ---
     // Grab the skin under `point` (current configuration, mm). The pull is
@@ -97,6 +121,36 @@ public:
     // radius, same pull and same finger offset, so a held grab continues
     // seamlessly across re-meshing. Call after set_dofs().
     void adopt_grabs(const Simulation& other);
+
+    // --- sutures ---
+    // Tie a suture between two points of the skin. Returns its id, or -1 if
+    // a point is invalid. The solver pulls the two points together.
+    int add_suture(const MaterialPoint& a, const MaterialPoint& b);
+    bool remove_suture(int id);
+    void clear_sutures();
+    int suture_count() const { return static_cast<int>(sutures_.size()); }
+    std::vector<SutureInfo> suture_info() const;
+    // Re-create the sutures of `other` (same skin, different mesh) at the
+    // same material points, keeping their ids. Like adopt_grabs.
+    void adopt_sutures(const Simulation& other);
+
+    // Where a suture can go: the point on an incision lip nearest to `point`
+    // (current shape), if within max_distance (mm).
+    bool nearest_lip_point(const Eigen::Vector2d& point, double max_distance, MaterialPoint& out) const;
+    // The matching point on the opposite lip: the point that was joined to
+    // `p` before the cut (same rest position). False at a cut's tip, where
+    // there is no opposite lip.
+    bool opposite_lip_point(const MaterialPoint& p, MaterialPoint& out) const;
+    // Current position of a material point.
+    Eigen::Vector2d position_of(const MaterialPoint& p) const;
+
+    // --- output ---
+    // One value per mesh triangle (0 for degenerate triangles, which the
+    // solver skips). Stress is the Cauchy ("true") stress in the deformed skin.
+    Eigen::VectorXd triangle_field(Field field) const;
+    // One value per vertex: the area-weighted average of the surrounding
+    // triangles, the usual way to draw smooth FEM results.
+    Eigen::VectorXd vertex_field(Field field) const;
 
     // --- solving ---
     // Run up to max_iterations Newton iterations. Returns immediately (and
@@ -120,6 +174,7 @@ public:
 
 private:
     struct Element {
+        int triangle;                        // index into mesh_.triangles
         std::array<int, 3> v;                // vertex indices
         Eigen::Matrix<double, 3, 2> grad_n;  // row a = gradient of shape function N_a (1/mm)
         double area;                         // rest area, mm^2
@@ -142,6 +197,14 @@ private:
     double grab_energy(const Eigen::Vector2d& r) const;
     Eigen::Vector2d grab_force(const Eigen::Vector2d& r) const;  // d(energy)/dr
     Eigen::Matrix2d grab_stiffness(const Eigen::Vector2d& r) const;
+    struct Suture {
+        MaterialPoint a, b;
+    };
+    // Suture gap r = a(x) - b(x) is linear in x: r = sum_i c_i x_node_i.
+    // The six (node, coefficient) pairs: +weights of a, -weights of b.
+    void suture_terms(const Suture& s, std::array<int, 6>& nodes, std::array<double, 6>& coeffs) const;
+    Eigen::Vector2d point_at(const MaterialPoint& p, const Eigen::VectorXd& x) const;
+    bool valid(const MaterialPoint& p) const;
     void apply_pins();
     // Fixed dofs: drop their rows/columns and put 1 on the diagonal, so the
     // Newton step for them is exactly zero.
@@ -151,6 +214,7 @@ private:
     TriMesh mesh_;
     TissueParams params_;
     GrabParams grab_params_;
+    SutureParams suture_params_;
     std::vector<Element> elements_;
     Eigen::VectorXd rest_;       // X, the rest positions as a dof vector
     Eigen::VectorXd x_;          // current positions
@@ -159,6 +223,9 @@ private:
     std::vector<int> boundary_nodes_;           // outer border only (incision lips are free)
     std::vector<char> fixed_;    // per dof: 1 = pinned (char, not bool: see .cpp)
     std::map<int, Grab> grabs_;
+    std::map<int, Suture> sutures_;
+    int next_suture_id_ = 1;
+    std::map<Edge, int> lip_triangle_;  // incision lip edge -> the one triangle using it
     double mean_edge_ = 1.0;     // mm, sets the step clamp and force scale
 
     bool converged_ = false;

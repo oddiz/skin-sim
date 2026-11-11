@@ -97,6 +97,7 @@ void Sheet::remesh(CutGraph cuts) {
     auto sim = std::make_unique<Simulation>(mesh_sheet(geometry_, cuts));
     sim->set_params(sim_->params());
     sim->set_grab_params(sim_->grab_params());
+    sim->set_suture_params(sim_->suture_params());
 
     // Carry the deformation over. In extreme states the interpolated
     // positions could turn a new triangle inside out (infinite energy, which
@@ -112,6 +113,7 @@ void Sheet::remesh(CutGraph cuts) {
     if (!valid) sim->set_dofs(rest);
 
     sim->adopt_grabs(*sim_);
+    sim->adopt_sutures(*sim_);  // sutures stay at the same points of the tissue
     sim_ = std::move(sim);  // the old simulation is deleted here
     cuts_ = std::move(cuts);
 }
