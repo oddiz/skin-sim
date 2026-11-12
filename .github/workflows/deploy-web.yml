@@ -1,0 +1,124 @@
+# Builds the browser version of skin-sim and publishes it on Vercel.
+#
+# What happens, step by step (all on a fresh Linux machine from GitHub):
+#   1. Check out the repo with its submodules (godot-cpp, Eigen, CDT, doctest).
+#   2. Install Emscripten, the C++ -> WebAssembly compiler. Its version must be
+#      the one Godot's own web templates were built with (see EM_VERSION).
+#   3. Compile the solver + GDExtension to WebAssembly with SCons.
+#   4. Download Godot (Linux, run without a window) and its web export template.
+#   5. Export the Godot project to a static web page (export/web/).
+#   6. Upload that folder to Vercel as the production deployment.
+#
+# Steps 2 and 4 download ~2 GB, so their results are cached between runs.
+#
+# Needs three repository secrets (Settings -> Secrets and variables -> Actions):
+#   VERCEL_TOKEN       a Vercel access token (vercel.com/account/tokens)
+#   VERCEL_ORG_ID      } from .vercel/project.json after `vercel link`
+#   VERCEL_PROJECT_ID  } (see README, "Web version")
+
+name: Deploy web version to Vercel
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # adds a "Run workflow" button on the Actions tab
+
+# Never run two deployments at once; a newer push replaces an older run.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7.2"
+  # Emscripten used to build Godot 4.7.2's web templates (Godot's
+  # .github/workflows/web_builds.yml). A mismatch can break loading the plugin.
+  EM_VERSION: "4.0.11"
+  SCONS_VERSION: "4.11.1"
+  VERCEL_CLI: "vercel@65.2.0"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out (with submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Cache Emscripten
+        uses: actions/cache@v6
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EM_VERSION }}-${{ runner.os }}
+
+      - name: Install Emscripten
+        run: |
+          if [ ! -d ~/emsdk ]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git ~/emsdk
+          fi
+          ~/emsdk/emsdk install "$EM_VERSION"
+          ~/emsdk/emsdk activate "$EM_VERSION"
+
+      - name: Install SCons
+        run: pipx install "scons==$SCONS_VERSION"
+
+      - name: Build the plugin for WebAssembly
+        run: |
+          source ~/emsdk/emsdk_env.sh
+          scons -j"$(nproc)" platform=web threads=no target=template_release
+          ls -l game/bin/*.wasm
+
+      - name: Cache Godot and its web template
+        uses: actions/cache@v6
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-web-${{ runner.os }}
+
+      - name: Install Godot and the web export template
+        run: |
+          if [ ! -x ~/godot/godot ]; then
+            mkdir -p ~/godot && cd ~/godot
+            base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+            curl -fsSL -o godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+            unzip -q godot.zip && rm godot.zip
+            mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" godot
+            # The template package holds every platform (~1.3 GB); keep only
+            # the web one we export with (plugins on, threads off).
+            curl -fsSL -o templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+            unzip -q templates.tpz templates/version.txt templates/web_dlink_nothreads_release.zip
+            rm templates.tpz
+          fi
+          dest=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mkdir -p "$dest"
+          cp ~/godot/templates/* "$dest/"
+
+      - name: Export the web page
+        run: |
+          mkdir -p export/web
+          # Godot prints "GDExtension dynamic library not found" here: the
+          # editor itself runs on Linux and we only built the web plugin. That
+          # is harmless; the exported page loads the web plugin.
+          ~/godot/godot --headless --path game --export-release "Web" ../export/web/index.html
+          test -f export/web/index.pck
+          test -f export/web/libskinsim.web.template_release.wasm32.nothreads.wasm
+          # Licence notices that must ship with the app.
+          cp THIRD_PARTY_LICENSES export/web/THIRD_PARTY_LICENSES.txt
+          base="https://raw.githubusercontent.com/godotengine/godot/${GODOT_VERSION}-stable"
+          curl -fsSL -o export/web/GODOT_LICENSE.txt "$base/LICENSE.txt"
+          curl -fsSL -o export/web/GODOT_COPYRIGHT.txt "$base/COPYRIGHT.txt"
+          ls -l export/web
+
+      - name: Deploy to Vercel (production)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          # The page is plain static files, so we upload the folder as is.
+          url=$(npx --yes "$VERCEL_CLI" deploy export/web --prod --yes --token "$VERCEL_TOKEN")
+          echo "Deployed: $url"
+          echo "### Deployed to Vercel: $url" >> "$GITHUB_STEP_SUMMARY"

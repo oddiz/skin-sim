@@ -21,3 +21,7 @@ ios.debug = "res://bin/libskinsim.ios.template_debug.arm64.a"
 ios.release = "res://bin/libskinsim.ios.template_release.arm64.a"
 linux.debug.x86_64 = "res://bin/libskinsim.linux.template_debug.x86_64.so"
 linux.release.x86_64 = "res://bin/libskinsim.linux.template_release.x86_64.so"
+; Web (WebAssembly). We export without threads (no special server headers
+; needed), so only the "nothreads" builds exist: scons platform=web threads=no.
+web.debug.wasm32 = "res://bin/libskinsim.web.template_debug.wasm32.nothreads.wasm"
+web.release.wasm32 = "res://bin/libskinsim.web.template_release.wasm32.nothreads.wasm"

@@ -45,6 +45,57 @@ scans the project. If you run the game from the command line on a fresh checkout
 Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
 ```
 
+## Web version
+
+The same app runs in a browser. Godot's engine and our C++ plugin are both
+compiled to WebAssembly (WASM), a compact binary format browsers run at near
+native speed (the solver measured the same speed as the Windows build). The
+export runs without threads, so any static web host works (no special headers).
+
+One-time setup (Windows):
+
+- Emscripten, the C++ -> WASM compiler, version **4.0.11** (must match the one
+  Godot 4.7.2's web templates were built with); commands below.
+- Godot export templates 4.7.2 (Editor -> Manage Export Templates), or just the
+  `web_dlink_nothreads_*.zip` files from the template package copied into
+  `%APPDATA%\Godot\export_templates\4.7.2.stable\`.
+
+```powershell
+git clone https://github.com/emscripten-core/emsdk.git C:\emsdk
+C:\emsdk\emsdk install 4.0.11
+C:\emsdk\emsdk activate 4.0.11
+```
+
+Build and export (PowerShell, from the repo root):
+
+```powershell
+. C:\emsdk\emsdk_env.ps1          # puts emcc on PATH for this shell only
+scons platform=web threads=no target=template_release
+mkdir export\web
+Godot_v4.7.2-stable_win64_console.exe --headless --path game --export-release "Web" ../export/web/index.html
+python -m http.server 8060 --directory export/web    # then open http://127.0.0.1:8060
+```
+
+A browser can't open the page from disk (`file://`); it needs a web server,
+even a local one like the line above. Notes:
+
+- On the web, user presets are saved in the browser's own storage (one browser,
+  one device).
+- The first load downloads ~50 MB (mostly Godot's engine), less when the server
+  compresses it.
+- If the page feels slow while another window has focus, that is Windows
+  throttling background browser windows, not the solver.
+
+### Publishing on Vercel
+
+`.github/workflows/deploy-web.yml` builds the page on GitHub's machines on every
+push to `main` (or by hand from the Actions tab) and uploads it to Vercel. It
+needs three repository secrets: `VERCEL_TOKEN` (create one at
+vercel.com/account/tokens), and `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`, which
+`npx vercel link` writes into `.vercel/project.json`. The Vercel project should
+*not* be connected to the GitHub repository itself, or Vercel would also try to
+build every push on its own (and fail: it has no Emscripten or Godot).
+
 ## Controls
 
 | Input | Action |

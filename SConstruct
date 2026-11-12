@@ -111,4 +111,11 @@ else:
         source=ext_sources,
     )
 
-Default(library, tests_exe)
+# The tests are a desktop program. On the web (`scons platform=web threads=no`)
+# everything is linked as an Emscripten "side module" (a plugin that Godot's
+# WASM engine loads), which a standalone program cannot be, so build only the
+# extension there. Run the tests with a desktop build.
+if env["platform"] == "web":
+    Default(library)
+else:
+    Default(library, tests_exe)

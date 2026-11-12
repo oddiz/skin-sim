@@ -15,6 +15,9 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 ## Platform and tools
 - Dev machine: Windows. Later target: iPhone (built on a Mac later; out of scope now).
   Keep all code portable: no Windows-only APIs.
+- Web build (showcase): Emscripten 4.0.11 (must match Godot 4.7.2's web templates),
+  `scons platform=web threads=no`, Godot "Web" export preset (extensions on, threads off).
+  GitHub Actions deploys it to Vercel (`.github/workflows/deploy-web.yml`). See README.
 - Godot 4.7, standard build (not .NET).
 - C++ via GDExtension using godot-cpp, built with SCons and MSVC (VS 2022 Build Tools).
   - godot-cpp is versioned independently of Godot since v10. Use a godot-cpp 10.x tag

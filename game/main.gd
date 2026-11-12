@@ -330,7 +330,10 @@ func _process(_delta: float) -> void:
 		"Tool: LESION - tap to mark a lesion.",
 		"Tool: EXCISE - drag tip to tip for a fusiform excision; tap inside a closed outline to remove it.",
 	][tool]
-	info.text = "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
+	# The web version can be opened by anyone with the link: say what it is.
+	var notice := "Research prototype: illustrative tissue values, not for clinical use.\n" \
+		if OS.has_feature("web") else ""
+	info.text = notice + "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
 			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
 			sheet.get_cut_count(), sheet.get_suture_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [

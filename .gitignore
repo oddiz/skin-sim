@@ -14,6 +14,7 @@ run_tests_stamp
 *.idb
 *.dll
 *.so
+*.wasm
 *.dylib
 *.framework/
 *.exe
@@ -31,3 +32,9 @@ __pycache__/
 .vs/
 .DS_Store
 Thumbs.db
+
+# Exported web page (Godot web export)
+export/
+
+# Vercel CLI link (project and team IDs; set as GitHub secrets instead)
+.vercel/
