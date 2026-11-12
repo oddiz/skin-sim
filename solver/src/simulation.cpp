@@ -8,6 +8,7 @@
 #include <Eigen/LU>  // provides Matrix::inverse(); Eigen/Core only declares it
 #include <Eigen/SparseCholesky>
 
+#include "skinsim/contact.hpp"
 #include "skinsim/cuts.hpp"  // point_segment_distance
 #include "skinsim/material.hpp"
 #include "skinsim/mesh.hpp"
@@ -53,6 +54,13 @@ SutureParams sanitized(SutureParams p) {
     // Capped so a typo can't wreck the conditioning of the stiffness matrix.
     p.stiffness = std::min(at_least(p.stiffness, 1e-6), 1e4);
     p.strip_width = std::min(at_least(p.strip_width, 0.05), 20.0);
+    return p;
+}
+
+ContactParams sanitized(ContactParams p) {
+    // Too soft and the lips sink into each other; too stiff and the stiffness
+    // matrix becomes badly conditioned (contact springs dwarf the skin).
+    p.stiffness = std::min(at_least(p.stiffness, 1e-3), 1e3);
     return p;
 }
 
@@ -151,15 +159,27 @@ Simulation::Simulation(TriMesh mesh) : mesh_(std::move(mesh)) {
     apply_pins();
 
     // Which triangle each lip edge belongs to (exactly one: it's a boundary
-    // edge). Sutures attach to the lips through these triangles.
+    // edge). Sutures attach to the lips through these triangles. The same
+    // triangle tells which side of the edge is tissue: triangles are
+    // counter-clockwise, so walking a -> b in the triangle's own order, its
+    // inside is on the left. Contact needs exactly that orientation.
+    lip_length_ = Eigen::VectorXd::Zero(n);
     for (int ti = 0; ti < mesh_.triangle_count(); ++ti) {
         const Triangle& t = mesh_.triangles[ti];
         for (int k = 0; k < 3; ++k) {
             const int a = t[k], b = t[(k + 1) % 3];
             const Edge e = a < b ? Edge{a, b} : Edge{b, a};
-            if (lips.count(e)) lip_triangle_[e] = ti;
+            if (!lips.count(e)) continue;
+            lip_triangle_[e] = ti;
+            lip_segments_.push_back({a, b});
+            // Each end of a lip edge carries half of its length.
+            const double half = 0.5 * (rest_.segment<2>(2 * b) - rest_.segment<2>(2 * a)).norm();
+            lip_length_[a] += half;
+            lip_length_[b] += half;
         }
     }
+    for (int v = 0; v < n; ++v)
+        if (lip_length_[v] > 0.0) lip_nodes_.push_back(v);
 }
 
 void Simulation::set_params(const TissueParams& params) {
@@ -255,6 +275,12 @@ void Simulation::set_suture_params(const SutureParams& params) {
     suture_params_ = p;
     if (strips_changed)
         for (auto& [id, su] : sutures_) rebuild_suture(su);
+    converged_ = false;
+}
+
+void Simulation::set_contact_params(const ContactParams& params) {
+    contact_params_ = sanitized(params);
+    pairs_valid_ = false;
     converged_ = false;
 }
 
@@ -476,6 +502,8 @@ double Simulation::energy(const Eigen::VectorXd& x) const {
 
     for (const auto& [id, su] : sutures_)
         E += suture_energy(strip_point(su.bite_a, x) - strip_point(su.bite_b, x), su.rest_length);
+
+    for (const ContactPair& c : contact_pairs(x)) E += 0.5 * contact_weight(c.node) * c.gap * c.gap;
     return E;
 }
 
@@ -513,6 +541,19 @@ Eigen::VectorXd Simulation::gradient(const Eigen::VectorXd& x) const {
         suture_terms(su, nodes, c);
         const Eigen::Vector2d f = suture_force(strip_point(su.bite_a, x) - strip_point(su.bite_b, x), su.rest_length);
         for (size_t i = 0; i < nodes.size(); ++i) g.segment<2>(2 * nodes[i]) += c[i] * f;
+    }
+
+    for (const ContactPair& c : contact_pairs(x)) {
+        // E = 1/2 w g^2  ->  dE/dq = w g dg/dq. With g < 0 this pushes the
+        // node back out of the skin it entered and the lip the other way:
+        // equal and opposite (Newton's third law), as the gap only depends on
+        // relative positions. (For a vertex pair nodes[2] = nodes[1] and the
+        // last entries of dg are 0.)
+        int nodes[3];
+        contact::Vec6 dg;
+        pair_gap(c, x, nodes, &dg, nullptr);
+        const contact::Vec6 f = contact_weight(c.node) * c.gap * dg;
+        for (int k = 0; k < 3; ++k) g.segment<2>(2 * nodes[k]) += f.segment<2>(2 * k);
     }
     return g;
 }
@@ -576,6 +617,30 @@ SparseMatrix Simulation::hessian(const Eigen::VectorXd& x, bool project_psd, boo
                 for (int d = 0; d < 2; ++d)
                     for (int e = 0; e < 2; ++e)
                         trip.emplace_back(2 * nodes[i] + d, 2 * nodes[j] + e, c[i] * c[j] * K(d, e));
+    }
+
+    for (const ContactPair& c : contact_pairs(x)) {
+        // d2E/dq2 = w (dg dg^T + g d2g). The first term is a plain spring
+        // across the gap (always positive semi-definite). The second comes
+        // from the lip rotating under the node, and can be indefinite: the
+        // projected (safe) fallback drops it. (Measured: keeping it in the
+        // first, exact attempt converges in far fewer iterations than
+        // always dropping it, despite the fallback it sometimes triggers.)
+        int nodes[3];
+        contact::Vec6 dg;
+        contact::Mat6 d2g;
+        pair_gap(c, x, nodes, &dg, &d2g);
+        contact::Mat6 K = dg * dg.transpose();
+        // (Pressed into a lip vertex, the two terms together are w I: a plain
+        // spring towards the vertex, never indefinite, and needed whole, or
+        // the node could slide round the vertex freely. Kept always.)
+        // (Pressed into a lip vertex, the two terms together are w I: a plain
+        // spring towards the vertex, never indefinite, and needed whole, or
+        // the node could slide round the vertex freely. Kept always.)
+        if (c.segment < 0 || !project_psd) K += c.gap * d2g;
+        K *= contact_weight(c.node);
+        for (int r = 0; r < 6; ++r)
+            for (int q = 0; q < 6; ++q) trip.emplace_back(2 * nodes[r / 2] + r % 2, 2 * nodes[q / 2] + q % 2, K(r, q));
     }
 
     SparseMatrix H(x.size(), x.size());
@@ -1039,6 +1104,265 @@ void Simulation::adopt_sutures(const Simulation& other) {
 }
 
 // ---------------------------------------------------------------------------
+// Contact between incision lips
+// ---------------------------------------------------------------------------
+//
+// Without contact the two lips of a wound can pass through each other: a knot
+// tied tight makes them overlap instead of pressing together. Here, a lip
+// node that has entered skin other than its own is pushed back out by a
+// penalty spring:
+//
+//   E = 1/2 w g^2,   w = k_c h l / 2,   g = -(depth of the node inside).
+//
+// k_c is the contact stiffness (pressure per mm of overlap), h the skin
+// thickness and l the node's share of lip length, so the force is the contact
+// pressure k_c |g| times the area h l it acts on: refining the mesh does not
+// change the result. The 1/2: every lip node is checked, on both lips, so
+// each side carries half of the pressure between them ("two-half-pass").
+// Neither side is privileged, and a sharp corner of one lip that pokes into
+// the other is caught as that corner's own node.
+//
+// The depth is the distance to the nearest point of a lip (a point inside a
+// lip edge, or a lip vertex), i.e. the signed distance to the edge of the
+// skin it entered. Two properties make this robust:
+//  - It is continuous. A node can only get into or out of other skin by
+//    crossing a lip, where the depth is 0, so the energy never jumps.
+//    (Simpler rules, such as "behind which lip segment?", fail near corners
+//    and where incisions cross: the energy jumps, and Newton's line search
+//    stalls. That is how this design was arrived at.)
+//  - It handles corners exactly: inside the corner of a flap the nearest
+//    edge is the one actually pressed into.
+// "Inside skin other than its own" is tested literally: is the node inside
+// a triangle that it is not a corner of (TriangleLocator on the current
+// shape)?
+//
+// Why a penalty, not a barrier: barrier methods (e.g. IPC, incremental
+// potential contact) keep surfaces strictly apart with an energy that is
+// infinite at zero gap. But right after a cut, both lips lie exactly on top of
+// each other (gap 0): with a barrier, the freshly cut skin would start in an
+// impossible state. A penalty is zero for touching lips and only acts on
+// overlap, so a fresh cut, a gaping wound and a closed one all work the same
+// way. The cost: a tiny overlap remains (pressure / k_c).
+//
+// Everything is found from the current positions every time, so a lip can
+// slide any distance along another (a flap being inset). Contact keeps no
+// history, which also means it carries over re-meshing for free. It is
+// frictionless.
+
+double Simulation::contact_weight(int node) const {
+    return contact_params_.stiffness * params_.thickness * 0.5 * lip_length_[node];
+}
+
+// energy(), gradient() and hessian() are usually called at the same
+// positions in turn (and the line search's tunnelling check once more), so
+// the pairs of the last positions asked about are kept.
+const std::vector<Simulation::ContactPair>& Simulation::contact_pairs(const Eigen::VectorXd& x) const {
+    if (!(pairs_valid_ && pairs_x_.size() == x.size() && pairs_x_ == x)) {
+        pairs_ = find_contact_pairs(x);
+        pairs_x_ = x;
+        pairs_valid_ = true;
+    }
+    return pairs_;
+}
+
+std::vector<Simulation::ContactPair> Simulation::find_contact_pairs(const Eigen::VectorXd& x) const {
+    std::vector<ContactPair> pairs;
+    if (!contact_params_.enabled || lip_segments_.empty()) return pairs;
+
+    // 1. Which lip nodes lie inside skin that is not their own? A grid of
+    //    the triangles in their current shape answers "which triangle is
+    //    this point in?" quickly (TriangleLocator, as used for cutting).
+    //    A lip node always sits on a corner of its own triangles: those are
+    //    skipped. On the edge of another triangle counts as inside (on a lip
+    //    edge the depth below is 0 anyway, so that costs nothing).
+    const Eigen::Map<const Eigen::Matrix2Xd> pos(x.data(), 2, mesh_.vertex_count());
+    const TriangleLocator locator(pos, mesh_.triangles);
+
+    const size_t ns = lip_segments_.size();
+    for (int node : lip_nodes_) {
+        const Eigen::Vector2d p = pos.col(node);
+        Eigen::Vector3d w;
+        if (locator.locate(p, &w, 1e-12, node) < 0) continue;  // not inside other skin
+
+        // 2. How deep: the distance to the nearest lip (not its own edges),
+        //    i.e. to the edge of the skin it has entered. The nearest point
+        //    is either inside a lip segment or one of the lip's vertices.
+        ContactPair best{node, -1, -1, 0.0};
+        double best_d = kInf;
+        for (size_t k = 0; k < ns; ++k) {
+            const LipSegment& sg = lip_segments_[k];
+            if (sg.u == node || sg.v == node) continue;
+            const Eigen::Vector2d u = pos.col(sg.u), v = pos.col(sg.v);
+            // Cheap reject: farther from the segment's bounding box than the best so far.
+            const Eigen::Vector2d lo = u.cwiseMin(v), hi = u.cwiseMax(v);
+            const Eigen::Vector2d out = (lo - p).cwiseMax(p - hi).cwiseMax(0.0);
+            if (out.norm() >= best_d) continue;
+            const double s = (v - u).squaredNorm() > 1e-24 ? contact::projection(p, u, v) : 0.0;
+            if (s > 0.0 && s < 1.0) {
+                const double d = std::abs(contact::signed_gap(p, u, v));
+                if (d < best_d) {
+                    best_d = d;
+                    best.segment = static_cast<int>(k);
+                    best.vertex = -1;
+                }
+            } else {
+                const int c = s <= 0.0 ? sg.u : sg.v;
+                const double d = (p - pos.col(c)).norm();
+                if (d < best_d) {
+                    best_d = d;
+                    best.segment = -1;
+                    best.vertex = c;
+                }
+            }
+        }
+        if (!(best_d > 0.0) || best_d == kInf) continue;
+        best.gap = -best_d;
+        pairs.push_back(best);
+    }
+    return pairs;
+}
+
+// The gap of one contact pair, g = -(distance to the nearest lip point), and
+// its derivatives over the coordinates of the nodes involved: (node, segment
+// start, segment end), or (node, vertex) when the nearest point is a vertex
+// (then the last two entries stay zero).
+void Simulation::pair_gap(const ContactPair& c, const Eigen::VectorXd& x, int nodes[3], contact::Vec6* grad,
+                          contact::Mat6* hess) const {
+    const Eigen::Vector2d p = x.segment<2>(2 * c.node);
+    nodes[0] = c.node;
+    if (c.segment >= 0) {
+        // The distance to a segment's line is |signed gap|. Inside the other
+        // skin the node is normally behind the segment (signed gap < 0); the
+        // sign flip covers the rare tangled case where it is not.
+        const LipSegment& sg = lip_segments_[c.segment];
+        nodes[1] = sg.u;
+        nodes[2] = sg.v;
+        const double g = contact::signed_gap(p, x.segment<2>(2 * sg.u), x.segment<2>(2 * sg.v), grad, hess);
+        if (g > 0.0) {
+            if (grad) *grad = -*grad;
+            if (hess) *hess = -*hess;
+        }
+        return;
+    }
+    // Nearest to a vertex c: g = -|p - c|, so dg/dp = -n, dg/dc = +n with
+    // n = (p - c) / |p - c|; the second derivative is the change of n,
+    // (I - n n^T) / |p - c|.
+    nodes[1] = nodes[2] = c.vertex;
+    const Eigen::Vector2d d = p - x.segment<2>(2 * c.vertex);
+    const double len = d.norm();
+    const Eigen::Vector2d n = d / len;
+    if (grad) {
+        grad->setZero();
+        grad->segment<2>(0) = -n;
+        grad->segment<2>(2) = n;
+    }
+    if (hess) {
+        hess->setZero();
+        const Eigen::Matrix2d P = (Eigen::Matrix2d::Identity() - n * n.transpose()) / len;
+        hess->block<2, 2>(0, 0) = -P;
+        hess->block<2, 2>(0, 2) = P;
+        hess->block<2, 2>(2, 0) = P;
+        hess->block<2, 2>(2, 2) = -P;
+    }
+}
+
+// A penalty only notices overlap that exists at the end of a step. Contact
+// measures how deep a lip node is inside other skin, so the only overlap it
+// can miss is a node that went right through a piece of skin (a narrow flap,
+// say) and out the other side within one step ("tunnelling"): at the end it
+// is outside skin again, on the wrong side. So each trial step of the line
+// search is checked continuously: did an undetected lip node pass into skin
+// through one lip and out through another? Then the step is too long.
+bool Simulation::tunnels(const Eigen::VectorXd& from, const Eigen::VectorXd& to) const {
+    if (!contact_params_.enabled || lip_segments_.empty()) return false;
+    std::vector<char> detected(mesh_.vertex_count(), 0);
+    for (const ContactPair& c : contact_pairs(to)) detected[c.node] = 1;
+
+    // Broad phase: a uniform grid over the area the lips swept through.
+    // Each segment is listed in every cell its swept bounding box touches;
+    // a node then only checks the segments listed where it swept. Without
+    // this, every node meets every segment: a million checks per trial step
+    // on a sheet with many incisions.
+    auto swept = [&](std::initializer_list<int> nodes, Eigen::Vector2d& lo, Eigen::Vector2d& hi) {
+        lo = Eigen::Vector2d::Constant(kInf);
+        hi = Eigen::Vector2d::Constant(-kInf);
+        for (int v : nodes) {
+            lo = lo.cwiseMin(from.segment<2>(2 * v)).cwiseMin(to.segment<2>(2 * v));
+            hi = hi.cwiseMax(from.segment<2>(2 * v)).cwiseMax(to.segment<2>(2 * v));
+        }
+    };
+    const size_t ns = lip_segments_.size();
+    std::vector<Eigen::Vector2d> seg_lo(ns), seg_hi(ns);
+    Eigen::Vector2d lo = Eigen::Vector2d::Constant(kInf), hi = Eigen::Vector2d::Constant(-kInf);
+    for (size_t k = 0; k < ns; ++k) {
+        swept({lip_segments_[k].u, lip_segments_[k].v}, seg_lo[k], seg_hi[k]);
+        lo = lo.cwiseMin(seg_lo[k]);
+        hi = hi.cwiseMax(seg_hi[k]);
+    }
+    if (!lo.allFinite() || !hi.allFinite()) return false;
+    const double cell = std::max({mean_edge_, (hi - lo).maxCoeff() / 256.0, 1e-9});
+    const int nx = static_cast<int>((hi.x() - lo.x()) / cell) + 1, ny = static_cast<int>((hi.y() - lo.y()) / cell) + 1;
+    auto cell_of = [&](double v, double origin, int count) {
+        return std::clamp(static_cast<int>((v - origin) / cell), 0, count - 1);
+    };
+    std::vector<std::vector<int>> grid(static_cast<size_t>(nx) * ny);
+    for (size_t k = 0; k < ns; ++k)
+        for (int j = cell_of(seg_lo[k].y(), lo.y(), ny); j <= cell_of(seg_hi[k].y(), lo.y(), ny); ++j)
+            for (int i = cell_of(seg_lo[k].x(), lo.x(), nx); i <= cell_of(seg_hi[k].x(), lo.x(), nx); ++i)
+                grid[static_cast<size_t>(j) * nx + i].push_back(static_cast<int>(k));
+
+    std::vector<int> seen(ns, -1);  // last node that checked each segment (avoid repeats)
+    for (int node : lip_nodes_) {
+        if (detected[node]) continue;
+        Eigen::Vector2d plo, phi;
+        swept({node}, plo, phi);
+        if (phi.x() < lo.x() || phi.y() < lo.y() || plo.x() > hi.x() || plo.y() > hi.y()) continue;
+        const Eigen::Vector2d p0 = from.segment<2>(2 * node), p1 = to.segment<2>(2 * node);
+        // When did it first pass into skin through a lip, and when did it
+        // last pass out of skin through a lip? In, then out again later:
+        // it went right through.
+        double first_in = kInf, last_out = -kInf;
+        for (int j = cell_of(plo.y(), lo.y(), ny); j <= cell_of(phi.y(), lo.y(), ny); ++j)
+            for (int i = cell_of(plo.x(), lo.x(), nx); i <= cell_of(phi.x(), lo.x(), nx); ++i)
+                for (int k : grid[static_cast<size_t>(j) * nx + i]) {
+                    if (seen[k] == node) continue;
+                    seen[k] = node;
+                    const LipSegment& sg = lip_segments_[k];
+                    if (sg.u == node || sg.v == node) continue;
+                    if ((phi.array() < seg_lo[k].array()).any() || (plo.array() > seg_hi[k].array()).any()) continue;
+                    contact::Crossing c[2];
+                    const int n = contact::crossings(p0, p1, from.segment<2>(2 * sg.u), to.segment<2>(2 * sg.u),
+                                                     from.segment<2>(2 * sg.v), to.segment<2>(2 * sg.v), c);
+                    for (int q = 0; q < n; ++q) {
+                        if (c[q].inward)
+                            first_in = std::min(first_in, c[q].time);
+                        else
+                            last_out = std::max(last_out, c[q].time);
+                    }
+                }
+        if (first_in < last_out - 1e-9) return true;
+    }
+    return false;
+}
+
+ContactInfo Simulation::contact_info() const {
+    ContactInfo info;
+    info.node_pressure = Eigen::VectorXd::Zero(mesh_.vertex_count());
+    // Pressure = k_c x overlap. Both passes see (about) the same overlap from
+    // either side, each carrying half the force, so this is the pressure
+    // between the lips.
+    for (const ContactPair& c : contact_pairs(x_)) {
+        const double pressure = contact_params_.stiffness * -c.gap;
+        info.node_pressure[c.node] = pressure;
+        info.max_pressure = std::max(info.max_pressure, pressure);
+        info.max_overlap = std::max(info.max_overlap, -c.gap);
+        info.total_force += contact_weight(c.node) * -c.gap;
+        ++info.pairs;
+    }
+    return info;
+}
+
+// ---------------------------------------------------------------------------
 // Newton's method
 // ---------------------------------------------------------------------------
 
@@ -1163,26 +1487,44 @@ StepInfo Simulation::step(int max_iterations) {
         //    so E = 13.2 is only known to ~1e-15). Comparing energies then is a
         //    coin toss. In that regime we judge by the residual force instead,
         //    which is still computed accurately.
-        const bool energy_unreliable = -slope < kEnergyRoundoff * std::max(1.0, std::abs(E));
-        double alpha = 1.0;
         Eigen::VectorXd x_try;
         Eigen::VectorXd g_try;
         double E_try = kInf;
-        bool accepted = false;
-        for (int cut = 0; cut <= kMaxLineSearchCuts; ++cut) {
-            x_try = x_ + alpha * d;
-            E_try = energy(x_try);
-            if (energy_unreliable) {
-                if (std::isfinite(E_try)) {
-                    g_try = free_gradient(x_try);
-                    accepted = max_node_force(g_try) < info.residual;
+        auto line_search = [&](const Eigen::VectorXd& dir, double dir_slope) {
+            const bool energy_unreliable = -dir_slope < kEnergyRoundoff * std::max(1.0, std::abs(E));
+            double alpha = 1.0;
+            for (int cut = 0; cut <= kMaxLineSearchCuts; ++cut) {
+                x_try = x_ + alpha * dir;
+                E_try = energy(x_try);
+                // A step that pushes a lip right through another is as illegal
+                // as one that turns a triangle inside out.
+                if (std::isfinite(E_try) && tunnels(x_, x_try)) E_try = kInf;
+                bool accepted = false;
+                if (energy_unreliable) {
+                    if (std::isfinite(E_try)) {
+                        g_try = free_gradient(x_try);
+                        accepted = max_node_force(g_try) < info.residual;
+                    }
+                } else {
+                    accepted = E_try <= E + kArmijo * alpha * dir_slope;
                 }
-            } else {
-                accepted = E_try <= E + kArmijo * alpha * slope;
+                if (accepted) return true;
+                alpha *= 0.5;
+                ++info.line_search_cuts;
             }
-            if (accepted) break;
-            alpha *= 0.5;
-            ++info.line_search_cuts;
+            return false;
+        };
+        bool accepted = line_search(d, slope);
+        if (!accepted && contact_params_.enabled && !lip_segments_.empty()) {
+            // Contact makes the energy only piecewise smooth: where a lip
+            // node is equally near two parts of the other lip, it has a kink.
+            // Sitting on one, the Newton direction (built from one side's
+            // curvature) can climb on the other side however short the step.
+            // Steepest descent always goes downhill: try it before giving up.
+            Eigen::VectorXd sd = -g;
+            const double big = max_node_force(sd);
+            if (big > max_step) sd *= max_step / big;
+            accepted = line_search(sd, g.dot(sd));
         }
         if (!accepted) {
             // No downhill step exists at floating-point precision: we are as

@@ -284,13 +284,15 @@ TEST_CASE("undermining lets a wound gape more") {
     CHECK(gap[1] > 1.3 * gap[0]);
 }
 
-// Undermining pays off when tissue must be *advanced*: pulled past where it
-// lies in the body, as when closing a defect or insetting a flap. The tethers
-// to the underlying tissue resist that sliding; undermining releases them.
-// (Re-approximating a plain incision just restores the in-vivo state, so its
-// closing tension is set by the skin's own prestress, not by the tethers.)
+// Undermining pays off when tissue must be *advanced*: slid over its base,
+// past where it lies in the body, as when closing a defect or insetting a
+// flap. The tethers to the underlying tissue resist that sliding; undermining
+// releases them. (Re-approximating a plain incision just restores the in-vivo
+// state, so its closing tension is set by the skin's own prestress, not by
+// the tethers.) Here a skin hook draws the left lip 6 mm along the incision,
+// sliding past the right lip (lip contact is frictionless).
 TEST_CASE("undermining reduces the force needed to advance skin") {
-    double tension[2];
+    double force[2];
     for (int undermined = 0; undermined < 2; ++undermined) {
         Sheet s(kGeometry);
         TissueParams p = living_skin();
@@ -301,18 +303,17 @@ TEST_CASE("undermining reduces the force needed to advance skin") {
         if (undermined)  // the tissue to be advanced: left of the incision
             for (double y = -20; y <= 20; y += 2) CHECK(s.undermine_at(V(-12, y), 14.0, y == -20));
         Simulation& sim = s.simulation();
-        // Advance the left side 6 mm: a suture with bites of 8 and 2 mm,
-        // tied 60% tight, shortening the loop by 0.6 x 10 = 6 mm.
-        MaterialPoint a, b;
-        REQUIRE(sim.material_point_at(V(-8, 0), a));
-        REQUIRE(sim.material_point_at(V(2, 0), b));
-        REQUIRE(sim.add_suture(a, b, 0.6) > 0);
+        GrabParams gp;
+        gp.max_force = 1e9;  // no force cap: compare the force at the same hook position
+        sim.set_grab_params(gp);
+        REQUIRE(sim.grab(0, V(-1.5, 0)));
+        sim.move_grab(0, V(-1.5, 6));
         settle(sim);
-        tension[undermined] = sim.suture_info().at(0).force;
+        force[undermined] = sim.grab_info().at(0).force;
         CHECK(sim.min_area_ratio() > 0.0);
     }
-    MESSAGE("advancing 6 mm: " << tension[0] << " N, after undermining " << tension[1] << " N");
-    CHECK(tension[1] < 0.7 * tension[0]);
+    MESSAGE("advancing 6 mm: " << force[0] << " N, after undermining " << force[1] << " N");
+    CHECK(force[1] < 0.7 * force[0]);
 }
 
 TEST_CASE("undermining survives re-meshing, undo and clear") {

@@ -150,6 +150,11 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("clear_sutures"), &SkinSheet::clear_sutures);
     ClassDB::bind_method(D_METHOD("get_suture_count"), &SkinSheet::get_suture_count);
     ClassDB::bind_method(D_METHOD("get_suture_info"), &SkinSheet::get_suture_info);
+    ClassDB::bind_method(D_METHOD("set_lip_contact", "on"), &SkinSheet::set_lip_contact);
+    ClassDB::bind_method(D_METHOD("get_lip_contact"), &SkinSheet::get_lip_contact);
+    ClassDB::bind_method(D_METHOD("set_contact_stiffness", "n_per_mm3"), &SkinSheet::set_contact_stiffness);
+    ClassDB::bind_method(D_METHOD("get_contact_stiffness"), &SkinSheet::get_contact_stiffness);
+    ClassDB::bind_method(D_METHOD("get_contact_info"), &SkinSheet::get_contact_info);
     ClassDB::bind_method(D_METHOD("get_heatmap_legend"), &SkinSheet::get_heatmap_legend);
 
     ClassDB::bind_method(D_METHOD("get_vertex_count"), &SkinSheet::get_vertex_count);
@@ -216,6 +221,12 @@ void SkinSheet::_bind_methods() {
                  "set_suture_stiffness", "get_suture_stiffness");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "suture_strip_width", PROPERTY_HINT_RANGE, "0.1,6,0.1,suffix:mm"),
                  "set_suture_strip_width", "get_suture_strip_width");
+
+    ADD_GROUP("Lip contact", "");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lip_contact"), "set_lip_contact", "get_lip_contact");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "contact_stiffness", PROPERTY_HINT_RANGE,
+                              "1,1000,1,exp,suffix:N/mm^3"),
+                 "set_contact_stiffness", "get_contact_stiffness");
 
     ADD_GROUP("Solver", "");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "iterations_per_frame", PROPERTY_HINT_RANGE, "1,50,1"),
@@ -382,6 +393,17 @@ void SkinSheet::set_suture_strip_width(double p_mm) {
     push_params();
 }
 
+void SkinSheet::set_lip_contact(bool p_on) {
+    contact_params_.enabled = p_on;
+    push_params();
+    if (is_inside_tree()) update_render_mesh();  // lip colours
+}
+
+void SkinSheet::set_contact_stiffness(double p_n_per_mm3) {
+    contact_params_.stiffness = p_n_per_mm3;
+    push_params();
+}
+
 void SkinSheet::set_heatmap(int p_mode) {
     heatmap_ = (p_mode < HEATMAP_OFF || p_mode > HEATMAP_AREA_CHANGE) ? HEATMAP_OFF : p_mode;
     update_skin_material();
@@ -427,6 +449,7 @@ void SkinSheet::push_params() {
     s->set_params(params_);
     s->set_grab_params(grab_params_);
     s->set_suture_params(suture_params_);
+    s->set_contact_params(contact_params_);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +587,17 @@ Array SkinSheet::get_suture_info() const {
     return out;
 }
 
+Dictionary SkinSheet::get_contact_info() const {
+    Dictionary d;
+    const skinsim::Simulation* s = sim();
+    const skinsim::ContactInfo c = s ? s->contact_info() : skinsim::ContactInfo{};
+    d["pairs"] = c.pairs;
+    d["max_pressure_kpa"] = c.max_pressure * 1000.0;  // MPa -> kPa
+    d["force_n"] = c.total_force;
+    d["max_overlap_mm"] = c.max_overlap;
+    return d;
+}
+
 // ---------------------------------------------------------------------------
 // Info
 // ---------------------------------------------------------------------------
@@ -687,7 +721,8 @@ void SkinSheet::ensure_render_objects() {
 
     lip_material_.instantiate();
     lip_material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
-    lip_material_->set_albedo(Color(0.45, 0.02, 0.04));
+    lip_material_->set_albedo(Color(1, 1, 1));
+    lip_material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);  // colour per lip node
 
     // Internal child: hidden from the Scene dock and never saved into the .tscn,
     // so saving the scene doesn't write the whole generated mesh into it.
@@ -826,18 +861,34 @@ void SkinSheet::update_render_mesh() {
         render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1, wire_material_);
     }
 
-    // --- Incision lips: always drawn, dark red ------------------------------
+    // --- Incision lips: always drawn, dark red; blue where pressed ----------
+    // against the opposite lip (lip contact), the deeper blue the higher the
+    // pressure.
     if (!mesh_.cut_edges.empty()) {
+        const Eigen::VectorXd pressure = s->contact_info().node_pressure;  // MPa per vertex
+        const Color free_lip(0.45, 0.02, 0.04), pressed_lip(0.1, 0.35, 1.0);
+        auto lip_color = [&](int v) {
+            // Full blue from ~300 kPa; the square root makes light contact visible too.
+            const double s = std::sqrt(std::clamp(pressure[v] / 0.3, 0.0, 1.0));
+            return free_lip.lerp(pressed_lip, static_cast<float>(s));
+        };
         PackedVector3Array lip_vertices;
+        PackedColorArray lip_colors;
         lip_vertices.resize(2 * static_cast<int64_t>(mesh_.cut_edges.size()));
+        lip_colors.resize(lip_vertices.size());
         Vector3* lv = lip_vertices.ptrw();
+        Color* lc = lip_colors.ptrw();
         for (size_t e = 0; e < mesh_.cut_edges.size(); ++e) {
-            lv[2 * e + 0] = to_godot(x.col(mesh_.cut_edges[e][0]), kLipLift);
-            lv[2 * e + 1] = to_godot(x.col(mesh_.cut_edges[e][1]), kLipLift);
+            for (int k = 0; k < 2; ++k) {
+                const int v = mesh_.cut_edges[e][k];
+                lv[2 * e + k] = to_godot(x.col(v), kLipLift);
+                lc[2 * e + k] = lip_color(v);
+            }
         }
         Array lip_arrays;
         lip_arrays.resize(Mesh::ARRAY_MAX);
         lip_arrays[Mesh::ARRAY_VERTEX] = lip_vertices;
+        lip_arrays[Mesh::ARRAY_COLOR] = lip_colors;
         render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_LINES, lip_arrays);
         render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1, lip_material_);
     }

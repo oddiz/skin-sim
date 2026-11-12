@@ -99,6 +99,7 @@ void Sheet::remesh(CutGraph cuts) {
     sim->set_params(sim_->params());
     sim->set_grab_params(sim_->grab_params());
     sim->set_suture_params(sim_->suture_params());
+    sim->set_contact_params(sim_->contact_params());
 
     // Carry the deformation over. In extreme states the interpolated
     // positions could turn a new triangle inside out (infinite energy, which

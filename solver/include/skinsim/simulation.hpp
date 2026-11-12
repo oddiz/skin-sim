@@ -13,6 +13,8 @@
 //        + sum over grabs       psi(|p(x) - target|)             (fingers)
 //        + sum over sutures     1/2 k_s max(0, |a(x) - b(x)| - L)^2   (stitches tied to length L;
 //                                a, b = centres of the two bite strips)
+//        + sum over lip contacts 1/2 k_c h l/2 max(0, -g(x))^2  (lips pressed together;
+//                                g = signed gap, < 0 where they overlap)
 //
 // where p(x) is the weighted centre of the grabbed patch of skin and psi is a
 // spring that saturates at the maximum pull force (see simulation.cpp).
@@ -25,6 +27,7 @@
 #include <Eigen/Core>
 #include <Eigen/SparseCore>
 
+#include "skinsim/contact.hpp"
 #include "skinsim/material.hpp"
 #include "skinsim/mesh.hpp"
 #include "skinsim/params.hpp"
@@ -64,6 +67,15 @@ struct SutureInfo {
     // squeezes that tissue; strongly negative suggests strangulation or the
     // suture cutting through.
     double loop_stress = 0.0;
+};
+
+// Contact between incision lips, as reported for drawing and readouts.
+struct ContactInfo {
+    int pairs = 0;              // lip nodes currently pressing on another lip
+    double max_pressure = 0.0;  // MPa
+    double total_force = 0.0;   // N, summed over the whole contact interface
+    double max_overlap = 0.0;   // mm (the penalty's small, unavoidable overlap)
+    Eigen::VectorXd node_pressure;  // per vertex, MPa (0 where not in contact)
 };
 
 // Per-point output fields for the heatmap.
@@ -168,6 +180,11 @@ public:
     // "bite" of a suture entering the skin there. 0 if there are no incisions.
     double bite(const MaterialPoint& p) const;
 
+    // --- contact between incision lips ---
+    void set_contact_params(const ContactParams& params);
+    const ContactParams& contact_params() const { return contact_params_; }
+    ContactInfo contact_info() const;
+
     // --- undermining ---
     // Per vertex, 0 = attached as normal, 1 = fully undermined (tether reduced
     // to TissueParams::undermined_tether of its value). Sheet computes it
@@ -204,6 +221,11 @@ public:
     // 1 = undeformed, < 1 compressed, > 1 stretched, <= 0 would be inverted.
     double min_area_ratio() const;
     double max_area_ratio() const;
+
+    // Would moving from `from` to `to` (in a straight line) make a lip node
+    // pass right through a lip and end up too deep to be pushed back
+    // ("tunnelling")? step() rejects such steps. Public for tests.
+    bool tunnels(const Eigen::VectorXd& from, const Eigen::VectorXd& to) const;
 
 private:
     struct Element {
@@ -270,10 +292,30 @@ private:
     membrane::Mat4 element_stiffness(const Eigen::Matrix2d& F) const;
     double tether_weight(int node) const;  // node area x undermining reduction
 
+    // Lip contact (see the Contact section of simulation.cpp).
+    struct LipSegment {
+        int u, v;  // oriented: the tissue lies on the left of u -> v
+    };
+    struct ContactPair {
+        int node;     // a lip node inside skin that is not its own...
+        int segment;  // ...nearest to a point inside this lip segment (index into lip_segments_)...
+        int vertex;   // ...or to this lip vertex (then segment = -1)
+        double gap;   // minus the depth of the overlap, mm (< 0)
+    };
+    // The single place that decides which lip nodes touch which segments, so
+    // energy, gradient and Hessian always agree.
+    const std::vector<ContactPair>& contact_pairs(const Eigen::VectorXd& x) const;  // cached
+    std::vector<ContactPair> find_contact_pairs(const Eigen::VectorXd& x) const;
+    double contact_weight(int node) const;  // k_c h l / 2: the pair's penalty stiffness, N/mm
+    // A pair's gap and its derivatives; fills the node indices.
+    void pair_gap(const ContactPair& c, const Eigen::VectorXd& x, int nodes[3], contact::Vec6* grad,
+                  contact::Mat6* hess) const;
+
     TriMesh mesh_;
     TissueParams params_;
     GrabParams grab_params_;
     SutureParams suture_params_;
+    ContactParams contact_params_;
     std::vector<Element> elements_;
     Eigen::VectorXd rest_;       // X, the rest positions as a dof vector
     Eigen::VectorXd x_;          // current positions
@@ -291,6 +333,14 @@ private:
     std::map<int, Suture> sutures_;
     int next_suture_id_ = 1;
     std::map<Edge, int> lip_triangle_;  // incision lip edge -> the one triangle using it
+    std::vector<LipSegment> lip_segments_;
+    std::vector<int> lip_nodes_;        // every vertex on a lip
+    Eigen::VectorXd lip_length_;        // per vertex: its share of lip length at rest, mm
+    // Cache of contact_pairs(): the positions last asked about, and their pairs.
+    // ("mutable": may change inside const functions; it is not part of the state.)
+    mutable bool pairs_valid_ = false;
+    mutable Eigen::VectorXd pairs_x_;
+    mutable std::vector<ContactPair> pairs_;
     double mean_edge_ = 1.0;     // mm, sets the step clamp and force scale
 
     bool converged_ = false;

@@ -129,7 +129,8 @@ TriangleLocator::TriangleLocator(const Eigen::Matrix2Xd& positions, const std::v
     }
 }
 
-int TriangleLocator::locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary, double tolerance) const {
+int TriangleLocator::locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary, double tolerance,
+                            int skip_vertex) const {
     if (buckets_.empty() || !p.allFinite()) return -1;
     const double fi = (p.x() - origin_.x()) / cell_;
     const double fj = (p.y() - origin_.y()) / cell_;
@@ -143,6 +144,8 @@ int TriangleLocator::locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary, dou
     double best_inside = -tolerance;  // how far inside: the smallest barycentric weight
     Eigen::Vector3d best_bary;
     for (int t : buckets_[static_cast<size_t>(j) * nx_ + i]) {
+        const Triangle& tri = triangles_[t];
+        if (tri[0] == skip_vertex || tri[1] == skip_vertex || tri[2] == skip_vertex) continue;
         const Eigen::Vector2d a = positions_.col(triangles_[t][0]);
         const Eigen::Vector2d b = positions_.col(triangles_[t][1]);
         const Eigen::Vector2d c = positions_.col(triangles_[t][2]);

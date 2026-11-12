@@ -275,6 +275,7 @@ func _process(_delta: float) -> void:
 	if s.regularized:
 		flags += " regularized"
 	panel.show_selected_suture(_selected_info())
+	panel.show_contact(sheet.get_contact_info())
 	var tool_line: String = [
 		"Tool: GRAB - drag the skin.",
 		"Tool: CUT - draw an incision.",

@@ -76,8 +76,11 @@ public:
     // Index of the triangle containing p, or -1. If several qualify (p on a
     // shared edge), the one p is most "inside" wins. `tolerance` accepts points
     // slightly outside a triangle (in barycentric units: 1e-3 = 0.1% of its size).
-    // Inverted or degenerate triangles are never returned.
-    int locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary = nullptr, double tolerance = 1e-9) const;
+    // Inverted or degenerate triangles are never returned. Triangles with
+    // vertex `skip_vertex` as a corner are ignored (contact uses this: is a
+    // lip node inside skin other than its own?).
+    int locate(const Eigen::Vector2d& p, Eigen::Vector3d* bary = nullptr, double tolerance = 1e-9,
+               int skip_vertex = -1) const;
 
 private:
     Eigen::Matrix2Xd positions_;

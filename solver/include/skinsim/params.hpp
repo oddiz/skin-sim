@@ -94,4 +94,17 @@ struct SutureParams {
     double strip_width = 2.0;  // mm
 };
 
+// Contact between incision lips: the two sides of a wound (or a flap and the
+// edge it is inset into) press against each other instead of passing through.
+// Modelled as a penalty: a stiff spring that switches on only where the lips
+// overlap, so the overlap is about (contact pressure / stiffness).
+struct ContactParams {
+    bool enabled = true;
+
+    // Pressure per mm of overlap. At 10 N/mm^3 a contact pressure of 100 kPa
+    // (0.1 MPa) leaves 0.01 mm of overlap: invisible, yet soft enough to keep
+    // the stiffness matrix well conditioned.
+    double stiffness = 50.0;  // N/mm^3 (= MPa/mm)
+};
+
 }  // namespace skinsim

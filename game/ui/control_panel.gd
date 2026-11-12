@@ -89,6 +89,8 @@ const PARAMS := [
 	{"prop": "suture_strip_width", "label": "Bite strip width", "min": 0.1, "max": 6.0, "step": 0.1,
 		"fmt": "%.1f mm",
 		"tip": "Width of the strip of dermis each bite pulls on (needle hole to wound edge)."},
+	{"prop": "lip_contact", "label": "Lip contact", "type": "bool",
+		"tip": "The lips of incisions press on each other instead of passing through. Lips pressed together turn blue."},
 	{"section": "Heatmap"},
 	{"prop": "heatmap", "label": "Show", "type": "enum",
 		"options": ["Off (skin)", "Max principal stress", "Von Mises stress", "Area change"],
@@ -117,6 +119,7 @@ var tightness := 0.0
 var _tightness_slider: HSlider
 var _tightness_label: Label
 var _suture_label: Label
+var _contact_label: Label
 var _remove_suture: Button
 
 
@@ -280,6 +283,9 @@ func _build_knot(box: VBoxContainer) -> void:
 	_remove_suture.pressed.connect(func(): remove_suture_requested.emit())
 	row.add_child(_remove_suture)
 	box.add_child(row)
+	_contact_label = Label.new()
+	_contact_label.add_theme_font_size_override("font_size", 12)
+	box.add_child(_contact_label)
 	show_selected_suture({})
 
 
@@ -304,6 +310,16 @@ func show_selected_suture(info: Dictionary) -> void:
 		_suture_label.text = "Suture #%d: %s, loop %+.0f kPa" % [info.id,
 			"slack" if info.slack else "%.2f N" % info.force, info.loop_stress_kpa]
 		_remove_suture.disabled = false
+
+
+## Called every frame by main.gd with sheet.get_contact_info().
+func show_contact(info: Dictionary) -> void:
+	if not sheet.lip_contact:
+		_contact_label.text = "Lip contact off: lips can overlap."
+	elif info.pairs == 0:
+		_contact_label.text = "Lips: not pressed together."
+	else:
+		_contact_label.text = "Lips pressed: max %.0f kPa, %.2f N" % [info.max_pressure_kpa, info.force_n]
 
 
 ## Show which tool is active (when it was changed by keyboard, not by a button).

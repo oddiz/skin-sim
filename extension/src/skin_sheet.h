@@ -92,6 +92,13 @@ public:
     void set_suture_strip_width(double p_mm);
     double get_suture_strip_width() const { return suture_params_.strip_width; }
 
+    // --- Lip contact (the lips of incisions press on each other instead of
+    // passing through) ---
+    void set_lip_contact(bool p_on);
+    bool get_lip_contact() const { return contact_params_.enabled; }
+    void set_contact_stiffness(double p_n_per_mm3);
+    double get_contact_stiffness() const { return contact_params_.stiffness; }
+
     // --- Solver ---
     void set_iterations_per_frame(int p_iterations);
     int get_iterations_per_frame() const { return iterations_per_frame_; }
@@ -152,6 +159,9 @@ public:
     // force (N), tightness, slack (bool), loop_stress_kpa (stress along the
     // thread in the tissue the loop holds; negative = squeezed).
     Array get_suture_info() const;
+    // Lips pressed together: pairs (lip nodes in contact), max_pressure_kpa,
+    // force_n (total across the contact), max_overlap_mm.
+    Dictionary get_contact_info() const;
 
     // --- Info for the HUD ---
     int get_vertex_count() const { return mesh_.vertex_count(); }
@@ -191,6 +201,7 @@ private:
     static skinsim::TissueParams app_default_tissue();
     skinsim::GrabParams grab_params_;   // how the user's finger acts
     skinsim::SutureParams suture_params_;
+    skinsim::ContactParams contact_params_;
     int iterations_per_frame_ = 5;
     bool show_wireframe_ = true;
     Color skin_color_ = Color(0.85, 0.64, 0.53);

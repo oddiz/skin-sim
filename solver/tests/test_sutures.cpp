@@ -495,24 +495,8 @@ TEST_CASE("bite strips: wider bites spread the load and lower the stress") {
     }
 }
 
-// NOTE: the lips have no contact yet. A knot tied tighter than "edges
-// touching" makes them overlap rather than press together, so the tissue in
-// the loop is stretched, not squeezed. This test pins the current behaviour.
-TEST_CASE("bite strips: loop stress is zero for a just-closing knot and rises when tighter") {
-    double previous = -1.0;
-    for (double t : {0.0, 0.2, 0.4}) {
-        CAPTURE(t);
-        Sheet s = vertical_cut();
-        Simulation& sim = s.simulation();
-        REQUIRE(sim.add_suture(at(sim, V(-3, 0)), at(sim, V(3, 0)), t) > 0);
-        settle(sim);
-        const double loop = sim.suture_info().at(0).loop_stress;
-        MESSAGE("no load, tightness " << t * 100 << "%: loop stress " << loop * 1000 << " kPa");
-        if (t == 0.0) CHECK(std::abs(loop) < 1e-9);
-        CHECK(loop > previous);
-        previous = loop;
-    }
-}
+// How the loop stress responds to tightness (squeezing, once the lips press
+// on each other) is tested in test_contact.cpp.
 
 TEST_CASE("bite strips stay on their own side of the incision") {
     Sheet s = vertical_cut();

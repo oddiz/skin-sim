@@ -70,14 +70,35 @@ Each bite pulls on a strip of dermis from the needle hole to the wound edge
 the needle holes is finite and settles as the mesh is refined.
 Each suture shows its tension in newtons (green to red up to 3 N, grey = slack)
 and its loop stress: the stress along the thread in the tissue the loop holds
-(+ stretched, - squeezed). Known limitation: the lips have no contact yet, so a
-knot tied tighter than "edges touching" makes them overlap instead of pressing
-together, and the loop is never squeezed. The heatmap
+(+ stretched, - squeezed). The heatmap
 shows the Cauchy (true) stress in the skin; the colour scale is set by the
 "Stress scale" slider so that different closures can be compared on one scale.
-Stress right at a suture or forceps point is a point-load peak that grows as
-the mesh is refined; suture tension and the stress field away from those points
-are mesh-independent.
+Where a single suture closes a gaping wound, the corner between the closed point
+and the open wound is a sharp notch: the stress right there keeps growing as the
+mesh is refined (as it would at any sharp notch in an elastic material). Suture
+tension and loop stress are mesh-independent.
+
+### Lip contact
+
+The lips of incisions cannot pass through each other ("Lip contact", on by
+default): a knot tied tighter than "edges touching" presses them together and
+squeezes the tissue in the loop (negative loop stress), forceps cannot push one
+lip across the other, and a flap can slide along the edge it is inset into.
+Lips pressed together are drawn blue, and the panel shows the contact pressure.
+
+How it works: a lip node that has entered skin other than its own is pushed
+back by a stiff spring (a *penalty*) proportional to how deep it is, measured as
+the distance to the nearest lip. That leaves a tiny overlap (pressure / contact
+stiffness, hundredths of a mm). Both lips are checked against each other, each
+carrying half the pressure. Each solver step is also checked continuously, so a
+fast move cannot carry a lip right through a narrow strip of skin. Contact is
+frictionless.
+
+Limitation: the skin is a flat membrane, so squeezed tissue can only compress
+in-plane. Real skin would bulge (evert) or wrinkle instead, and the strain-stiffening
+law stiffens in compression as it does in tension. Over-tight knots (beyond ~20%)
+therefore give much higher tension and compression than they would in reality:
+trust the sign and the location, not the magnitude.
 
 ## Tissue model (M6)
 
