@@ -38,7 +38,7 @@ const PRESET_FORMAT_VERSION := 1
 const PRESET_KEYS := [
 	"shear_modulus_kpa", "stiffening", "thickness", "tether_stiffness_kpa_per_mm", "pin_boundary",
 	"fibre_angle_deg", "fibre_stiffness_kpa", "fibre_nonlinearity", "fibre_dispersion",
-	"prestretch_along_pct", "prestretch_across_pct", "undermined_tethering_pct",
+	"prestretch_along_pct", "prestretch_across_pct", "undermined_tethering_pct", "wrinkling_pct",
 ]
 
 ## One row per control. "exp" = logarithmic slider, for values spanning decades.
@@ -57,6 +57,9 @@ const PARAMS := [
 		"tip": "Attachment to the underlying tissue. Low = mobile, undermined skin."},
 	{"prop": "pin_boundary", "label": "Pin outer edge", "type": "bool",
 		"tip": "Hold the sheet's outer edge fixed (skin continues beyond it)."},
+	{"prop": "wrinkling_pct", "label": "Wrinkling", "min": 0.0, "max": 99.0, "step": 1.0,
+		"fmt": "%.0f %%",
+		"tip": "How much of its resistance to squeezing the skin loses by buckling into wrinkles (dog-ears). 0 = flat sheet that pushes back like a solid block. Tension is not affected."},
 	{"section": "Collagen fibres (RSTL)"},
 	{"prop": "fibre_angle_deg", "label": "RSTL direction", "min": -90.0, "max": 90.0, "step": 1.0,
 		"fmt": "%.0f deg", "tip": "Direction of the relaxed skin tension lines (0 = horizontal)."},
@@ -103,8 +106,8 @@ const PARAMS := [
 	{"section": "Heatmap"},
 	{"prop": "heatmap", "label": "Show", "type": "enum",
 		"options": ["Off (skin)", "Max principal stress", "Von Mises stress", "Area change",
-			"Min principal stress"],
-		"tip": "Colour the skin by a result. Max principal: red = tension, blue = compression. Min principal: blue where the skin is squeezed in some direction (where real skin would pucker: dog-ears). [H]"},
+			"Min principal stress", "Excess skin (wrinkles)"],
+		"tip": "Colour the skin by a result. Max principal: red = tension, blue = compression. Min principal: blue where the skin is squeezed in some direction. Excess skin: how much extra skin is bunched into wrinkles, where real skin puckers (dog-ears). [H]"},
 	{"prop": "heatmap_range_kpa", "label": "Stress scale", "min": 1.0, "max": 2000.0, "step": 1.0,
 		"exp": true, "fmt": "%.0f kPa", "tip": "Stress at the end of the colour scale."},
 	{"section": "Solver"},
@@ -367,7 +370,9 @@ func show_contact(info: Dictionary) -> void:
 
 ## Show which tool is active (when it was changed by keyboard, not by a button).
 func show_tool(tool: int) -> void:
-	_tool_buttons[tool].set_pressed_no_signal(true)
+	# set_pressed_no_signal bypasses the ButtonGroup, so release the others too.
+	for i in _tool_buttons.size():
+		_tool_buttons[i].set_pressed_no_signal(i == tool)
 
 
 func _section_label(text: String) -> Label:

@@ -36,6 +36,9 @@ extends Node3D
 ##   --demo-excise             a 6 mm lesion, fusiform excision along the
 ##                             RSTL with a 2 mm margin, closed with five
 ##                             sutures; min principal stress heatmap (for checks)
+##   --demo-wrinkle            a short, blunt ellipse (1.5:1, 90 degree tips)
+##                             excised and closed: dog-ears at both ends;
+##                             excess skin heatmap (for checks)
 
 enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE }
 
@@ -108,6 +111,8 @@ func _ready() -> void:
 		_demo_m6()
 	if args.has("--demo-excise"):
 		_demo_excise()
+	if args.has("--demo-wrinkle"):
+		_demo_wrinkle()
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
@@ -166,7 +171,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_E:
 				_set_tool(Tool.EXCISE)
 			KEY_H:
-				sheet.heatmap = (sheet.heatmap + 1) % 5
+				sheet.heatmap = (sheet.heatmap + 1) % 6
 				panel.refresh()
 			KEY_Z:
 				_undo()
@@ -567,4 +572,34 @@ func _demo_excise() -> void:
 		await get_tree().process_frame
 	_set_tool(Tool.GRAB)
 	sheet.heatmap = 4
+	panel.refresh()
+
+
+## A short, blunt ellipse (15 x 10 mm: 1.5:1, 90 degree tips) excised along
+## the RSTL and closed with four sutures. The skin at its ends has nowhere to
+## go: it bunches up (dog-ears). The excess skin heatmap shows how much.
+func _demo_wrinkle() -> void:
+	await get_tree().process_frame
+	sheet.ellipse_ratio = 1.5
+	sheet.tip_angle_deg = 90.0
+	panel.refresh()
+	_set_tool(Tool.EXCISE)
+	_touch(0, Vector2(-7.5, 0), true)
+	for k in range(1, 16):
+		_drag(0, Vector2(-7.5 + k, 0))
+	_touch(0, Vector2(7.5, 0), false)
+	await get_tree().process_frame
+	for _frame in 30:
+		await get_tree().process_frame
+	_set_tool(Tool.SUTURE)
+	panel.set_tightness(0.0)
+	for x in [-4.5, -1.5, 1.5, 4.5]:
+		_select_suture(-1)
+		var hw := 6.0 * (1.0 - pow(absf(x) / 7.5, 2))
+		_touch(0, Vector2(x, hw + 3.0), true)
+		_drag(0, Vector2(x, -hw - 3.0))
+		_touch(0, Vector2(x, -hw - 3.0), false)
+		await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	sheet.heatmap = 5
 	panel.refresh()

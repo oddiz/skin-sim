@@ -8,7 +8,8 @@
 // The state is the vector x of all node positions, laid out x0, y0, x1, y1, ...
 // (2N numbers, "degrees of freedom" or dofs). The total potential energy is
 //
-//   E(x) = sum over triangles   thickness * area * W(F)          (skin)
+//   E(x) = sum over triangles   thickness * area * W(F)          (skin; with wrinkling,
+//                                W blends in the relaxed energy of wrinkling.hpp)
 //        + sum over nodes       1/2 k A_i |x_i - X_i|^2          (tethers)
 //        + sum over grabs       psi(|p(x) - target|)             (fingers)
 //        + sum over sutures     1/2 k_s max(0, |a(x) - b(x)| - L)^2   (stitches tied to length L;
@@ -31,6 +32,7 @@
 #include "skinsim/material.hpp"
 #include "skinsim/mesh.hpp"
 #include "skinsim/params.hpp"
+#include "skinsim/wrinkling.hpp"
 
 namespace skinsim {
 
@@ -85,6 +87,9 @@ enum class Field {
                          // is squeezed in some direction (where real skin puckers)
     VonMisesStress,      // von Mises equivalent stress, MPa (always >= 0)
     AreaChange,          // current / rest area, J (1 = unchanged)
+    ExcessSkin,          // skin bunched into wrinkles: extra material length over the
+                         // distance it spans, as a fraction (0.1 = 10%); 0 where taut.
+                         // Where real skin puckers (dog-ears), see wrinkling.hpp.
 };
 
 // What a grab is doing right now (for drawing and for reporting forces).
@@ -334,6 +339,7 @@ private:
     Eigen::Matrix2d prestretch_ = Eigen::Matrix2d::Identity();  // G: natural -> rest (in vivo)
     membrane::Mat4 prestretch_vec_ = membrane::Mat4::Identity();  // vec(F G) = (G^T (x) I) vec(F)
     membrane::Fibres fibres_;
+    membrane::Material material_;  // mu, b and fibres together, for the wrinkling relaxation
     std::map<int, Grab> grabs_;
     std::map<int, Suture> sutures_;
     int next_suture_id_ = 1;

@@ -58,6 +58,16 @@ struct TissueParams {
     // --- Undermining: fraction of the tether stiffness left where the skin
     // has been undermined (freed from the underlying tissue with the brush).
     double undermined_tether = 0.05;
+
+    // --- Wrinkling (tension-field theory, see wrinkling.hpp): how much of
+    // its resistance to in-plane compression the skin loses by buckling out
+    // of the plane. 0 = flat membrane (squeezed skin pushes back as a solid
+    // block would; the default here, so the solver's tested behaviour is
+    // unchanged); 0.9 = buckled skin keeps 10% (its bending stiffness and
+    // the tissue under it still resist a little). Capped at 0.99: the
+    // remainder keeps elements from being squashed flat or turned inside out.
+    // Tension is never affected.
+    double wrinkling = 0.0;
 };
 
 // How the user's "finger" (forceps / skin hook) acts on the skin.

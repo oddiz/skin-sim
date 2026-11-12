@@ -23,7 +23,8 @@ Presets the user saves in the app go to `user://presets/` instead
     "fibre_dispersion": 0.15,            // GOH kappa: 0 aligned .. 0.333 isotropic
     "prestretch_along_pct": 8,           // in-vivo prestretch along the RSTL, %
     "prestretch_across_pct": 3,          // ... and across, %
-    "undermined_tethering_pct": 5        // attachment left where undermined, %
+    "undermined_tethering_pct": 5,       // attachment left where undermined, %
+    "wrinkling_pct": 90                  // compression resistance lost by buckling, % (0 = flat membrane)
   }
 }
 ```

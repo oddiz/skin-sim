@@ -58,7 +58,7 @@ Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
 | Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
 | Z | Undo the last incision, suture, undermining stroke, lesion or excision |
-| H | Cycle the heatmap: off / max principal / von Mises / area change / min principal stress |
+| H | Cycle the heatmap: off / max principal / von Mises / area change / min principal stress / excess skin |
 | W / R | Wireframe on/off / reset the deformation (incisions and sutures stay) |
 
 Incisions are stored in rest (tissue) coordinates, so you can cut skin that is
@@ -97,11 +97,10 @@ carrying half the pressure. Each solver step is also checked continuously, so a
 fast move cannot carry a lip right through a narrow strip of skin. Contact is
 frictionless.
 
-Limitation: the skin is a flat membrane, so squeezed tissue can only compress
-in-plane. Real skin would bulge (evert) or wrinkle instead, and the strain-stiffening
-law stiffens in compression as it does in tension. Over-tight knots (beyond ~20%)
-therefore give much higher tension and compression than they would in reality:
-trust the sign and the location, not the magnitude.
+Limitation: squeezed tissue can only compress in-plane or wrinkle (see
+Wrinkling below); real skin would also bulge (evert). Over-tight knots (beyond
+~20%) impose very large strains on the tissue in the loop, so their tension and
+compression are still high: trust the sign and the location, not the magnitude.
 
 ## Lesion excision and defect closure (M7)
 
@@ -119,16 +118,44 @@ through it (the lesion is outlined in red). Prestressed skin retracts, so the
 defect opens wider than the skin removed; close it with sutures. The heatmap's
 "min principal stress" shows where the closure squeezes the skin: at the ends of
 an ellipse that is too short or too blunt. That is where real skin would pucker
-into a dog-ear. The model is a flat membrane, so it shows the compression but not
-the pucker itself (see planned features).
+into a dog-ear; the "excess skin" heatmap (M8) shows how much skin bunches up there.
+
+## Wrinkling (M8)
+
+A membrane has no bending stiffness: pushed together in its plane, real skin
+does not shorten like a block of rubber, it buckles out of the plane into
+wrinkles or a dog-ear. The 2D model has no "out of the plane", so a plain flat
+membrane resists squeezing far too much. The wrinkling model (tension-field
+theory) lets the skin hide extra length in fine wrinkles instead:
+
+- **Taut** skin (tension in every direction) behaves exactly as before.
+- **Wrinkled** skin (tension one way, compression the other) carries only the
+  tension; across the wrinkles the stress drops to zero.
+- **Slack** skin (shorter than its natural size in every direction) lies in
+  folds and carries nothing.
+
+The "Wrinkling" slider (Tissue section, default 90%) sets how much of its
+resistance to squeezing the skin loses by buckling. The remaining 10% stands for
+the bending stiffness of the dermis and the tissue under it, and keeps elements
+from being squashed flat. At 0% you get the old flat membrane, for comparison.
+
+The heatmap "Excess skin (wrinkles)" shows how much extra skin is bunched up:
+how much longer the skin is than the distance it spans in its most crumpled
+direction (10% = 10% more skin than room for it). This is where real skin
+puckers. A 15 x 10 mm blunt ellipse (1.5 : 1, 90 degree tips) leaves ~37% excess
+at its ends; a classic 30 x 10 mm (3 : 1, 30 degrees) ~14%. With wrinkling on,
+the compression at the blunt ellipse's ends drops from -122 to -33 kPa, while the
+closure tension hardly changes, since a closure works in tension.
+
+How it works (for the curious): the energy of the skin is replaced by the lowest
+energy it can reach by adding length in any directions (wrinkles add material
+length, never remove it). Because the skin's energy is convex in the metric
+C = F^T F, this small optimisation per triangle has a unique answer, found in a
+few Newton iterations, and the resulting stress is never compressive. Details
+in `solver/include/skinsim/wrinkling.hpp`.
 
 ## Planned features
 
-- **Wrinkling membrane (tension-field theory).** A flat membrane cannot buckle,
-  so where real skin would wrinkle or pucker (dog-ears, over-tight knots) the
-  model carries in-plane compression instead, and overestimates it. A wrinkling
-  model sets the compressive stress to (nearly) zero in the wrinkled direction,
-  making closure tension and dog-ear predictions realistic.
 - Local flaps (advancement, rotation, transposition) on the excision defects.
 - Friction between the lips; calibration against measured skin properties.
 

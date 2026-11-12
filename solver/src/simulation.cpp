@@ -47,6 +47,7 @@ TissueParams sanitized(TissueParams p) {
     p.prestretch_along = std::min(at_least(p.prestretch_along, 0.5), 2.0);
     p.prestretch_across = std::min(at_least(p.prestretch_across, 0.5), 2.0);
     p.undermined_tether = std::min(at_least(p.undermined_tether, 0.0), 1.0);
+    p.wrinkling = std::min(at_least(p.wrinkling, 0.0), 0.99);
     return p;
 }
 
@@ -227,26 +228,44 @@ void Simulation::update_material() {
     // G maps the RSTL direction onto itself (it is a principal direction of
     // G), so the fibre direction is the same in the natural and rest shapes.
     fibres_.direction = Eigen::Vector2d(std::cos(a), std::sin(a));
+    material_.mu = params_.shear_modulus;
+    material_.b = params_.stiffening;
+    material_.fibres = fibres_;
 }
+
+// Wrinkling blends the plain energy W with the relaxed (tension-field) energy
+// W_rel of wrinkling.hpp:  W_mix = (1 - r) W + r W_rel,  r = params_.wrinkling.
+// Where the skin is taut W_rel = W, so nothing changes; under compression only
+// the fraction 1 - r of the flat membrane's resistance is left. That remainder
+// keeps W's barrier against squashing an element flat (1/J^2 -> infinity),
+// which W_rel alone lacks (crumpled skin can fold over itself; a 2D sheet must not).
+// Stress and stiffness blend the same way (derivatives are linear).
 
 double Simulation::element_energy_density(const Eigen::Matrix2d& F) const {
     const Eigen::Matrix2d Fe = F * prestretch_;
-    const double W = membrane::energy_density(Fe, params_.shear_modulus, params_.stiffening);
+    double W = membrane::energy_density(Fe, params_.shear_modulus, params_.stiffening);
     if (W == kInf) return kInf;
-    return W + membrane::fibre_energy_density(Fe, fibres_);
+    W += membrane::fibre_energy_density(Fe, fibres_);
+    const double r = params_.wrinkling;
+    if (r > 0.0) W += r * (membrane::relaxed_energy_density(Fe, material_) - W);
+    return W;
 }
 
 Eigen::Matrix2d Simulation::element_piola(const Eigen::Matrix2d& F) const {
     const Eigen::Matrix2d Fe = F * prestretch_;
-    const Eigen::Matrix2d Pe =
+    Eigen::Matrix2d Pe =
         membrane::first_piola(Fe, params_.shear_modulus, params_.stiffening) + membrane::fibre_piola(Fe, fibres_);
+    const double r = params_.wrinkling;
+    if (r > 0.0) Pe += r * (membrane::relaxed_piola(Fe, material_) - Pe);
     return Pe * prestretch_.transpose();
 }
 
 membrane::Mat4 Simulation::element_stiffness(const Eigen::Matrix2d& F) const {
     const Eigen::Matrix2d Fe = F * prestretch_;
-    const membrane::Mat4 Ke =
+    membrane::Mat4 Ke =
         membrane::stiffness(Fe, params_.shear_modulus, params_.stiffening) + membrane::fibre_stiffness(Fe, fibres_);
+    const double r = params_.wrinkling;
+    if (r > 0.0) Ke += r * (membrane::relaxed_stiffness(Fe, material_) - Ke);
     return prestretch_vec_.transpose() * Ke * prestretch_vec_;
 }
 
@@ -707,6 +726,11 @@ Eigen::VectorXd Simulation::triangle_field(Field field) const {
         const Eigen::Matrix2d F = deformation_gradient(e, x_);
         if (field == Field::AreaChange) {
             out[e.triangle] = F.determinant();  // relative to the rest (in vivo) area
+            continue;
+        }
+        if (field == Field::ExcessSkin) {
+            // Measured from the natural (unstretched) skin: F_e = F G.
+            out[e.triangle] = membrane::excess_length(membrane::relax(F * prestretch_, material_));
             continue;
         }
         // Cauchy ("true") stress: force per area of the *deformed* skin.

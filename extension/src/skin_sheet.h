@@ -77,6 +77,10 @@ public:
     double get_prestretch_across_pct() const { return (params_.prestretch_across - 1.0) * 100.0; }
     void set_undermined_tethering_pct(double p_pct);
     double get_undermined_tethering_pct() const { return params_.undermined_tether * 100.0; }
+    // Wrinkling in percent: how much of its resistance to compression the
+    // skin loses by buckling (see solver wrinkling.hpp). 0 = flat membrane.
+    void set_wrinkling_pct(double p_pct);
+    double get_wrinkling_pct() const { return params_.wrinkling * 100.0; }
 
     // --- Grab (the user's forceps) ---
     void set_grab_radius(double p_mm);

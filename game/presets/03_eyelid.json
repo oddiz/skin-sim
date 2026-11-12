@@ -14,6 +14,7 @@
     "fibre_dispersion": 0.2,
     "prestretch_along_pct": 2,
     "prestretch_across_pct": 1,
-    "undermined_tethering_pct": 10
+    "undermined_tethering_pct": 10,
+    "wrinkling_pct": 95
   }
 }

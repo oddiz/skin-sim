@@ -36,8 +36,12 @@ enum HeatmapMode {
     HEATMAP_VON_MISES,
     HEATMAP_AREA_CHANGE,
     HEATMAP_MIN_PRINCIPAL,
-    HEATMAP_LAST = HEATMAP_MIN_PRINCIPAL
+    HEATMAP_EXCESS_SKIN,
+    HEATMAP_LAST = HEATMAP_EXCESS_SKIN
 };
+
+// Excess skin heatmap spans 0 .. kExcessRange (0.3 = 30% more skin than room for it).
+constexpr double kExcessRange = 0.3;
 
 // Area change heatmap spans 1/kAreaRange .. kAreaRange (log scale).
 constexpr double kAreaRange = 1.5;
@@ -76,6 +80,9 @@ skinsim::TissueParams SkinSheet::app_default_tissue() {
     p.prestretch_along = 1.08;
     p.prestretch_across = 1.03;
     p.undermined_tether = 0.05;
+    // Buckled skin keeps 10% of its resistance to compression (bending of
+    // the dermis, the tissue underneath): dog-ears pucker instead of pushing.
+    p.wrinkling = 0.9;
     return p;
 }
 
@@ -117,6 +124,8 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_prestretch_across_pct"), &SkinSheet::get_prestretch_across_pct);
     ClassDB::bind_method(D_METHOD("set_undermined_tethering_pct", "pct"), &SkinSheet::set_undermined_tethering_pct);
     ClassDB::bind_method(D_METHOD("get_undermined_tethering_pct"), &SkinSheet::get_undermined_tethering_pct);
+    ClassDB::bind_method(D_METHOD("set_wrinkling_pct", "pct"), &SkinSheet::set_wrinkling_pct);
+    ClassDB::bind_method(D_METHOD("get_wrinkling_pct"), &SkinSheet::get_wrinkling_pct);
     ClassDB::bind_method(D_METHOD("excise", "point"), &SkinSheet::excise);
     ClassDB::bind_method(D_METHOD("excise_fusiform", "tip_a", "tip_b"), &SkinSheet::excise_fusiform);
     ClassDB::bind_method(D_METHOD("get_fusiform_outline", "tip_a", "tip_b"), &SkinSheet::get_fusiform_outline);
@@ -226,6 +235,8 @@ void SkinSheet::_bind_methods() {
                  "set_prestretch_across_pct", "get_prestretch_across_pct");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "undermined_tethering_pct", PROPERTY_HINT_RANGE, "0,100,1,suffix:%"),
                  "set_undermined_tethering_pct", "get_undermined_tethering_pct");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "wrinkling_pct", PROPERTY_HINT_RANGE, "0,99,1,suffix:%"),
+                 "set_wrinkling_pct", "get_wrinkling_pct");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "undermine_radius", PROPERTY_HINT_RANGE, "1,30,0.5,suffix:mm"),
                  "set_undermine_radius", "get_undermine_radius");
 
@@ -268,7 +279,8 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_wireframe"), "set_show_wireframe", "get_show_wireframe");
     ADD_PROPERTY(PropertyInfo(Variant::COLOR, "skin_color"), "set_skin_color", "get_skin_color");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "heatmap", PROPERTY_HINT_ENUM,
-                              "Off,Max principal stress,Von Mises stress,Area change,Min principal stress"),
+                              "Off,Max principal stress,Von Mises stress,Area change,Min principal stress,"
+                              "Excess skin (wrinkles)"),
                  "set_heatmap", "get_heatmap");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heatmap_range_kpa", PROPERTY_HINT_RANGE,
                               "1,2000,1,exp,suffix:kPa"),
@@ -385,6 +397,11 @@ void SkinSheet::set_prestretch_across_pct(double p_pct) {
 
 void SkinSheet::set_undermined_tethering_pct(double p_pct) {
     params_.undermined_tether = p_pct / 100.0;
+    push_params();
+}
+
+void SkinSheet::set_wrinkling_pct(double p_pct) {
+    params_.wrinkling = p_pct / 100.0;  // the solver clamps it to 0..0.99
     push_params();
 }
 
@@ -715,6 +732,7 @@ Color SkinSheet::heat_color(double p_value) const {
         case HEATMAP_MAX_PRINCIPAL:
         case HEATMAP_MIN_PRINCIPAL: return ramp(kDiverging, 5, 0.5 + 0.5 * p_value / range);
         case HEATMAP_VON_MISES: return ramp(kSequential, 5, p_value / range);
+        case HEATMAP_EXCESS_SKIN: return ramp(kSequential, 5, p_value / kExcessRange);
         case HEATMAP_AREA_CHANGE:
             // Log scale: halving and doubling are equally far from "unchanged".
             return ramp(kDiverging, 5, 0.5 + 0.5 * std::log(p_value > 1e-9 ? p_value : 1e-9) / std::log(kAreaRange));
@@ -740,6 +758,12 @@ Dictionary SkinSheet::get_heatmap_legend() const {
         lo = -range;
     } else if (heatmap_ == HEATMAP_VON_MISES) {
         title = "Von Mises stress";
+    } else if (heatmap_ == HEATMAP_EXCESS_SKIN) {
+        title = "Excess skin (wrinkles)";
+        field = skinsim::Field::ExcessSkin;
+        hi = kExcessRange;
+        unit = "%";
+        scale = 100.0;
     } else {
         title = "Area change";
         field = skinsim::Field::AreaChange;
@@ -929,6 +953,7 @@ void SkinSheet::update_render_mesh() {
         const skinsim::Field field = heatmap_ == HEATMAP_MAX_PRINCIPAL   ? skinsim::Field::MaxPrincipalStress
                                      : heatmap_ == HEATMAP_MIN_PRINCIPAL ? skinsim::Field::MinPrincipalStress
                                      : heatmap_ == HEATMAP_VON_MISES     ? skinsim::Field::VonMisesStress
+                                     : heatmap_ == HEATMAP_EXCESS_SKIN   ? skinsim::Field::ExcessSkin
                                                                          : skinsim::Field::AreaChange;
         const Eigen::VectorXd values = s->vertex_field(field);
         PackedColorArray colors;

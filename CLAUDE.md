@@ -76,11 +76,13 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 - (after M6: suture bite strips with loop stress; lip contact between incision edges.)
 - M7: Lesion excision and defect closure: lesion markings, fusiform excision design, removal of
   pieces of skin cut free, margins, min principal stress heatmap (dog-ear compression).
+- M8: Wrinkling membrane (tension-field theory): relaxed energy min over D >= 0 of W(C + D),
+  blended with the flat membrane by a "wrinkling" fraction (default 0.9 in the app, 0 in the
+  solver) so elements cannot invert; excess skin heatmap (where dog-ears pucker).
 
 ## Planned features
-- Wrinkling membrane (tension-field theory): compressive stress relaxed in the wrinkled
-  direction, so dog-ears and over-tight closures are not overestimated (the flat membrane
-  cannot buckle out of plane).
+- Local flaps (advancement, rotation, transposition) on excision defects.
+- Friction between the lips; calibration against measured skin properties.
 
 ## Working rules
 - One milestone at a time. At the end of each: stop, give exact verification steps, wait
