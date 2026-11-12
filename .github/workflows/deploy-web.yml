@@ -33,9 +33,11 @@ permissions:
 
 env:
   GODOT_VERSION: "4.7.2"
-  # Emscripten used to build Godot 4.7.2's web templates (Godot's
-  # .github/workflows/web_builds.yml). A mismatch can break loading the plugin.
-  EM_VERSION: "4.0.11"
+  # Emscripten used to build Godot 4.7.2's official web templates: the page's
+  # browser console prints it ("Build configuration: Emscripten 4.0.20").
+  # (Godot's CI file names an older one; official releases are built elsewhere.)
+  # A mismatch can break loading the plugin.
+  EM_VERSION: "4.0.20"
   SCONS_VERSION: "4.11.1"
   VERCEL_CLI: "vercel@65.2.0"
 

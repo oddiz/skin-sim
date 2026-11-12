@@ -54,7 +54,7 @@ export runs without threads, so any static web host works (no special headers).
 
 One-time setup (Windows):
 
-- Emscripten, the C++ -> WASM compiler, version **4.0.11** (must match the one
+- Emscripten, the C++ -> WASM compiler, version **4.0.20** (must match the one
   Godot 4.7.2's web templates were built with); commands below.
 - Godot export templates 4.7.2 (Editor -> Manage Export Templates), or just the
   `web_dlink_nothreads_*.zip` files from the template package copied into
@@ -62,8 +62,8 @@ One-time setup (Windows):
 
 ```powershell
 git clone https://github.com/emscripten-core/emsdk.git C:\emsdk
-C:\emsdk\emsdk install 4.0.11
-C:\emsdk\emsdk activate 4.0.11
+C:\emsdk\emsdk install 4.0.20
+C:\emsdk\emsdk activate 4.0.20
 ```
 
 Build and export (PowerShell, from the repo root):
