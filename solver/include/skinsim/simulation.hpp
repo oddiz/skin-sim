@@ -81,6 +81,8 @@ struct ContactInfo {
 // Per-point output fields for the heatmap.
 enum class Field {
     MaxPrincipalStress,  // largest principal Cauchy stress, MPa (< 0 = compression)
+    MinPrincipalStress,  // smallest principal Cauchy stress, MPa: < 0 where the skin
+                         // is squeezed in some direction (where real skin puckers)
     VonMisesStress,      // von Mises equivalent stress, MPa (always >= 0)
     AreaChange,          // current / rest area, J (1 = unchanged)
 };
@@ -193,6 +195,9 @@ public:
     const Eigen::VectorXd& undermining() const { return undermining_; }
     // Rest position of a material point.
     Eigen::Vector2d rest_position_of(const MaterialPoint& p) const;
+    // Where the tissue at rest point X is now. False if X is not on the skin
+    // (e.g. inside an excised defect).
+    bool current_position_at_rest(const Eigen::Vector2d& X, Eigen::Vector2d& out) const;
 
     // --- output ---
     // One value per mesh triangle (0 for degenerate triangles, which the

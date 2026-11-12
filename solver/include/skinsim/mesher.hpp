@@ -54,7 +54,23 @@ inline constexpr int kSmoothingPasses = 3;
 // The result has CCW triangles, and TriMesh::cut_edges lists the incision lips.
 // `cuts` must be a valid PSLG inside g.cut_bounds() (add_cut guarantees that);
 // if it is not, the cuts are ignored and the plain sheet is returned.
-TriMesh mesh_sheet(const SheetGeometry& g, const CutGraph& cuts);
+// `excised`: rest points inside pieces of skin that have been cut out (see
+// remove_islands); those pieces are left out of the mesh.
+TriMesh mesh_sheet(const SheetGeometry& g, const CutGraph& cuts, const std::vector<Eigen::Vector2d>& excised = {});
+
+// --- Excision ---
+// An "island" is a piece of skin that incisions have cut free all round: a
+// connected set of triangles with no edge on the sheet's outer border.
+// (Connected = sharing an edge; after the mesh is split along the incisions,
+// the two lips of a cut share no edge, so a closed outline really separates.)
+//
+// Which piece of skin is rest point p on? 1 = an island (it can be excised),
+// 0 = skin still attached to the border, -1 = not on skin.
+int island_at(const TriMesh& mesh, const Eigen::Vector2d& p);
+// Remove the islands containing the given rest points (others are ignored).
+// Returns how many were removed. The remaining lips of their outlines stay
+// in cut_edges: they are the edge of the defect.
+int remove_islands(TriMesh& mesh, const std::vector<Eigen::Vector2d>& points);
 
 // Triangle shape quality: 1 for equilateral, -> 0 for slivers, < 0 if inverted.
 // q = 4 sqrt(3) area / (sum of squared edge lengths).

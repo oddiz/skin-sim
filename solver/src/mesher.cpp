@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <numeric>
 #include <set>
 
@@ -215,9 +216,13 @@ void compact(TriMesh& mesh, double min_area) {
         if (new_index[v] >= 0) pos.col(new_index[v]) = mesh.rest_positions.col(v);
     for (Triangle& t : kept)
         for (int& v : t) v = new_index[v];
+    std::set<Edge> kept_edges;
+    for (const Triangle& t : kept)
+        for (int k = 0; k < 3; ++k) kept_edges.insert(make_edge(t[k], t[(k + 1) % 3]));
     std::vector<Edge> lips;
     for (const Edge& e : mesh.cut_edges)
-        if (new_index[e[0]] >= 0 && new_index[e[1]] >= 0) lips.push_back(make_edge(new_index[e[0]], new_index[e[1]]));
+        if (new_index[e[0]] >= 0 && new_index[e[1]] >= 0 && kept_edges.count(make_edge(new_index[e[0]], new_index[e[1]])))
+            lips.push_back(make_edge(new_index[e[0]], new_index[e[1]]));
     mesh.rest_positions = pos;
     mesh.triangles = kept;
     mesh.cut_edges = lips;
@@ -265,7 +270,72 @@ double min_angle_deg(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const E
     return std::min({angle(a, b, c), angle(b, c, a), angle(c, a, b)}) * 180.0 / kPi;
 }
 
-TriMesh mesh_sheet(const SheetGeometry& geometry, const CutGraph& cuts_in) {
+namespace {
+
+// Connected pieces of the mesh: triangles sharing an edge belong together.
+// Union-find ("disjoint set"): each triangle points towards a representative
+// of its piece; joining two pieces links their representatives.
+std::vector<int> piece_of_triangles(const TriMesh& mesh) {
+    const int nt = mesh.triangle_count();
+    std::vector<int> parent(nt);
+    std::iota(parent.begin(), parent.end(), 0);
+    auto find = [&](int t) {
+        while (parent[t] != t) t = parent[t] = parent[parent[t]];  // path halving
+        return t;
+    };
+    std::map<Edge, int> first;  // edge -> a triangle using it
+    for (int t = 0; t < nt; ++t)
+        for (int k = 0; k < 3; ++k) {
+            const Edge e = make_edge(mesh.triangles[t][k], mesh.triangles[t][(k + 1) % 3]);
+            auto [it, inserted] = first.emplace(e, t);
+            if (!inserted) parent[find(t)] = find(it->second);
+        }
+    for (int t = 0; t < nt; ++t) parent[t] = find(t);
+    return parent;
+}
+
+// For each piece (by representative): does it touch the outer border?
+std::set<int> pieces_on_border(const TriMesh& mesh, const std::vector<int>& piece) {
+    const std::set<Edge> lips(mesh.cut_edges.begin(), mesh.cut_edges.end());
+    std::map<Edge, int> owner;
+    for (int t = 0; t < mesh.triangle_count(); ++t)
+        for (int k = 0; k < 3; ++k) owner[make_edge(mesh.triangles[t][k], mesh.triangles[t][(k + 1) % 3])] = t;
+    std::set<int> out;
+    for (const Edge& e : boundary_edges(mesh))
+        if (!lips.count(e)) out.insert(piece[owner[e]]);
+    return out;
+}
+
+}  // namespace
+
+int island_at(const TriMesh& mesh, const Eigen::Vector2d& p) {
+    const TriangleLocator locator(mesh.rest_positions, mesh.triangles);
+    const int t = locator.locate(p, nullptr, 1e-9);
+    if (t < 0) return -1;
+    const std::vector<int> piece = piece_of_triangles(mesh);
+    return pieces_on_border(mesh, piece).count(piece[t]) ? 0 : 1;
+}
+
+int remove_islands(TriMesh& mesh, const std::vector<Eigen::Vector2d>& points) {
+    if (points.empty() || mesh.triangles.empty()) return 0;
+    const TriangleLocator locator(mesh.rest_positions, mesh.triangles);
+    const std::vector<int> piece = piece_of_triangles(mesh);
+    const std::set<int> attached = pieces_on_border(mesh, piece);
+    std::set<int> remove;
+    for (const Eigen::Vector2d& p : points) {
+        const int t = locator.locate(p, nullptr, 1e-9);
+        if (t >= 0 && !attached.count(piece[t])) remove.insert(piece[t]);
+    }
+    if (remove.empty()) return 0;
+    std::vector<Triangle> kept;
+    for (int t = 0; t < mesh.triangle_count(); ++t)
+        if (!remove.count(piece[t])) kept.push_back(mesh.triangles[t]);
+    mesh.triangles = std::move(kept);
+    compact(mesh, -1.0);  // drop the island's now unused vertices and lip edges
+    return static_cast<int>(remove.size());
+}
+
+TriMesh mesh_sheet(const SheetGeometry& geometry, const CutGraph& cuts_in, const std::vector<Eigen::Vector2d>& excised) {
     const SheetGeometry g = sanitized(geometry);
     const double W = g.width, H = g.height, h = g.element_size;
     const int nx = cells_along(W, h), ny = cells_along(H, h);
@@ -368,6 +438,7 @@ TriMesh mesh_sheet(const SheetGeometry& geometry, const CutGraph& cuts_in) {
 
     TriMesh mesh = split_along_cuts(pts, tri.triangles, cut);
     compact(mesh, 1e-10 * h * h);
+    remove_islands(mesh, excised);
     return mesh;
 }
 

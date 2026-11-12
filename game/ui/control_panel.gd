@@ -15,7 +15,8 @@ extends PanelContainer
 
 ## Emitted when the user presses a button that changes the scene.
 signal reset_requested
-## Emitted when the user picks a tool (main.gd's Tool enum: 0 grab, 1 cut, 2 suture, 3 undermine).
+## Emitted when the user picks a tool (main.gd's Tool enum: 0 grab, 1 cut, 2 suture, 3 undermine,
+## 4 lesion, 5 excise).
 signal tool_selected(tool: int)
 ## Undo the last cut or suture (main.gd keeps the history).
 signal undo_requested
@@ -23,6 +24,7 @@ signal undo_requested
 signal tightness_changed(tightness: float)
 signal remove_suture_requested
 signal cuts_cleared
+signal lesions_cleared
 signal undermining_cleared
 signal sutures_cleared
 
@@ -70,6 +72,13 @@ const PARAMS := [
 		"fmt": "%.1f %%", "tip": "How much living skin is stretched beyond its unloaded size. Makes incisions gape."},
 	{"prop": "prestretch_across_pct", "label": "Across RSTL", "min": 0.0, "max": 30.0, "step": 0.5,
 		"fmt": "%.1f %%", "tip": "Usually less than along the RSTL."},
+	{"section": "Excision"},
+	{"prop": "lesion_diameter", "label": "Lesion diameter", "min": 0.5, "max": 40.0, "step": 0.5,
+		"fmt": "%.1f mm", "tip": "Size of the next lesion marked with the Lesion tool."},
+	{"prop": "ellipse_ratio", "label": "Ellipse length : width", "min": 1.0, "max": 6.0, "step": 0.1,
+		"fmt": "%.1f : 1", "tip": "Fusiform excision shape. 3 : 1 is classic; shorter leaves dog-ears."},
+	{"prop": "tip_angle_deg", "label": "Tip angle", "min": 10.0, "max": 120.0, "step": 1.0,
+		"fmt": "%.0f deg", "tip": "Angle at each end of the fusiform excision. About 30 deg is classic."},
 	{"section": "Undermining"},
 	{"prop": "undermine_radius", "label": "Brush radius", "min": 1.0, "max": 30.0, "step": 0.5,
 		"fmt": "%.1f mm", "tip": "Size of the undermining brush."},
@@ -93,8 +102,9 @@ const PARAMS := [
 		"tip": "The lips of incisions press on each other instead of passing through. Lips pressed together turn blue."},
 	{"section": "Heatmap"},
 	{"prop": "heatmap", "label": "Show", "type": "enum",
-		"options": ["Off (skin)", "Max principal stress", "Von Mises stress", "Area change"],
-		"tip": "Colour the skin by a result. Max principal: red = tension, blue = compression. [H]"},
+		"options": ["Off (skin)", "Max principal stress", "Von Mises stress", "Area change",
+			"Min principal stress"],
+		"tip": "Colour the skin by a result. Max principal: red = tension, blue = compression. Min principal: blue where the skin is squeezed in some direction (where real skin would pucker: dog-ears). [H]"},
 	{"prop": "heatmap_range_kpa", "label": "Stress scale", "min": 1.0, "max": 2000.0, "step": 1.0,
 		"exp": true, "fmt": "%.0f kPa", "tip": "Stress at the end of the colour scale."},
 	{"section": "Solver"},
@@ -120,6 +130,7 @@ var _tightness_slider: HSlider
 var _tightness_label: Label
 var _suture_label: Label
 var _contact_label: Label
+var _lesion_label: Label
 var _remove_suture: Button
 
 
@@ -189,13 +200,18 @@ func _build_tools(box: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
 	# A ButtonGroup makes toggle buttons mutually exclusive, like radio buttons.
 	var group := ButtonGroup.new()
-	for i in 4:
+	for i in 6:
+		if i == 3:  # second row
+			box.add_child(row)
+			row = HBoxContainer.new()
 		var b := Button.new()
-		b.text = ["Grab", "Cut", "Suture", "Undermine"][i]
+		b.text = ["Grab", "Cut", "Suture", "Undermine", "Lesion", "Excise"][i]
 		b.add_theme_font_size_override("font_size", 13)
 		b.tooltip_text = ["Forceps: drag the skin [G]", "Scalpel: draw an incision [C]",
 			"Drag from needle entry to exit; tap a suture to select it [S]",
-			"Brush: free the skin from the tissue below [U]"][i]
+			"Brush: free the skin from the tissue below [U]",
+			"Tap to mark a lesion [L]",
+			"Drag tip to tip: fusiform excision. Tap inside a closed outline: remove it [E]"][i]
 		b.toggle_mode = true
 		b.button_group = group
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -237,7 +253,18 @@ func _build_tools(box: VBoxContainer) -> void:
 		sheet.clear_undermining()
 		undermining_cleared.emit())
 	undermine_row.add_child(clear_undermining)
+	var clear_lesions := Button.new()
+	clear_lesions.text = "Clear lesions"
+	clear_lesions.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clear_lesions.pressed.connect(func():
+		sheet.clear_lesions()
+		lesions_cleared.emit())
+	undermine_row.add_child(clear_lesions)
 	box.add_child(undermine_row)
+	_lesion_label = Label.new()
+	_lesion_label.add_theme_font_size_override("font_size", 12)
+	_lesion_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_lesion_label)
 	_build_knot(box)
 
 
@@ -310,6 +337,22 @@ func show_selected_suture(info: Dictionary) -> void:
 		_suture_label.text = "Suture #%d: %s, loop %+.0f kPa" % [info.id,
 			"slack" if info.slack else "%.2f N" % info.force, info.loop_stress_kpa]
 		_remove_suture.disabled = false
+
+
+## Called every frame by main.gd with sheet.get_lesion_info().
+func show_lesions(info: Array) -> void:
+	var lines: Array[String] = []
+	var i := 0
+	for l in info:
+		i += 1
+		if not l.excised:
+			lines.append("Lesion %d: in place." % i)
+		elif l.complete:
+			lines.append("Lesion %d: excised, margin %.1f mm." % [i, l.margin_mm])
+		else:
+			lines.append("Lesion %d: INCOMPLETE excision." % i)
+	_lesion_label.text = "\n".join(lines)
+	_lesion_label.visible = not lines.is_empty()
 
 
 ## Called every frame by main.gd with sheet.get_contact_info().

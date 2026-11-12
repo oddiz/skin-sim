@@ -73,6 +73,14 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 - M4: Incisions with CDT re-meshing.
 - M5: Sutures and stress heatmap.
 - M6: Undermining brush, GOH fibres, prestress.
+- (after M6: suture bite strips with loop stress; lip contact between incision edges.)
+- M7: Lesion excision and defect closure: lesion markings, fusiform excision design, removal of
+  pieces of skin cut free, margins, min principal stress heatmap (dog-ear compression).
+
+## Planned features
+- Wrinkling membrane (tension-field theory): compressive stress relaxed in the wrinkled
+  direction, so dog-ears and over-tight closures are not overestimated (the flat membrane
+  cannot buckle out of plane).
 
 ## Working rules
 - One milestone at a time. At the end of each: stop, give exact verification steps, wait

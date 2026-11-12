@@ -20,6 +20,8 @@ var cut_path := PackedVector2Array()
 var suture_line := PackedVector2Array()
 var suture_line_ok := true   # both ends on skin
 var selected_suture := -1
+## Fusiform excision being designed (screen points, closed; empty otherwise).
+var excise_outline := PackedVector2Array()
 ## Undermining brush outline (x < 0: hidden).
 var brush_pos := Vector2(-1, -1)
 var brush_radius_px := 0.0
@@ -50,6 +52,10 @@ func _draw() -> void:
 		draw_polyline(cut_path, Color(0, 0, 0, 0.6), 5.0, true)
 		draw_polyline(cut_path, COLOR_SCALPEL, 2.5, true)
 	var font := ThemeDB.fallback_font
+	_draw_lesions()
+	if excise_outline.size() >= 2:
+		draw_polyline(excise_outline, Color(0, 0, 0, 0.6), 4.0, true)
+		draw_polyline(excise_outline, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
 	_draw_sutures(font)
 	_draw_legend(font)
 	_draw_rstl(font)
@@ -144,3 +150,22 @@ func _draw_rstl(font: Font) -> void:
 		draw_line(centre - d + n, centre + d + n, Color(0.95, 0.85, 0.7, 0.9), 2.0, true)
 	draw_string(font, centre + Vector2(-16, 34), "RSTL", HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
 		Color(0.95, 0.85, 0.7))
+
+
+## Lesions: a brown disc on the skin, following it as it deforms. Parts
+## that have been cut out are not drawn; an incompletely excised lesion is
+## outlined in red.
+func _draw_lesions() -> void:
+	for l in sheet.get_lesion_info():
+		var pieces: Array = l.outline
+		var edge := Color(0.9, 0.1, 0.1, 0.95) if l.excised and not l.complete else Color(0.2, 0.1, 0.05, 0.9)
+		for piece in pieces:
+			var pts := PackedVector2Array()
+			for p in piece:
+				pts.append(camera.unproject_position(p))
+			if pts.size() < 2:
+				continue
+			if pieces.size() == 1 and pts.size() > 40:  # whole lesion still on skin: fill it
+				# (Without the repeated closing point: the polygon fill wants each corner once.)
+				draw_colored_polygon(pts.slice(0, pts.size() - 1), Color(0.35, 0.2, 0.12, 0.85))
+			draw_polyline(pts, edge, 2.0, true)

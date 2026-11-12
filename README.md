@@ -54,8 +54,11 @@ Godot_v4.7.2-stable_win64_console.exe --headless --path game --import
 | Drag (Suture tool, S) | Press at the needle entry, release at the exit: a suture tied with the panel's knot tightness |
 | Tap a suture (Suture tool) | Select it; the knot tightness slider then re-ties it live |
 | Drag (Undermine tool, U) | Paint where the skin is freed from the tissue below (shaded darker) |
-| Z | Undo the last incision, suture or undermining stroke |
-| H | Cycle the heatmap: off / max principal stress / von Mises stress / area change |
+| Tap (Lesion tool, L) | Mark a lesion (diameter in the panel) |
+| Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
+| Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
+| Z | Undo the last incision, suture, undermining stroke, lesion or excision |
+| H | Cycle the heatmap: off / max principal / von Mises / area change / min principal stress |
 | W / R | Wireframe on/off / reset the deformation (incisions and sutures stay) |
 
 Incisions are stored in rest (tissue) coordinates, so you can cut skin that is
@@ -99,6 +102,35 @@ in-plane. Real skin would bulge (evert) or wrinkle instead, and the strain-stiff
 law stiffens in compression as it does in tension. Over-tight knots (beyond ~20%)
 therefore give much higher tension and compression than they would in reality:
 trust the sign and the location, not the magnitude.
+
+## Lesion excision and defect closure (M7)
+
+Mark a lesion, then design its excision with the Excise tool: drag from one tip
+of the fusiform (elliptical) excision to the other, ideally along the RSTL.
+Its shape comes from the panel: length to width (3 : 1 is classic) and the
+angle at each tip (about 30 degrees). On release the outline is cut and the
+skin inside removed. Any other shape works too: draw a closed outline with the
+scalpel (a stroke ending near its own start closes itself), then tap inside it
+with the Excise tool.
+
+After an excision the panel reports each lesion: excised with its margin (from
+the lesion's edge to the defect's edge), or INCOMPLETE if the defect's edge runs
+through it (the lesion is outlined in red). Prestressed skin retracts, so the
+defect opens wider than the skin removed; close it with sutures. The heatmap's
+"min principal stress" shows where the closure squeezes the skin: at the ends of
+an ellipse that is too short or too blunt. That is where real skin would pucker
+into a dog-ear. The model is a flat membrane, so it shows the compression but not
+the pucker itself (see planned features).
+
+## Planned features
+
+- **Wrinkling membrane (tension-field theory).** A flat membrane cannot buckle,
+  so where real skin would wrinkle or pucker (dog-ears, over-tight knots) the
+  model carries in-plane compression instead, and overestimates it. A wrinkling
+  model sets the compressive stress to (nearly) zero in the wrinkled direction,
+  making closure tension and dog-ear predictions realistic.
+- Local flaps (advancement, rotation, transposition) on the excision defects.
+- Friction between the lips; calibration against measured skin properties.
 
 ## Tissue model (M6)
 

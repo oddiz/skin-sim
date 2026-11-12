@@ -91,11 +91,12 @@ bool Sheet::undo_cut() {
 
 void Sheet::clear_cuts() {
     history_.clear();
+    excised_.clear();  // without incisions nothing can be cut out
     if (!cuts_.empty()) remesh(CutGraph{});
 }
 
 void Sheet::remesh(CutGraph cuts) {
-    auto sim = std::make_unique<Simulation>(mesh_sheet(geometry_, cuts));
+    auto sim = std::make_unique<Simulation>(mesh_sheet(geometry_, cuts, excised_));
     sim->set_params(sim_->params());
     sim->set_grab_params(sim_->grab_params());
     sim->set_suture_params(sim_->suture_params());
@@ -119,6 +120,96 @@ void Sheet::remesh(CutGraph cuts) {
     sim_ = std::move(sim);  // the old simulation is deleted here
     cuts_ = std::move(cuts);
     apply_undermining();    // new nodes: evaluate the painted areas on them
+}
+
+// ---------------------------------------------------------------------------
+// Excision
+// ---------------------------------------------------------------------------
+
+int Sheet::excise(const Eigen::Vector2d& point) {
+    MaterialPoint m;
+    if (!sim_->material_point_at(point, m)) return 0;
+    // Nudge the rest point into its triangle: on an incision both lips share
+    // rest positions, and the point must name the piece that was tapped.
+    const Triangle& t = mesh().triangles[m.triangle];
+    const Eigen::Vector2d centroid =
+        (mesh().rest_positions.col(t[0]) + mesh().rest_positions.col(t[1]) + mesh().rest_positions.col(t[2])) / 3.0;
+    const Eigen::Vector2d X = sim_->rest_position_of(m);
+    return excise_rest(X + 1e-3 * (centroid - X));
+}
+
+int Sheet::excise_rest(const Eigen::Vector2d& rest_point) {
+    const int where = island_at(mesh(), rest_point);  // -1 off skin, 0 attached, 1 island
+    if (where < 0) return 0;
+    if (where == 0) return -1;
+    excised_.push_back(rest_point);
+    remesh(cuts_);
+    return 1;
+}
+
+int Sheet::excise_outline(const Polyline& outline, const Eigen::Vector2d& inside) {
+    if (cut(outline) == 0) return -1;  // nothing cut (e.g. drawn off the skin)
+    const int result = excise(inside);
+    if (result != 1) undo_cut();  // the outline did not enclose anything: take it back
+    return result;
+}
+
+bool Sheet::undo_excise() {
+    if (excised_.empty()) return false;
+    excised_.pop_back();
+    remesh(cuts_);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Lesions
+// ---------------------------------------------------------------------------
+
+bool Sheet::add_lesion(const Eigen::Vector2d& point, double diameter) {
+    MaterialPoint m;
+    if (!(diameter > 0.0) || !std::isfinite(diameter) || !sim_->material_point_at(point, m)) return false;
+    add_lesion_rest(sim_->rest_position_of(m), diameter);
+    return true;
+}
+
+void Sheet::add_lesion_rest(const Eigen::Vector2d& rest_centre, double diameter) {
+    lesions_.push_back({rest_centre, 0.5 * diameter});
+}
+
+bool Sheet::undo_lesion() {
+    if (lesions_.empty()) return false;
+    lesions_.pop_back();
+    return true;
+}
+
+Sheet::LesionStatus Sheet::lesion_status(int i) const {
+    LesionStatus st;
+    if (i < 0 || i >= static_cast<int>(lesions_.size())) return st;
+    const Lesion& l = lesions_[i];
+    const TriMesh& m = mesh();
+    const TriangleLocator locator(m.rest_positions, m.triangles);
+    // Sample the lesion (centre and three rings): which parts are still on skin?
+    int on = 0, total = 0;
+    auto sample = [&](const Eigen::Vector2d& p) {
+        ++total;
+        if (locator.locate(p, nullptr, 0.0) >= 0) ++on;
+    };
+    sample(l.centre);
+    for (double f : {1.0 / 3.0, 2.0 / 3.0, 1.0})
+        for (int k = 0; k < 48; ++k) {
+            const double a = 2.0 * 3.14159265358979323846 * k / 48;
+            sample(l.centre + f * l.radius * Eigen::Vector2d(std::cos(a), std::sin(a)));
+        }
+    st.excised = on < total;
+    if (!st.excised) return st;
+    // Margin: from the lesion's edge to the nearest skin left, i.e. to the
+    // nearest lip (the defect is bordered by lips).
+    double nearest = 1e300;
+    for (const Edge& e : m.cut_edges)
+        nearest = std::min(nearest, point_segment_distance(l.centre, m.rest_positions.col(e[0]), m.rest_positions.col(e[1])));
+    st.margin = nearest - l.radius;
+    st.complete = on == 0 && st.margin >= 0.0;
+    return st;
 }
 
 // ---------------------------------------------------------------------------

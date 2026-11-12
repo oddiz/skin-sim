@@ -264,6 +264,14 @@ Eigen::Vector2d Simulation::rest_position_of(const MaterialPoint& p) const {
     return valid(p) ? point_at(p, rest_) : Eigen::Vector2d::Zero();
 }
 
+bool Simulation::current_position_at_rest(const Eigen::Vector2d& X, Eigen::Vector2d& out) const {
+    MaterialPoint p;
+    p.triangle = rest_locator_.locate(X, &p.weights, 1e-9);
+    if (p.triangle < 0) return false;
+    out = point_at(p, x_);
+    return true;
+}
+
 void Simulation::set_grab_params(const GrabParams& params) {
     grab_params_ = sanitized(params);
     converged_ = false;
@@ -714,7 +722,9 @@ Eigen::VectorXd Simulation::triangle_field(Field field) const {
         const double shear = 0.5 * (sigma(0, 1) + sigma(1, 0));
         const double radius = std::sqrt(half_diff * half_diff + shear * shear);
         const double s1 = mean + radius, s2 = mean - radius;
-        out[e.triangle] = (field == Field::MaxPrincipalStress) ? s1 : std::sqrt(s1 * s1 - s1 * s2 + s2 * s2);
+        out[e.triangle] = field == Field::MaxPrincipalStress   ? s1
+                          : field == Field::MinPrincipalStress ? s2
+                                                               : std::sqrt(s1 * s1 - s1 * s2 + s2 * s2);
     }
     return out;
 }

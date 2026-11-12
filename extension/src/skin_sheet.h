@@ -131,6 +131,34 @@ public:
     void clear_cuts();
     int get_cut_count() const { return sheet_ ? sheet_->cut_count() : 0; }
 
+    // --- Excision (world-space points) ---
+    // Remove the piece of skin under a point, which incisions must have cut
+    // free all round. 1 = removed, 0 = not on skin, -1 = not cut free.
+    int excise(const Vector3& p_world_point);
+    // Fusiform (elliptical) excision from tip a to tip b, drawn on the skin as
+    // it looks now, shaped by ellipse_ratio and tip_angle_deg: cut and
+    // removed in one step. Same return values as excise().
+    int excise_fusiform(const Vector3& p_tip_a, const Vector3& p_tip_b);
+    // The outline excise_fusiform() would cut (world space, closed), for a preview.
+    PackedVector3Array get_fusiform_outline(const Vector3& p_tip_a, const Vector3& p_tip_b) const;
+    bool undo_excise();
+    int get_excision_count() const { return sheet_ ? sheet_->excision_count() : 0; }
+    void set_ellipse_ratio(double p_ratio) { ellipse_ratio_ = p_ratio < 1.0 ? 1.0 : p_ratio; }
+    double get_ellipse_ratio() const { return ellipse_ratio_; }
+    void set_tip_angle_deg(double p_deg) { tip_angle_deg_ = p_deg; }
+    double get_tip_angle_deg() const { return tip_angle_deg_; }
+
+    // --- Lesions (markings on the skin; no mechanical effect) ---
+    bool add_lesion(const Vector3& p_world_point);  // diameter = lesion_diameter
+    bool undo_lesion();
+    void clear_lesions();
+    int get_lesion_count() const { return sheet_ ? static_cast<int>(sheet_->lesions().size()) : 0; }
+    void set_lesion_diameter(double p_mm) { lesion_diameter_ = p_mm > 0.5 ? p_mm : 0.5; }
+    double get_lesion_diameter() const { return lesion_diameter_; }
+    // One Dictionary per lesion: outline (Array of PackedVector3Array, world
+    // space: the parts still on skin), excised, complete (bool), margin_mm.
+    Array get_lesion_info() const;
+
     // --- Undermining brush (world-space points) ---
     void set_undermine_radius(double p_mm);
     double get_undermine_radius() const { return undermine_radius_; }
@@ -207,6 +235,9 @@ private:
     Color skin_color_ = Color(0.85, 0.64, 0.53);
     int heatmap_ = 0;
     double undermine_radius_ = 8.0;  // mm
+    double lesion_diameter_ = 6.0;   // mm
+    double ellipse_ratio_ = 3.0;     // length : width
+    double tip_angle_deg_ = 30.0;
     double heatmap_range_kpa_ = 50.0;
 
     // Cached copies of the mesh topology: it only changes when cutting.

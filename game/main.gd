@@ -7,7 +7,7 @@ extends Node3D
 ## arrives as touch index 0, so the same code works on desktop and iPhone,
 ## and several fingers can grab the skin at once on a touch screen.
 ##
-## Four tools:
+## Six tools:
 ##   GRAB    touches grab and pull the skin (forceps).
 ##   CUT     a touch draws an incision (scalpel); it is made on release.
 ##   SUTURE  press where the needle goes in, drag, release where it comes out:
@@ -15,6 +15,11 @@ extends Node3D
 ##           Tap a suture to select it; the tightness slider then re-ties it.
 ##   UNDERMINE paint the areas where the skin is freed from the underlying
 ##           tissue (brush size in the panel); they are shaded darker.
+##   LESION  tap to mark a lesion (diameter in the panel).
+##   EXCISE  drag from one tip of a fusiform (elliptical) excision to the
+##           other: it is cut and removed on release (shape in the panel).
+##           Or tap inside any outline already cut free (e.g. a rhomboid
+##           drawn with the scalpel) to remove it.
 ## On desktop, Shift + drag cuts whatever the tool.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
@@ -28,8 +33,11 @@ extends Node3D
 ##   --demo-m6                 prestressed skin: an incision across the RSTL
 ##                             gapes by itself; one side undermined; max
 ##                             principal stress heatmap (for checks)
+##   --demo-excise             a 6 mm lesion, fusiform excision along the
+##                             RSTL with a 2 mm margin, closed with five
+##                             sutures; min principal stress heatmap (for checks)
 
-enum Tool { GRAB, CUT, SUTURE, UNDERMINE }
+enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE }
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
@@ -56,6 +64,8 @@ var _selected_suture := -1                # id, -1 = none
 var _undermine_touch := -1                # touch index painting, -1 = none
 var _undermine_new := true                # next stamp starts a new stroke (undo step)
 var _last_paint_pos := Vector2.ZERO
+var _excise_touch := -1                   # touch index designing an excision, -1 = none
+var _excise_start := Vector2.ZERO
 var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"} or {"kind": "suture", "id": n}
 var _status := ""                         # last action's result, shown in the HUD
 
@@ -73,7 +83,9 @@ func _ready() -> void:
 		if _selected_suture >= 0:
 			sheet.remove_suture(_selected_suture)
 			_select_suture(-1))
-	panel.cuts_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "cut"))
+	panel.cuts_cleared.connect(func():  # clearing the incisions also puts excised skin back
+		_history = _history.filter(func(h): return h.kind != "cut" and h.kind != "excise"))
+	panel.lesions_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "lesion"))
 	panel.undermining_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "undermine"))
 	panel.sutures_cleared.connect(func():
 		_history = _history.filter(func(h): return h.kind != "suture")
@@ -94,6 +106,8 @@ func _ready() -> void:
 		_demo_suture()
 	if args.has("--demo-m6"):
 		_demo_m6()
+	if args.has("--demo-excise"):
+		_demo_excise()
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
@@ -121,6 +135,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			overlay.cut_path = _cut_path
 		elif event.index == _undermine_touch:
 			_paint_undermining(event.position)
+		elif event.index == _excise_touch:
+			_preview_excision(event.position)
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
@@ -145,8 +161,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_tool(Tool.SUTURE)
 			KEY_U:
 				_set_tool(Tool.UNDERMINE)
+			KEY_L:
+				_set_tool(Tool.LESION)
+			KEY_E:
+				_set_tool(Tool.EXCISE)
 			KEY_H:
-				sheet.heatmap = (sheet.heatmap + 1) % 4
+				sheet.heatmap = (sheet.heatmap + 1) % 5
 				panel.refresh()
 			KEY_Z:
 				_undo()
@@ -167,6 +187,16 @@ func _on_press(index: int, pos: Vector2) -> void:
 			_undermine_touch = index
 			_undermine_new = true
 			_paint_undermining(pos)
+	elif tool == Tool.LESION:
+		if sheet.add_lesion(_screen_to_sheet_plane(pos)):
+			_history.append({"kind": "lesion"})
+			_status = "Lesion marked (%.1f mm)." % sheet.lesion_diameter
+		else:
+			_status = "A lesion must be on the skin."
+	elif tool == Tool.EXCISE:
+		if _excise_touch == -1:
+			_excise_touch = index
+			_excise_start = pos
 	else:
 		sheet.grab(index, _screen_to_sheet_plane(pos))
 
@@ -177,6 +207,8 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_cut()
 	elif index == _suture_touch:
 		_commit_suture(pos)
+	elif index == _excise_touch:
+		_commit_excision(pos)
 	elif index == _undermine_touch:
 		_undermine_touch = -1
 		if not _undermine_new:  # something was painted: one undo step
@@ -247,6 +279,14 @@ func _undo() -> void:
 	elif last.kind == "undermine":
 		sheet.undo_undermine()
 		_status = "Undermining undone."
+	elif last.kind == "lesion":
+		sheet.undo_lesion()
+		_status = "Lesion removed."
+	elif last.kind == "excise":
+		sheet.undo_excise()
+		if last.with_cut:
+			sheet.undo_cut()
+		_status = "Excision undone."
 	else:
 		sheet.remove_suture(last.id)
 		if last.id == _selected_suture:
@@ -276,11 +316,14 @@ func _process(_delta: float) -> void:
 		flags += " regularized"
 	panel.show_selected_suture(_selected_info())
 	panel.show_contact(sheet.get_contact_info())
+	panel.show_lesions(sheet.get_lesion_info())
 	var tool_line: String = [
 		"Tool: GRAB - drag the skin.",
 		"Tool: CUT - draw an incision.",
 		"Tool: SUTURE - drag from needle entry to exit; tap a suture to select it.",
 		"Tool: UNDERMINE - paint where the skin is freed from the tissue below.",
+		"Tool: LESION - tap to mark a lesion.",
+		"Tool: EXCISE - drag tip to tip for a fusiform excision; tap inside a closed outline to remove it.",
 	][tool]
 	info.text = "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
 			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
@@ -290,7 +333,7 @@ func _process(_delta: float) -> void:
 		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
 		+ (_status + "\n" if _status != "" else "") \
-		+ tool_line + "\n[G]rab [C]ut [S]uture [U]ndermine  [Shift+drag] cut  [Z] undo  [H] heatmap  [W] wire  [R] reset"
+		+ tool_line + "\n[G]rab [C]ut [S]uture [U]ndermine [L]esion [E]xcise  [Shift] cut  [Z] undo  [H] heatmap  [W] wire  [R] reset"
 
 
 ## Compact scientific notation, e.g. 1.2e-14 (GDScript's % has no %e).
@@ -440,4 +483,88 @@ func _demo_m6() -> void:
 	_touch(0, Vector2(8, 18), false)
 	await get_tree().process_frame
 	sheet.heatmap = 1
+	panel.refresh()
+
+
+## Show the fusiform excision that releasing here would cut.
+func _preview_excision(screen_pos: Vector2) -> void:
+	if screen_pos.distance_to(_excise_start) < TAP_PX:
+		overlay.excise_outline = PackedVector2Array()
+		return
+	var pts := PackedVector2Array()
+	for p in sheet.get_fusiform_outline(_screen_to_sheet_plane(_excise_start), _screen_to_sheet_plane(screen_pos)):
+		pts.append(camera.unproject_position(p))
+	overlay.excise_outline = pts
+
+
+## Release of the excision gesture: a drag cuts and removes a fusiform
+## excision; a tap removes the piece of skin under the finger, if it has
+## been cut free all round.
+func _commit_excision(end: Vector2) -> void:
+	_excise_touch = -1
+	overlay.excise_outline = PackedVector2Array()
+	var fusiform := end.distance_to(_excise_start) >= TAP_PX
+	var result: int
+	if fusiform:
+		result = sheet.excise_fusiform(_screen_to_sheet_plane(_excise_start), _screen_to_sheet_plane(end))
+	else:
+		result = sheet.excise(_screen_to_sheet_plane(end))
+	if result == 1:
+		_history.append({"kind": "excise", "with_cut": fusiform})
+		_status = "Excised. " + _lesion_summary()
+	elif result == 0:
+		_status = "Nothing excised: not on the skin."
+	elif fusiform:
+		_status = "Nothing excised: the outline could not be closed (off the skin, or across a defect)."
+	else:
+		_status = "Nothing excised: this skin is not cut free all round. Close the outline first."
+
+
+## One line about the lesions: excised completely (with margin) or not.
+func _lesion_summary() -> String:
+	var parts: Array[String] = []
+	var i := 0
+	for l in sheet.get_lesion_info():
+		i += 1
+		if not l.excised:
+			continue
+		if l.complete:
+			parts.append("Lesion %d: complete, margin %.1f mm." % [i, l.margin_mm])
+		else:
+			parts.append("Lesion %d: INCOMPLETE, the edge runs through it." % i)
+	return " ".join(parts)
+
+
+## A 6 mm lesion, excised along the RSTL (horizontal) with a 2 mm margin:
+## a 10 x 30 mm fusiform (3:1, 30 degree tips), then closed with five
+## sutures, 3 mm bites. The min principal stress heatmap shows where the
+## closure squeezes the skin: at the ends (where dog-ears form).
+func _demo_excise() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.LESION)
+	for c in [Vector2.ZERO, Vector2(28, 14)]:  # the second one is left in place
+		_touch(0, c, true)
+		_touch(0, c, false)
+		await get_tree().process_frame
+	_set_tool(Tool.EXCISE)
+	_touch(0, Vector2(-15, 0), true)
+	for k in range(1, 31):
+		_drag(0, Vector2(-15 + k, 0))
+	_touch(0, Vector2(15, 0), false)
+	await get_tree().process_frame
+	# Let the defect open (prestress) before suturing it.
+	for _frame in 30:
+		await get_tree().process_frame
+	_set_tool(Tool.SUTURE)
+	panel.set_tightness(0.0)
+	for x in [-8.0, -4.0, 0.0, 4.0, 8.0]:
+		_select_suture(-1)
+		# Needle 3 mm outside the (opened) defect edge on either side.
+		var hw := 6.0 * (1.0 - pow(absf(x) / 15.0, 2))
+		_touch(0, Vector2(x, hw + 3.0), true)
+		_drag(0, Vector2(x, -hw - 3.0))
+		_touch(0, Vector2(x, -hw - 3.0), false)
+		await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	sheet.heatmap = 4
 	panel.refresh()

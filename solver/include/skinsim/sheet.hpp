@@ -14,6 +14,12 @@
 // Sheet also keeps the undermined areas, painted with a brush. Like the
 // incisions they are stored in rest coordinates (a list of brush stamps), so
 // they belong to the tissue and survive re-meshing exactly.
+//
+// Excisions are kept the same way: as a rest point inside each piece of skin
+// that was cut out. Every re-mesh leaves those pieces out (see remove_islands).
+// Lesions are markings on the skin (rest centre and radius): they have no
+// mechanical effect, but Sheet can tell whether, and with what margin, they
+// have been excised.
 #pragma once
 
 #include <memory>
@@ -49,6 +55,43 @@ public:
     bool undo_cut();   // remove the most recent stroke; false if none
     void clear_cuts(); // remove all incisions ("heal" the skin)
 
+    // --- excision ---
+    // Remove the piece of skin under `point` (current, deformed positions),
+    // which incisions must have cut free all round.
+    // Returns 1 if removed, 0 if the point is not on skin, -1 if that skin is
+    // still attached (the outline is not closed, or it is the main sheet).
+    int excise(const Eigen::Vector2d& point);
+    int excise_rest(const Eigen::Vector2d& rest_point);
+    // Cut along a closed outline drawn on the skin (current positions) and
+    // remove what it encloses, as one operation: the island containing
+    // `inside` (current positions). Return codes as excise(); if nothing is
+    // removed, the outline is not cut either.
+    int excise_outline(const Polyline& outline, const Eigen::Vector2d& inside);
+    bool undo_excise();  // put the most recently removed piece back
+    int excision_count() const { return static_cast<int>(excised_.size()); }
+
+    // --- lesions (markings) ---
+    struct Lesion {
+        Eigen::Vector2d centre;  // rest coordinates, mm
+        double radius;           // mm
+    };
+    struct LesionStatus {
+        bool excised = false;   // some or all of it has been cut out
+        bool complete = false;  // all of it, with skin margin >= 0
+        // Distance from the lesion's edge to the edge of the defect, mm (the
+        // surgical margin). Negative: the defect edge runs through the
+        // lesion (incomplete excision). Only meaningful if excised.
+        double margin = 0.0;
+    };
+    // Mark a lesion of the given diameter at a point on the skin (current
+    // positions). False if not on skin.
+    bool add_lesion(const Eigen::Vector2d& point, double diameter);
+    void add_lesion_rest(const Eigen::Vector2d& rest_centre, double diameter);
+    bool undo_lesion();
+    void clear_lesions() { lesions_.clear(); }
+    const std::vector<Lesion>& lesions() const { return lesions_; }
+    LesionStatus lesion_status(int i) const;
+
     // --- undermining ---
     // Undermine the skin within `radius` (mm) of a point on the skin as it
     // looks now. new_stroke = true starts a new brush stroke (one undo step),
@@ -73,7 +116,7 @@ private:
     };
     static double stamp_weight(const Stamp& s, const Eigen::Vector2d& rest_point);
     void apply_undermining();  // recompute the per-node values for the current mesh
-    void remesh(CutGraph cuts);
+    void remesh(CutGraph cuts);  // with the current excisions
     std::vector<Polyline> current_to_rest(const Polyline& path) const;
 
     SheetGeometry geometry_;
@@ -81,6 +124,8 @@ private:
     std::vector<CutGraph> history_;  // the cut graph before each stroke, for undo
     std::unique_ptr<Simulation> sim_;
     std::vector<std::vector<Stamp>> undermine_strokes_;
+    std::vector<Eigen::Vector2d> excised_;  // a rest point inside each removed piece
+    std::vector<Lesion> lesions_;
 };
 
 }  // namespace skinsim

@@ -8,6 +8,7 @@
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
 
+#include "skinsim/excision.hpp"
 #include "skinsim/info.hpp"
 
 namespace godot {
@@ -29,7 +30,14 @@ Vector3 to_godot(const Eigen::Vector2d& p, real_t lift = 0.0f) {
 }
 
 // Heatmap modes, matching the `heatmap` property's enum hint.
-enum HeatmapMode { HEATMAP_OFF = 0, HEATMAP_MAX_PRINCIPAL, HEATMAP_VON_MISES, HEATMAP_AREA_CHANGE };
+enum HeatmapMode {
+    HEATMAP_OFF = 0,
+    HEATMAP_MAX_PRINCIPAL,
+    HEATMAP_VON_MISES,
+    HEATMAP_AREA_CHANGE,
+    HEATMAP_MIN_PRINCIPAL,
+    HEATMAP_LAST = HEATMAP_MIN_PRINCIPAL
+};
 
 // Area change heatmap spans 1/kAreaRange .. kAreaRange (log scale).
 constexpr double kAreaRange = 1.5;
@@ -109,6 +117,22 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_prestretch_across_pct"), &SkinSheet::get_prestretch_across_pct);
     ClassDB::bind_method(D_METHOD("set_undermined_tethering_pct", "pct"), &SkinSheet::set_undermined_tethering_pct);
     ClassDB::bind_method(D_METHOD("get_undermined_tethering_pct"), &SkinSheet::get_undermined_tethering_pct);
+    ClassDB::bind_method(D_METHOD("excise", "point"), &SkinSheet::excise);
+    ClassDB::bind_method(D_METHOD("excise_fusiform", "tip_a", "tip_b"), &SkinSheet::excise_fusiform);
+    ClassDB::bind_method(D_METHOD("get_fusiform_outline", "tip_a", "tip_b"), &SkinSheet::get_fusiform_outline);
+    ClassDB::bind_method(D_METHOD("undo_excise"), &SkinSheet::undo_excise);
+    ClassDB::bind_method(D_METHOD("get_excision_count"), &SkinSheet::get_excision_count);
+    ClassDB::bind_method(D_METHOD("set_ellipse_ratio", "ratio"), &SkinSheet::set_ellipse_ratio);
+    ClassDB::bind_method(D_METHOD("get_ellipse_ratio"), &SkinSheet::get_ellipse_ratio);
+    ClassDB::bind_method(D_METHOD("set_tip_angle_deg", "deg"), &SkinSheet::set_tip_angle_deg);
+    ClassDB::bind_method(D_METHOD("get_tip_angle_deg"), &SkinSheet::get_tip_angle_deg);
+    ClassDB::bind_method(D_METHOD("add_lesion", "point"), &SkinSheet::add_lesion);
+    ClassDB::bind_method(D_METHOD("undo_lesion"), &SkinSheet::undo_lesion);
+    ClassDB::bind_method(D_METHOD("clear_lesions"), &SkinSheet::clear_lesions);
+    ClassDB::bind_method(D_METHOD("get_lesion_count"), &SkinSheet::get_lesion_count);
+    ClassDB::bind_method(D_METHOD("set_lesion_diameter", "mm"), &SkinSheet::set_lesion_diameter);
+    ClassDB::bind_method(D_METHOD("get_lesion_diameter"), &SkinSheet::get_lesion_diameter);
+    ClassDB::bind_method(D_METHOD("get_lesion_info"), &SkinSheet::get_lesion_info);
     ClassDB::bind_method(D_METHOD("set_undermine_radius", "mm"), &SkinSheet::set_undermine_radius);
     ClassDB::bind_method(D_METHOD("get_undermine_radius"), &SkinSheet::get_undermine_radius);
     ClassDB::bind_method(D_METHOD("undermine_at", "point", "new_stroke"), &SkinSheet::undermine_at);
@@ -205,6 +229,14 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "undermine_radius", PROPERTY_HINT_RANGE, "1,30,0.5,suffix:mm"),
                  "set_undermine_radius", "get_undermine_radius");
 
+    ADD_GROUP("Excision", "");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lesion_diameter", PROPERTY_HINT_RANGE, "0.5,40,0.5,suffix:mm"),
+                 "set_lesion_diameter", "get_lesion_diameter");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ellipse_ratio", PROPERTY_HINT_RANGE, "1,6,0.1"),
+                 "set_ellipse_ratio", "get_ellipse_ratio");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tip_angle_deg", PROPERTY_HINT_RANGE, "10,120,1,suffix:deg"),
+                 "set_tip_angle_deg", "get_tip_angle_deg");
+
     ADD_GROUP("Grab", "");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "grab_radius", PROPERTY_HINT_RANGE, "0,10,0.1,suffix:mm"),
                  "set_grab_radius", "get_grab_radius");
@@ -236,7 +268,7 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_wireframe"), "set_show_wireframe", "get_show_wireframe");
     ADD_PROPERTY(PropertyInfo(Variant::COLOR, "skin_color"), "set_skin_color", "get_skin_color");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "heatmap", PROPERTY_HINT_ENUM,
-                              "Off,Max principal stress,Von Mises stress,Area change"),
+                              "Off,Max principal stress,Von Mises stress,Area change,Min principal stress"),
                  "set_heatmap", "get_heatmap");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heatmap_range_kpa", PROPERTY_HINT_RANGE,
                               "1,2000,1,exp,suffix:kPa"),
@@ -366,6 +398,81 @@ bool SkinSheet::undermine_at(const Vector3& p_world_point, bool p_new_stroke) {
     return true;
 }
 
+int SkinSheet::excise(const Vector3& p_world_point) {
+    if (!sheet_) return 0;
+    const int result = sheet_->excise(world_to_sheet(p_world_point));
+    if (result == 1) topology_changed();
+    return result;
+}
+
+int SkinSheet::excise_fusiform(const Vector3& p_tip_a, const Vector3& p_tip_b) {
+    if (!sheet_) return 0;
+    const Eigen::Vector2d a = world_to_sheet(p_tip_a), b = world_to_sheet(p_tip_b);
+    const skinsim::Polyline outline = skinsim::fusiform_outline(a, b, ellipse_ratio_, tip_angle_deg_);
+    if (outline.empty()) return 0;
+    const int result = sheet_->excise_outline(outline, 0.5 * (a + b));
+    if (result == 1) topology_changed();
+    return result;
+}
+
+PackedVector3Array SkinSheet::get_fusiform_outline(const Vector3& p_tip_a, const Vector3& p_tip_b) const {
+    PackedVector3Array out;
+    for (const Eigen::Vector2d& p :
+         skinsim::fusiform_outline(world_to_sheet(p_tip_a), world_to_sheet(p_tip_b), ellipse_ratio_, tip_angle_deg_))
+        out.push_back(to_global(to_godot(p)));
+    return out;
+}
+
+bool SkinSheet::undo_excise() {
+    if (!sheet_ || !sheet_->undo_excise()) return false;
+    topology_changed();
+    return true;
+}
+
+bool SkinSheet::add_lesion(const Vector3& p_world_point) {
+    return sheet_ && sheet_->add_lesion(world_to_sheet(p_world_point), lesion_diameter_);
+}
+
+bool SkinSheet::undo_lesion() { return sheet_ && sheet_->undo_lesion(); }
+
+void SkinSheet::clear_lesions() {
+    if (sheet_) sheet_->clear_lesions();
+}
+
+Array SkinSheet::get_lesion_info() const {
+    Array out;
+    const skinsim::Simulation* s = sim();
+    if (!s) return out;
+    const auto& lesions = sheet_->lesions();
+    for (int i = 0; i < static_cast<int>(lesions.size()); ++i) {
+        const skinsim::Sheet::Lesion& l = lesions[i];
+        // The outline at rest, carried to where that tissue is now. Parts
+        // that have been excised have no skin to sit on: they are left out.
+        Array pieces;
+        PackedVector3Array piece;
+        constexpr int kPoints = 48;
+        for (int k = 0; k <= kPoints; ++k) {
+            const double a = 2.0 * 3.14159265358979323846 * k / kPoints;
+            Eigen::Vector2d now;
+            if (s->current_position_at_rest(l.centre + l.radius * Eigen::Vector2d(std::cos(a), std::sin(a)), now)) {
+                piece.push_back(to_global(to_godot(now)));
+            } else if (piece.size() > 0) {
+                pieces.push_back(piece);
+                piece = PackedVector3Array();
+            }
+        }
+        if (piece.size() > 0) pieces.push_back(piece);
+        const skinsim::Sheet::LesionStatus st = sheet_->lesion_status(i);
+        Dictionary d;
+        d["outline"] = pieces;
+        d["excised"] = st.excised;
+        d["complete"] = st.complete;
+        d["margin_mm"] = st.margin;
+        out.push_back(d);
+    }
+    return out;
+}
+
 bool SkinSheet::undo_undermine() {
     if (!sheet_ || !sheet_->undo_undermine()) return false;
     update_render_mesh();
@@ -405,7 +512,7 @@ void SkinSheet::set_contact_stiffness(double p_n_per_mm3) {
 }
 
 void SkinSheet::set_heatmap(int p_mode) {
-    heatmap_ = (p_mode < HEATMAP_OFF || p_mode > HEATMAP_AREA_CHANGE) ? HEATMAP_OFF : p_mode;
+    heatmap_ = (p_mode < HEATMAP_OFF || p_mode > HEATMAP_LAST) ? HEATMAP_OFF : p_mode;
     update_skin_material();
     if (is_inside_tree()) update_render_mesh();
 }
@@ -605,7 +712,8 @@ Dictionary SkinSheet::get_contact_info() const {
 Color SkinSheet::heat_color(double p_value) const {
     const double range = heatmap_range_kpa_ / 1000.0;  // solver stresses are in MPa
     switch (heatmap_) {
-        case HEATMAP_MAX_PRINCIPAL: return ramp(kDiverging, 5, 0.5 + 0.5 * p_value / range);
+        case HEATMAP_MAX_PRINCIPAL:
+        case HEATMAP_MIN_PRINCIPAL: return ramp(kDiverging, 5, 0.5 + 0.5 * p_value / range);
         case HEATMAP_VON_MISES: return ramp(kSequential, 5, p_value / range);
         case HEATMAP_AREA_CHANGE:
             // Log scale: halving and doubling are equally far from "unchanged".
@@ -625,6 +733,10 @@ Dictionary SkinSheet::get_heatmap_legend() const {
     if (heatmap_ == HEATMAP_MAX_PRINCIPAL) {
         title = "Max principal stress";
         field = skinsim::Field::MaxPrincipalStress;
+        lo = -range;
+    } else if (heatmap_ == HEATMAP_MIN_PRINCIPAL) {
+        title = "Min principal stress";
+        field = skinsim::Field::MinPrincipalStress;
         lo = -range;
     } else if (heatmap_ == HEATMAP_VON_MISES) {
         title = "Von Mises stress";
@@ -648,6 +760,8 @@ Dictionary SkinSheet::get_heatmap_legend() const {
     if (values.size() > 0) {
         if (heatmap_ == HEATMAP_AREA_CHANGE)
             extreme = vformat("now %.2f-%.2f%s", values.minCoeff(), values.maxCoeff(), unit);
+        else if (heatmap_ == HEATMAP_MIN_PRINCIPAL)  // what matters here is the most squeezed spot
+            extreme = vformat("lowest %.1f%s", values.minCoeff() * scale, unit);
         else
             extreme = vformat("peak %.1f%s", values.maxCoeff() * scale, unit);
     }
@@ -812,9 +926,10 @@ void SkinSheet::update_render_mesh() {
     // Heatmap: one colour per vertex; the GPU blends them smoothly across
     // each triangle. Values come from the solver's vertex-averaged field.
     if (heatmap_ != HEATMAP_OFF) {
-        const skinsim::Field field = heatmap_ == HEATMAP_MAX_PRINCIPAL ? skinsim::Field::MaxPrincipalStress
-                                     : heatmap_ == HEATMAP_VON_MISES   ? skinsim::Field::VonMisesStress
-                                                                       : skinsim::Field::AreaChange;
+        const skinsim::Field field = heatmap_ == HEATMAP_MAX_PRINCIPAL   ? skinsim::Field::MaxPrincipalStress
+                                     : heatmap_ == HEATMAP_MIN_PRINCIPAL ? skinsim::Field::MinPrincipalStress
+                                     : heatmap_ == HEATMAP_VON_MISES     ? skinsim::Field::VonMisesStress
+                                                                         : skinsim::Field::AreaChange;
         const Eigen::VectorXd values = s->vertex_field(field);
         PackedColorArray colors;
         colors.resize(n_verts);
