@@ -135,6 +135,24 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_wrinkling_pct", "pct"), &SkinSheet::set_wrinkling_pct);
     ClassDB::bind_method(D_METHOD("get_wrinkling_pct"), &SkinSheet::get_wrinkling_pct);
     ClassDB::bind_method(D_METHOD("excise", "point"), &SkinSheet::excise);
+    ClassDB::bind_method(D_METHOD("get_flap_preview", "start", "end"), &SkinSheet::get_flap_preview);
+    ClassDB::bind_method(D_METHOD("make_flap", "start", "end"), &SkinSheet::make_flap);
+    ClassDB::bind_method(D_METHOD("undo_flap"), &SkinSheet::undo_flap);
+    ClassDB::bind_method(D_METHOD("tie_key_sutures", "tightness"), &SkinSheet::tie_key_sutures);
+    ClassDB::bind_method(D_METHOD("get_flap_count"), &SkinSheet::get_flap_count);
+    ClassDB::bind_method(D_METHOD("get_flap_info"), &SkinSheet::get_flap_info);
+    ClassDB::bind_method(D_METHOD("set_flap_type", "type"), &SkinSheet::set_flap_type);
+    ClassDB::bind_method(D_METHOD("get_flap_type"), &SkinSheet::get_flap_type);
+    ClassDB::bind_method(D_METHOD("set_flap_margin", "mm"), &SkinSheet::set_flap_margin);
+    ClassDB::bind_method(D_METHOD("get_flap_margin"), &SkinSheet::get_flap_margin);
+    ClassDB::bind_method(D_METHOD("set_flap_length_ratio", "ratio"), &SkinSheet::set_flap_length_ratio);
+    ClassDB::bind_method(D_METHOD("get_flap_length_ratio"), &SkinSheet::get_flap_length_ratio);
+    ClassDB::bind_method(D_METHOD("set_flap_arc_deg", "deg"), &SkinSheet::set_flap_arc_deg);
+    ClassDB::bind_method(D_METHOD("get_flap_arc_deg"), &SkinSheet::get_flap_arc_deg);
+    ClassDB::bind_method(D_METHOD("set_flap_mirror", "on"), &SkinSheet::set_flap_mirror);
+    ClassDB::bind_method(D_METHOD("get_flap_mirror"), &SkinSheet::get_flap_mirror);
+    ClassDB::bind_method(D_METHOD("set_flap_undermine_margin", "mm"), &SkinSheet::set_flap_undermine_margin);
+    ClassDB::bind_method(D_METHOD("get_flap_undermine_margin"), &SkinSheet::get_flap_undermine_margin);
     ClassDB::bind_method(D_METHOD("excise_fusiform", "tip_a", "tip_b"), &SkinSheet::excise_fusiform);
     ClassDB::bind_method(D_METHOD("get_fusiform_outline", "tip_a", "tip_b"), &SkinSheet::get_fusiform_outline);
     ClassDB::bind_method(D_METHOD("undo_excise"), &SkinSheet::undo_excise);
@@ -262,6 +280,19 @@ void SkinSheet::_bind_methods() {
                  "set_ellipse_ratio", "get_ellipse_ratio");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tip_angle_deg", PROPERTY_HINT_RANGE, "10,120,1,suffix:deg"),
                  "set_tip_angle_deg", "get_tip_angle_deg");
+
+    ADD_GROUP("Flaps", "");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "flap_type", PROPERTY_HINT_ENUM, "Advancement,Rotation,Rhomboid"),
+                 "set_flap_type", "get_flap_type");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_margin", PROPERTY_HINT_RANGE, "0,20,0.5,suffix:mm"),
+                 "set_flap_margin", "get_flap_margin");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_length_ratio", PROPERTY_HINT_RANGE, "0.5,6,0.1"),
+                 "set_flap_length_ratio", "get_flap_length_ratio");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_arc_deg", PROPERTY_HINT_RANGE, "30,240,1,suffix:deg"),
+                 "set_flap_arc_deg", "get_flap_arc_deg");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "flap_mirror"), "set_flap_mirror", "get_flap_mirror");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_undermine_margin", PROPERTY_HINT_RANGE, "0,30,0.5,suffix:mm"),
+                 "set_flap_undermine_margin", "get_flap_undermine_margin");
 
     ADD_GROUP("Grab", "");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "grab_radius", PROPERTY_HINT_RANGE, "0,10,0.1,suffix:mm"),
@@ -461,6 +492,94 @@ PackedVector3Array SkinSheet::get_fusiform_outline(const Vector3& p_tip_a, const
     for (const Eigen::Vector2d& p :
          skinsim::fusiform_outline(world_to_sheet(p_tip_a), world_to_sheet(p_tip_b), ellipse_ratio_, tip_angle_deg_))
         out.push_back(to_global(to_godot(p)));
+    return out;
+}
+
+skinsim::FlapDesign SkinSheet::flap_design(const Vector3& p_start, const Vector3& p_end) const {
+    const skinsim::Simulation* s = sim();
+    if (!s) return {};
+    skinsim::MaterialPoint m;
+    const Eigen::Vector2d start = world_to_sheet(p_start), end = world_to_sheet(p_end);
+    if (!s->material_point_at(start, m)) return {};
+    // Designs live in rest (tissue) coordinates, like incisions and lesions.
+    Eigen::Vector2d centre = s->rest_position_of(m);
+    double diameter = lesion_diameter_ + 2.0 * flap_margin_;
+    for (const skinsim::Sheet::Lesion& l : sheet_->lesions())
+        if ((l.centre - centre).norm() <= l.radius) {  // pressed on a lesion: design around it
+            centre = l.centre;
+            diameter = 2.0 * l.radius + 2.0 * flap_margin_;
+            break;
+        }
+    // The drag gives the direction (on deformed skin it is close enough).
+    return skinsim::design_flap(static_cast<skinsim::FlapType>(flap_type_), centre, end - start, diameter, flap_shape_,
+                                std::min(2.0, 0.25 * diameter));
+}
+
+Dictionary SkinSheet::get_flap_preview(const Vector3& p_start, const Vector3& p_end) const {
+    Dictionary out;
+    const skinsim::FlapDesign d = flap_design(p_start, p_end);
+    out["valid"] = d.valid;
+    if (!d.valid) return out;
+    const skinsim::Simulation* s = sim();
+    // Rest -> where that tissue is now (points over no skin are left out).
+    auto now = [&](const skinsim::Polyline& poly) {
+        PackedVector3Array pts;
+        for (const Eigen::Vector2d& X : poly) {
+            Eigen::Vector2d p;
+            if (s->current_position_at_rest(X, p)) pts.push_back(to_global(to_godot(p)));
+        }
+        return pts;
+    };
+    out["defect"] = now(d.defect);
+    out["flap"] = now(d.flap);
+    out["base"] = now(d.base);
+    Array incisions;
+    for (const skinsim::Polyline& p : d.incisions) incisions.push_back(now(p));
+    out["incisions"] = incisions;
+    Array keys;
+    for (const auto& kp : d.key_sutures) keys.push_back(now({kp.first, kp.second}));
+    out["key_sutures"] = keys;
+    out["ratio"] = d.length_to_width;
+    out["turn_deg"] = d.turn_deg;
+    out["diameter_mm"] = d.defect_diameter;
+    return out;
+}
+
+int SkinSheet::make_flap(const Vector3& p_start, const Vector3& p_end) {
+    if (!sheet_) return 0;
+    const skinsim::FlapDesign d = flap_design(p_start, p_end);
+    if (!d.valid) return 0;
+    const int result = sheet_->make_flap(d, flap_undermine_margin_);
+    if (result == 1) topology_changed();
+    return result;
+}
+
+bool SkinSheet::undo_flap() {
+    if (!sheet_ || !sheet_->undo_flap()) return false;
+    topology_changed();
+    return true;
+}
+
+Array SkinSheet::tie_key_sutures(double p_tightness) {
+    Array out;
+    if (!sheet_ || sheet_->flap_count() == 0) return out;
+    for (int id : sheet_->tie_key_sutures(sheet_->flap_count() - 1, p_tightness, suture_thread_)) out.push_back(id);
+    return out;
+}
+
+Array SkinSheet::get_flap_info() const {
+    Array out;
+    if (!sheet_) return out;
+    for (int i = 0; i < sheet_->flap_count(); ++i) {
+        const skinsim::FlapDesign& d = sheet_->flap(i);
+        Dictionary f;
+        f["type"] = static_cast<int>(d.type);
+        f["ratio"] = d.length_to_width;
+        f["turn_deg"] = d.turn_deg;
+        f["diameter_mm"] = d.defect_diameter;
+        f["base_stress_kpa"] = sheet_->flap_base_stress(i) * 1000.0;
+        out.push_back(f);
+    }
     return out;
 }
 

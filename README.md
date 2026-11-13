@@ -111,7 +111,9 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 | Tap (Lesion tool, L) | Mark a lesion (diameter in the panel) |
 | Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
-| Z | Undo the last incision, suture, undermining stroke, lesion or excision |
+| Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release |
+| "Tie key sutures" (Flap section) | Tie the last flap's key sutures: they pull it into place |
+| Z | Undo the last incision, suture, undermining stroke, lesion, excision or flap |
 | H | Cycle the heatmap: off / max principal / von Mises / area change / min principal stress / excess skin |
 | W / R | Wireframe on/off / reset the deformation (incisions and sutures stay) |
 
@@ -202,6 +204,43 @@ defect opens wider than the skin removed; close it with sutures. The heatmap's
 an ellipse that is too short or too blunt. That is where real skin would pucker
 into a dog-ear; the "excess skin" heatmap (M8) shows how much skin bunches up there.
 
+## Local flaps (M10)
+
+Mark a lesion, pick a flap type in the panel's Flap section, then drag with
+the Flap tool from the lesion outward, towards where the flap should come
+from. While you drag, the design is previewed: the defect (purple, the lesion
+plus the excision margin all round), the flap (shaded blue), its incisions
+(red), its uncut base (dashed green: what it stays attached by) and its key
+sutures (dotted blue). On release the incisions are cut, the defect's skin is
+removed and the flap, the defect and a margin around them are undermined, all
+as one undo step. Prestressed skin retracts, so the defect opens. "Tie key
+sutures" then ties the design's key sutures (thread and tightness from the
+Suture section), pulling the flap into place. Close the rest with the Suture
+tool.
+
+| Type | Defect | Flap | Moves by |
+|---|---|---|---|
+| Advancement | square | two parallel limbs, length : width from the panel | sliding forward |
+| Rotation | triangle (height 2 x the defect's diameter) | an arc around the triangle's apex; arc angle from the panel | turning about the apex by the triangle's apex angle |
+| Rhomboid (Limberg) | rhombus, 60 / 120 degree angles | an identical rhombus beside it | turning 60 degrees about the far end of its base |
+
+The key sutures pull each flap's leading corner to the far side of the defect
+(advancement: two across its width; rotation: the corner and halfway along;
+rhomboid: both moving corners plus one across the donor site's V). The panel
+shows each flap's design and its base stress: the mean largest principal
+stress along its uncut base, a rough sign of how hard the closure pulls on the
+pedicle. It is not a model of the flap's blood supply.
+
+Checked against surgical rules of thumb (tests in `test_flaps.cpp`): a longer
+rotation arc closes with less tension (70 degrees: 2.5 N, 150 degrees: 0.6 N on
+the key sutures), and so does a longer advancement flap (1 : 1: 2.3 N, 3 : 1:
+1.3 N). The numbers themselves are illustrative (uncalibrated tissue).
+
+Not modelled yet: Burow's triangles (the small triangles excised at an
+advancement flap's base to remove its dog-ears; the excess skin heatmap shows
+where they would go), double flaps (bilateral advancement, bilobed), and
+choosing the direction to suit the RSTL automatically.
+
 ## Wrinkling (M8)
 
 A membrane has no bending stiffness: pushed together in its plane, real skin
@@ -238,9 +277,8 @@ in `solver/include/skinsim/wrinkling.hpp`.
 
 ## Planned features
 
-- Local flaps (advancement, rotation, transposition) on the excision defects
-  (next, M10): a flap tool that designs the excision around a lesion and the
-  flap together, previews them, then cuts and undermines in one go.
+- More flap designs: Burow's triangles, bilateral advancement (H-plasty),
+  bilobed and note flaps.
 - Cheese-wiring (a suture tearing through the tissue it bites) as a second way
   for a suture to fail.
 - Friction between the lips; calibration against measured skin properties.

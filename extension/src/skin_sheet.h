@@ -161,6 +161,37 @@ public:
     void set_tip_angle_deg(double p_deg) { tip_angle_deg_ = p_deg; }
     double get_tip_angle_deg() const { return tip_angle_deg_; }
 
+    // --- Local flaps (world-space points) ---
+    // A flap designed from a drag: pressed on a lesion, the defect is the
+    // lesion plus flap_margin all round (elsewhere: a lesion_diameter circle
+    // under the press); the flap is harvested in the drag's direction.
+    // Preview: Dictionary with valid, defect, flap, base (PackedVector3Array),
+    // incisions (Array of PackedVector3Array), key_sutures (Array of
+    // PackedVector3Array [entry, exit]), ratio, turn_deg, diameter_mm.
+    Dictionary get_flap_preview(const Vector3& p_start, const Vector3& p_end) const;
+    // Cut, remove and undermine it. 1 = done, 0 = nothing cut, -1 = the
+    // defect did not come free (nothing changed).
+    int make_flap(const Vector3& p_start, const Vector3& p_end);
+    bool undo_flap();
+    // Tie the last flap's key sutures (thread suture_thread). Returns their ids.
+    Array tie_key_sutures(double p_tightness);
+    int get_flap_count() const { return sheet_ ? sheet_->flap_count() : 0; }
+    // One Dictionary per flap: type (0 advancement, 1 rotation, 2 rhomboid),
+    // ratio, turn_deg, diameter_mm, base_stress_kpa.
+    Array get_flap_info() const;
+    void set_flap_type(int p_type) { flap_type_ = std::clamp(p_type, 0, 2); }
+    int get_flap_type() const { return flap_type_; }
+    void set_flap_margin(double p_mm) { flap_margin_ = std::clamp(p_mm, 0.0, 20.0); }
+    double get_flap_margin() const { return flap_margin_; }
+    void set_flap_length_ratio(double p_ratio) { flap_shape_.length_to_width = std::clamp(p_ratio, 0.5, 6.0); }
+    double get_flap_length_ratio() const { return flap_shape_.length_to_width; }
+    void set_flap_arc_deg(double p_deg) { flap_shape_.arc_angle_deg = std::clamp(p_deg, 30.0, 240.0); }
+    double get_flap_arc_deg() const { return flap_shape_.arc_angle_deg; }
+    void set_flap_mirror(bool p_on) { flap_shape_.mirror = p_on; }
+    bool get_flap_mirror() const { return flap_shape_.mirror; }
+    void set_flap_undermine_margin(double p_mm) { flap_undermine_margin_ = std::clamp(p_mm, 0.0, 30.0); }
+    double get_flap_undermine_margin() const { return flap_undermine_margin_; }
+
     // --- Lesions (markings on the skin; no mechanical effect) ---
     bool add_lesion(const Vector3& p_world_point);  // diameter = lesion_diameter
     bool undo_lesion();
@@ -264,6 +295,12 @@ private:
     double ellipse_ratio_ = 3.0;     // length : width
     double tip_angle_deg_ = 30.0;
     double heatmap_range_kpa_ = 50.0;
+    int flap_type_ = 0;
+    double flap_margin_ = 2.0;            // mm of normal skin around the lesion
+    skinsim::FlapShape flap_shape_;
+    double flap_undermine_margin_ = 6.0;  // mm undermined beyond the flap and defect
+    // The design for a drag (rest coordinates); valid = false if not on skin.
+    skinsim::FlapDesign flap_design(const Vector3& p_start, const Vector3& p_end) const;
 
     // Cached copies of the mesh topology: it only changes when cutting.
     skinsim::TriMesh mesh_;

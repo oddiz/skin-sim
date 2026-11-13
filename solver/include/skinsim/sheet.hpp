@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "skinsim/cuts.hpp"
+#include "skinsim/flaps.hpp"
 #include "skinsim/mesher.hpp"
 #include "skinsim/simulation.hpp"
 
@@ -69,6 +70,24 @@ public:
     int excise_outline(const Polyline& outline, const Eigen::Vector2d& inside);
     bool undo_excise();  // put the most recently removed piece back
     int excision_count() const { return static_cast<int>(excised_.size()); }
+
+    // --- local flaps ---
+    // Carry out a flap design (rest coordinates, see flaps.hpp) in one step:
+    // cut the defect outline and the flap's incisions, remove the skin in
+    // the defect, and undermine the flap, the defect and `undermine_margin`
+    // mm of skin around them. One undo step (undo_flap).
+    // Returns 1 if done, 0 if nothing could be cut (e.g. off the sheet), -1
+    // if the defect's skin did not come free (nothing is changed then).
+    int make_flap(const FlapDesign& design, double undermine_margin);
+    bool undo_flap();
+    int flap_count() const { return static_cast<int>(flaps_.size()); }
+    const FlapDesign& flap(int i) const { return flaps_.at(i).design; }
+    // Tie the design's key sutures (thread: USP size, see thread_strength).
+    // Returns the ids of those tied (an end no longer on skin is skipped).
+    std::vector<int> tie_key_sutures(int i, double tightness, int thread);
+    // Mean largest principal stress along the flap's base (pedicle), MPa:
+    // how hard the closure pulls on the skin the flap hangs from.
+    double flap_base_stress(int i) const;
 
     // --- lesions (markings) ---
     struct Lesion {
@@ -126,6 +145,11 @@ private:
     std::vector<std::vector<Stamp>> undermine_strokes_;
     std::vector<Eigen::Vector2d> excised_;  // a rest point inside each removed piece
     std::vector<Lesion> lesions_;
+    struct Flap {
+        FlapDesign design;
+        int undermine_stroke = -1;  // index in undermine_strokes_, -1 = none
+    };
+    std::vector<Flap> flaps_;
 };
 
 }  // namespace skinsim

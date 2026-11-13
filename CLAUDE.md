@@ -87,12 +87,13 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   (thread tension = closing force / 2) once the sheet is at rest, worst first; switch to turn
   off. Per-suture loosen / tighten / cut (undoable), thread swap. Sutures coloured by load;
   "smart" labels (selected, > 75% load, hovered).
-- M10 (next): flap tool. Pick a flap type (advancement, rotation, rhomboid), drag from a
-  lesion outward: designs the excision around it and the flap together, preview + panel
-  parameters, then cuts and undermines in one go.
+- M10: flap tool. Pick a flap type (advancement, rotation, rhomboid), drag from a lesion
+  outward: designs the excision around it and the flap together (solver/flaps.hpp, rest
+  coordinates), preview + panel parameters, then cuts, removes and undermines in one undo
+  step (Sheet::make_flap). "Tie key sutures"; base stress readout.
 
 ## Planned features
-- Local flaps (advancement, rotation, transposition) on excision defects (M10).
+- More flap designs (Burow's triangles, bilateral advancement, bilobed).
 - Cheese-wiring (suture tearing through tissue): deliberately left out of M9.
 - Friction between the lips; calibration against measured skin properties.
 

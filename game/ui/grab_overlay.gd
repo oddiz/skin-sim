@@ -23,6 +23,9 @@ var suture_line_ok := true   # both ends on skin
 var selected_suture := -1
 ## Fusiform excision being designed (screen points, closed; empty otherwise).
 var excise_outline := PackedVector2Array()
+## Flap being designed (screen points): defect, flap, base (PackedVector2Array),
+## incisions, key_sutures (Arrays of them), text. Empty when not designing.
+var flap_preview: Dictionary = {}
 ## Undermining brush outline (x < 0: hidden).
 var brush_pos := Vector2(-1, -1)
 var brush_radius_px := 0.0
@@ -73,6 +76,7 @@ func _draw() -> void:
 	if excise_outline.size() >= 2:
 		draw_polyline(excise_outline, Color(0, 0, 0, 0.6), 4.0, true)
 		draw_polyline(excise_outline, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
+	_draw_flap_preview(font)
 	_draw_sutures(font)
 	_draw_legend(font)
 	_draw_rstl(font)
@@ -188,6 +192,44 @@ func _draw_snaps(font: Font) -> void:
 		var pos := (a + b) * 0.5 + Vector2(8, 14)
 		draw_string_outline(font, pos, s.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.85 * alpha))
 		draw_string(font, pos, s.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, red)
+
+
+## The flap design under the finger: the flap shaded, the defect (purple,
+## removed), the incisions (red), the uncut base (green, what the flap stays
+## attached by) and dotted arrows for the key sutures.
+func _draw_flap_preview(font: Font) -> void:
+	if flap_preview.is_empty():
+		return
+	var flap: PackedVector2Array = flap_preview.flap
+	if flap.size() >= 4:
+		# The outline repeats its first point; the polygon fill wants each once.
+		var poly := flap.slice(0, flap.size() - 1)
+		if Geometry2D.triangulate_polygon(poly).size() > 0:
+			draw_colored_polygon(poly, Color(0.3, 0.6, 1.0, 0.25))
+	var defect: PackedVector2Array = flap_preview.defect
+	if defect.size() >= 2:
+		var dpoly := defect.slice(0, defect.size() - 1)
+		if Geometry2D.triangulate_polygon(dpoly).size() > 0:
+			draw_colored_polygon(dpoly, Color(0.55, 0.2, 0.85, 0.25))
+		draw_polyline(defect, Color(0, 0, 0, 0.6), 4.0, true)
+		draw_polyline(defect, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
+	for inc in flap_preview.incisions:
+		if inc.size() >= 2:
+			draw_polyline(inc, Color(0, 0, 0, 0.6), 4.0, true)
+			draw_polyline(inc, COLOR_SCALPEL, 2.0, true)
+	var base: PackedVector2Array = flap_preview.base
+	if base.size() >= 2:
+		draw_dashed_line(base[0], base[base.size() - 1], Color(0.2, 0.85, 0.3, 0.95), 2.0, 6.0)
+	for k in flap_preview.key_sutures:
+		if k.size() == 2:
+			draw_dashed_line(k[0], k[1], Color(0.2, 0.35, 1.0, 0.9), 1.5, 4.0)
+			draw_circle(k[0], 3.0, Color(0.2, 0.35, 1.0))
+			draw_circle(k[1], 3.0, Color(0.2, 0.35, 1.0))
+	if defect.size() > 0:
+		var pos := defect[0] + Vector2(10, -12)
+		var text: String = flap_preview.text
+		draw_string_outline(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.85))
+		draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.95, 0.95, 0.95))
 
 
 ## Vertical colour bar, bottom-left, with its scale and the current extreme.

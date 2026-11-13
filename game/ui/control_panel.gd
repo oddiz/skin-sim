@@ -16,7 +16,7 @@ extends PanelContainer
 ## Emitted when the user presses a button that changes the scene.
 signal reset_requested
 ## Emitted when the user picks a tool (main.gd's Tool enum: 0 grab, 1 cut, 2 suture, 3 undermine,
-## 4 lesion, 5 excise).
+## 4 lesion, 5 excise, 6 flap).
 signal tool_selected(tool: int)
 ## Undo the last cut or suture (main.gd keeps the history).
 signal undo_requested
@@ -29,6 +29,8 @@ signal adjust_tightness_requested(delta: float)
 signal thread_changed(usp_size: int)
 ## Which suture labels to draw: 0 smart, 1 all, 2 none.
 signal label_mode_changed(mode: int)
+## "Tie key sutures" pressed: tie the last flap's key sutures.
+signal tie_key_sutures_requested
 signal cuts_cleared
 signal lesions_cleared
 signal undermining_cleared
@@ -88,6 +90,21 @@ const PARAMS := [
 		"fmt": "%.1f : 1", "tip": "Fusiform excision shape. 3 : 1 is classic; shorter leaves dog-ears."},
 	{"prop": "tip_angle_deg", "label": "Tip angle", "min": 10.0, "max": 120.0, "step": 1.0,
 		"fmt": "%.0f deg", "tip": "Angle at each end of the fusiform excision. About 30 deg is classic."},
+	{"section": "Flap"},
+	{"prop": "flap_type", "label": "Type", "type": "enum",
+		"options": ["Advancement", "Rotation", "Rhomboid (Limberg)"],
+		"tip": "Flap tool: drag from a lesion outward. Advancement slides forward into a square defect; rotation swings around into a triangular one; rhomboid jumps across into a 60/120 deg rhombus. [F]"},
+	{"prop": "flap_margin", "label": "Excision margin", "min": 0.0, "max": 10.0, "step": 0.5,
+		"fmt": "%.1f mm", "tip": "Normal skin removed all round the lesion. The defect is drawn around the lesion plus this margin."},
+	{"prop": "flap_length_ratio", "label": "Advancement length : width", "min": 0.5, "max": 6.0, "step": 0.1,
+		"fmt": "%.1f : 1", "tip": "Advancement flap: longer advances more easily (lower tension), but a long narrow flap risks its tip's blood supply."},
+	{"prop": "flap_arc_deg", "label": "Rotation arc", "min": 30.0, "max": 240.0, "step": 1.0,
+		"fmt": "%.0f deg", "tip": "Rotation flap: angle swept by the arc around the triangle's apex. Longer arcs spread the tension."},
+	{"prop": "flap_mirror", "label": "Mirror (other side)", "type": "bool",
+		"tip": "Rotation and rhomboid flaps: build the flap on the other side of the drag direction."},
+	{"prop": "flap_undermine_margin", "label": "Undermine beyond", "min": 0.0, "max": 30.0, "step": 0.5,
+		"fmt": "%.1f mm", "tip": "The flap and defect are undermined, plus this much skin around them."},
+	{"type": "flap_actions"},
 	{"section": "Undermining"},
 	{"prop": "undermine_radius", "label": "Brush radius", "min": 1.0, "max": 30.0, "step": 0.5,
 		"fmt": "%.1f mm", "tip": "Size of the undermining brush."},
@@ -142,6 +159,7 @@ var _tightness_label: Label
 var _suture_label: Label
 var _contact_label: Label
 var _lesion_label: Label
+var _flap_label: Label
 var _remove_suture: Button
 var _loosen: Button
 var _tighten: Button
@@ -191,6 +209,8 @@ func _build() -> void:
 	for spec in PARAMS:
 		if spec.has("section"):
 			box.add_child(_section_label(spec.section))
+		elif spec.get("type", "") == "flap_actions":
+			_build_flap_actions(box)
 		elif spec.get("type", "") == "bool":
 			box.add_child(_make_checkbox(spec))
 		elif spec.get("type", "") == "enum":
@@ -219,18 +239,19 @@ func _build_tools(box: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
 	# A ButtonGroup makes toggle buttons mutually exclusive, like radio buttons.
 	var group := ButtonGroup.new()
-	for i in 6:
-		if i == 3:  # second row
+	for i in 7:
+		if i == 4:  # second row
 			box.add_child(row)
 			row = HBoxContainer.new()
 		var b := Button.new()
-		b.text = ["Grab", "Cut", "Suture", "Undermine", "Lesion", "Excise"][i]
+		b.text = ["Grab", "Cut", "Suture", "Undermine", "Lesion", "Excise", "Flap"][i]
 		b.add_theme_font_size_override("font_size", 13)
 		b.tooltip_text = ["Forceps: drag the skin [G]", "Scalpel: draw an incision [C]",
 			"Drag from needle entry to exit; tap a suture to select it [S]",
 			"Brush: free the skin from the tissue below [U]",
 			"Tap to mark a lesion [L]",
-			"Drag tip to tip: fusiform excision. Tap inside a closed outline: remove it [E]"][i]
+			"Drag tip to tip: fusiform excision. Tap inside a closed outline: remove it [E]",
+			"Drag from a lesion outward: excision + local flap in that direction [F]"][i]
 		b.toggle_mode = true
 		b.button_group = group
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -385,6 +406,44 @@ func show_suture_tightness(t: float) -> void:
 ## Set the tightness for the next suture (and the selected one), as the slider would.
 func set_tightness(t: float) -> void:
 	_tightness_slider.value = t
+
+
+## "Tie key sutures" and the readout of the flaps made.
+func _build_flap_actions(box: VBoxContainer) -> void:
+	var tie := Button.new()
+	tie.text = "Tie key sutures"
+	tie.tooltip_text = "Tie the last flap's key sutures (thread and knot tightness from the Suture section): " \
+		+ "they pull the flap into the defect."
+	tie.custom_minimum_size.y = 30
+	tie.pressed.connect(func(): tie_key_sutures_requested.emit())
+	box.add_child(tie)
+	_flap_label = Label.new()
+	_flap_label.add_theme_font_size_override("font_size", 12)
+	_flap_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_flap_label)
+
+
+## Called every frame by main.gd with sheet.get_flap_info().
+func show_flaps(info: Array) -> void:
+	if _flap_label == null:
+		return
+	var lines: Array[String] = []
+	var i := 0
+	for f in info:
+		i += 1
+		var name: String = ["Advancement", "Rotation", "Rhomboid"][f.type]
+		var shape := ""
+		if f.type == 0:
+			shape = ", %.1f : 1" % f.ratio
+		elif f.type == 1:
+			shape = ", arc %.1f x width" % f.ratio
+		# Base stress: the largest principal stress along the uncut base the
+		# flap hangs from. A rough sign of how hard the closure pulls on the
+		# pedicle; not a model of its blood supply.
+		lines.append("Flap %d: %s, %.0f mm defect%s. Base stress %+.0f kPa." % [
+			i, name, f.diameter_mm, shape, f.base_stress_kpa])
+	_flap_label.text = "\n".join(lines)
+	_flap_label.visible = not lines.is_empty()
 
 
 ## Show the label mode (when it was changed by keyboard).

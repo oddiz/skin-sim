@@ -92,6 +92,7 @@ bool Sheet::undo_cut() {
 void Sheet::clear_cuts() {
     history_.clear();
     excised_.clear();  // without incisions nothing can be cut out
+    flaps_.clear();
     if (!cuts_.empty()) remesh(CutGraph{});
 }
 
@@ -159,6 +160,116 @@ bool Sheet::undo_excise() {
     excised_.pop_back();
     remesh(cuts_);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Local flaps
+// ---------------------------------------------------------------------------
+
+int Sheet::make_flap(const FlapDesign& design, double undermine_margin) {
+    if (!design.valid) return 0;
+    // All the cuts as one stroke: one re-mesh, one undo step.
+    CutGraph g = cuts_;
+    const CutOptions options = geometry_.cut_options();
+    int added = add_cut(g, design.defect, options);
+    for (const Polyline& p : design.incisions) added += add_cut(g, p, options);
+    if (added == 0) return 0;
+    history_.push_back(cuts_);
+    remesh(std::move(g));
+
+    // Remove the defect's skin: the island around the design's centre.
+    if (island_at(mesh(), design.centre) != 1) {
+        CutGraph previous = std::move(history_.back());
+        history_.pop_back();
+        remesh(std::move(previous));
+        return -1;
+    }
+    excised_.push_back(design.centre);
+    remesh(cuts_);
+
+    // Undermine the convex region around the defect and the flap, widened by
+    // the margin: soft stamps on a grid, as if painted with the brush.
+    Flap f;
+    f.design = design;
+    Polyline region = design.defect;
+    region.insert(region.end(), design.flap.begin(), design.flap.end());
+    Eigen::AlignedBox2d box;
+    for (const Eigen::Vector2d& p : region) box.extend(p);
+    const double margin = std::isfinite(undermine_margin) ? std::max(0.0, undermine_margin) : 0.0;
+    const double radius = std::clamp(0.5 * margin, 2.5, 6.0);
+    const double spacing = 0.6 * radius;  // inner 60% of each stamp is fully undermined
+    auto distance_to = [](const Polyline& poly, const Eigen::Vector2d& p) {
+        if (inside_polygon(poly, p)) return 0.0;
+        double d = 1e300;
+        for (size_t i = 0; i + 1 < poly.size(); ++i) d = std::min(d, point_segment_distance(p, poly[i], poly[i + 1]));
+        return d;
+    };
+    std::vector<Stamp> stroke;
+    const double reach = margin + 0.4 * radius;  // stamps fade out over their outer 40%
+    for (double y = box.min().y() - reach; y <= box.max().y() + reach; y += spacing)
+        for (double x = box.min().x() - reach; x <= box.max().x() + reach; x += spacing) {
+            const Eigen::Vector2d p(x, y);
+            if (std::min(distance_to(design.defect, p), distance_to(design.flap, p)) + 0.4 * radius <= reach + 1e-9)
+                stroke.push_back({p, radius});
+        }
+    if (!stroke.empty()) {
+        undermine_strokes_.push_back(std::move(stroke));
+        f.undermine_stroke = static_cast<int>(undermine_strokes_.size()) - 1;
+        apply_undermining();
+    }
+    flaps_.push_back(std::move(f));
+    return 1;
+}
+
+bool Sheet::undo_flap() {
+    if (flaps_.empty() || excised_.empty() || history_.empty()) return false;
+    const Flap& f = flaps_.back();
+    // Its undermining, unless that was cleared since.
+    if (f.undermine_stroke >= 0 && static_cast<int>(undermine_strokes_.size()) == f.undermine_stroke + 1)
+        undermine_strokes_.pop_back();
+    flaps_.pop_back();
+    excised_.pop_back();
+    CutGraph previous = std::move(history_.back());
+    history_.pop_back();
+    remesh(std::move(previous));  // also re-applies the undermining
+    return true;
+}
+
+std::vector<int> Sheet::tie_key_sutures(int i, double tightness, int thread) {
+    std::vector<int> ids;
+    if (i < 0 || i >= flap_count()) return ids;
+    for (const auto& [entry, exit] : flaps_[i].design.key_sutures) {
+        // The needle holes are a bite away from any cut, so the rest point
+        // alone says where they are (no lip to choose).
+        SutureRecord r;
+        r.rest_a = r.inside_a = entry;
+        r.rest_b = r.inside_b = exit;
+        r.tightness = tightness;
+        r.thread = thread;
+        const int id = sim_->restore_suture(r);
+        if (id >= 0) ids.push_back(id);
+    }
+    return ids;
+}
+
+double Sheet::flap_base_stress(int i) const {
+    if (i < 0 || i >= flap_count()) return 0.0;
+    const Polyline& base = flaps_[i].design.base;
+    if (base.size() < 2) return 0.0;
+    const TriMesh& m = mesh();
+    const TriangleLocator locator(m.rest_positions, m.triangles);
+    const Eigen::VectorXd stress = sim_->triangle_field(Field::MaxPrincipalStress);
+    double sum = 0.0;
+    int n = 0;
+    // Sample the inner part of the base line (its ends touch the incisions).
+    for (int k = 1; k < 10; ++k) {
+        const Eigen::Vector2d p = base.front() + (base.back() - base.front()) * (k / 10.0);
+        const int t = locator.locate(p, nullptr, 1e-6);
+        if (t < 0) continue;
+        sum += stress[t];
+        ++n;
+    }
+    return n > 0 ? sum / n : 0.0;
 }
 
 // ---------------------------------------------------------------------------

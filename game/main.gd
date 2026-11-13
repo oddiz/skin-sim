@@ -23,6 +23,11 @@ extends Node3D
 ##           other: it is cut and removed on release (shape in the panel).
 ##           Or tap inside any outline already cut free (e.g. a rhomboid
 ##           drawn with the scalpel) to remove it.
+##   FLAP    drag from a lesion outward: designs the excision around it and
+##           a local flap (type and shape in the panel) in the drag's
+##           direction, previewed while dragging; on release it is cut, the
+##           defect removed and the area undermined. "Tie key sutures" then
+##           pulls the flap into place.
 ## On desktop, Shift + drag cuts whatever the tool.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
@@ -30,6 +35,9 @@ extends Node3D
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
 ##   --demo-cut                cut a 30 mm vertical incision, then pull its
 ##                             right lip 8 mm right so it gapes (for checks)
+##   --demo-flap [--flap-type 0|1|2]  mark a lesion, raise a flap (0 advancement,
+##                             1 rotation, 2 rhomboid, the default) to its right,
+##                             tie its key sutures; max principal stress heatmap
 ##   --demo-snap               close a cut with three 6-0 sutures and pull hard:
 ##                             they snap, worst first (for checks)
 ##   --demo-suture             cut, close with three sutures (3 mm bites, the
@@ -45,7 +53,7 @@ extends Node3D
 ##                             excised and closed: dog-ears at both ends;
 ##                             excess skin heatmap (for checks)
 
-enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE }
+enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP }
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
@@ -74,6 +82,8 @@ var _undermine_new := true                # next stamp starts a new stroke (undo
 var _last_paint_pos := Vector2.ZERO
 var _excise_touch := -1                   # touch index designing an excision, -1 = none
 var _excise_start := Vector2.ZERO
+var _flap_touch := -1                     # touch index designing a flap, -1 = none
+var _flap_start := Vector2.ZERO
 var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"}, {"kind": "suture", "id": n}, ...
 var _status := ""                         # last action's result, shown in the HUD
 var _suture_buttons: HBoxContainer        # floating Loosen / Tighten / Cut next to the selected suture
@@ -97,7 +107,8 @@ func _ready() -> void:
 	panel.label_mode_changed.connect(func(mode: int): overlay.label_mode = mode)
 	sheet.suture_snapped.connect(_on_suture_snapped)
 	panel.cuts_cleared.connect(func():  # clearing the incisions also puts excised skin back
-		_history = _history.filter(func(h): return h.kind != "cut" and h.kind != "excise"))
+		_history = _history.filter(func(h): return h.kind != "cut" and h.kind != "excise" and h.kind != "flap"))
+	panel.tie_key_sutures_requested.connect(_tie_key_sutures)
 	panel.lesions_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "lesion"))
 	panel.undermining_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "undermine"))
 	panel.sutures_cleared.connect(func():
@@ -120,6 +131,9 @@ func _ready() -> void:
 		_demo_suture()
 	if args.has("--demo-snap"):
 		_demo_snap()
+	if args.has("--demo-flap"):
+		var t := args.find("--flap-type")
+		_demo_flap(int(args[t + 1]) if t != -1 and t + 1 < args.size() else 2)
 	if args.has("--demo-m6"):
 		_demo_m6()
 	if args.has("--demo-excise"):
@@ -155,6 +169,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_paint_undermining(event.position)
 		elif event.index == _excise_touch:
 			_preview_excision(event.position)
+		elif event.index == _flap_touch:
+			_preview_flap(event.position)
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
@@ -183,6 +199,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_tool(Tool.LESION)
 			KEY_E:
 				_set_tool(Tool.EXCISE)
+			KEY_F:
+				_set_tool(Tool.FLAP)
 			KEY_H:
 				sheet.heatmap = (sheet.heatmap + 1) % 6
 				panel.refresh()
@@ -224,6 +242,10 @@ func _on_press(index: int, pos: Vector2) -> void:
 		if _excise_touch == -1:
 			_excise_touch = index
 			_excise_start = pos
+	elif tool == Tool.FLAP:
+		if _flap_touch == -1:
+			_flap_touch = index
+			_flap_start = pos
 	else:
 		sheet.grab(index, _screen_to_sheet_plane(pos))
 
@@ -236,6 +258,8 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_suture(pos)
 	elif index == _excise_touch:
 		_commit_excision(pos)
+	elif index == _flap_touch:
+		_commit_flap(pos)
 	elif index == _undermine_touch:
 		_undermine_touch = -1
 		if not _undermine_new:  # something was painted: one undo step
@@ -383,6 +407,9 @@ func _undo() -> void:
 	elif last.kind == "lesion":
 		sheet.undo_lesion()
 		_status = "Lesion removed."
+	elif last.kind == "flap":
+		sheet.undo_flap()
+		_status = "Flap undone."
 	elif last.kind == "excise":
 		sheet.undo_excise()
 		if last.with_cut:
@@ -429,6 +456,7 @@ func _process(_delta: float) -> void:
 	_place_suture_buttons(selected)
 	panel.show_contact(sheet.get_contact_info())
 	panel.show_lesions(sheet.get_lesion_info())
+	panel.show_flaps(sheet.get_flap_info())
 	var tool_line: String = [
 		"Tool: GRAB - drag the skin.",
 		"Tool: CUT - draw an incision.",
@@ -436,6 +464,7 @@ func _process(_delta: float) -> void:
 		"Tool: UNDERMINE - paint where the skin is freed from the tissue below.",
 		"Tool: LESION - tap to mark a lesion.",
 		"Tool: EXCISE - drag tip to tip for a fusiform excision; tap inside a closed outline to remove it.",
+		"Tool: FLAP - drag from a lesion outward: excision + flap in that direction (type in the panel).",
 	][tool]
 	# The web version can be opened by anyone with the link: say what it is.
 	var notice := "Research prototype: illustrative tissue values, not for clinical use.\n" \
@@ -448,7 +477,7 @@ func _process(_delta: float) -> void:
 		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
 		+ (_status + "\n" if _status != "" else "") \
-		+ tool_line + "\n[G]rab [C]ut [S]uture [U]ndermine [L]esion [E]xcise  [Shift] cut  [Z] undo  [H] heatmap  [W] wire  [R] reset"
+		+ tool_line + "\n[G]rab [C]ut [S]uture [U]ndermine [L]esion [E]xcise [F]lap  [Shift] cut  [Z] undo  [H] heatmap  [W] wire  [R] reset"
 
 
 ## Compact scientific notation, e.g. 1.2e-14 (GDScript's % has no %e).
@@ -530,6 +559,30 @@ func _demo_suture() -> void:
 	_touch(0, Vector2(8, 0), true)
 	_drag(0, Vector2(15, 0))
 	sheet.heatmap = 2
+	panel.refresh()
+
+
+## Lesion in the middle, a flap of the given type harvested to its right,
+## key sutures tied with 4-0 (for checks and screenshots).
+func _demo_flap(type: int) -> void:
+	await get_tree().process_frame
+	sheet.flap_type = type
+	panel.refresh()
+	_set_tool(Tool.LESION)
+	_touch(0, Vector2(0, 0), true)
+	_touch(0, Vector2(0, 0), false)
+	await get_tree().process_frame
+	_set_tool(Tool.FLAP)
+	_touch(0, Vector2(0, 0), true)
+	_drag(0, Vector2(12, 0))
+	await get_tree().process_frame
+	_touch(0, Vector2(12, 0), false)
+	await get_tree().process_frame
+	# Let the defect open (prestress) before pulling the flap in.
+	for _frame in 30:
+		await get_tree().process_frame
+	_tie_key_sutures()
+	sheet.heatmap = 1
 	panel.refresh()
 
 
@@ -636,6 +689,75 @@ func _preview_excision(screen_pos: Vector2) -> void:
 	for p in sheet.get_fusiform_outline(_screen_to_sheet_plane(_excise_start), _screen_to_sheet_plane(screen_pos)):
 		pts.append(camera.unproject_position(p))
 	overlay.excise_outline = pts
+
+
+## While dragging with the Flap tool: preview the design (screen space).
+func _preview_flap(screen_pos: Vector2) -> void:
+	if screen_pos.distance_to(_flap_start) < TAP_PX:
+		overlay.flap_preview = {}
+		return
+	var d: Dictionary = sheet.get_flap_preview(_screen_to_sheet_plane(_flap_start),
+		_screen_to_sheet_plane(screen_pos))
+	if not d.valid:
+		overlay.flap_preview = {}
+		return
+	var screen := func(pts: PackedVector3Array) -> PackedVector2Array:
+		var out := PackedVector2Array()
+		for p in pts:
+			out.append(camera.unproject_position(p))
+		return out
+	var incisions: Array = []
+	for p in d.incisions:
+		incisions.append(screen.call(p))
+	var keys: Array = []
+	for p in d.key_sutures:
+		keys.append(screen.call(p))
+	overlay.flap_preview = {
+		"defect": screen.call(d.defect), "flap": screen.call(d.flap), "base": screen.call(d.base),
+		"incisions": incisions, "key_sutures": keys, "text": _flap_text(d),
+	}
+
+
+## One line describing a flap design (preview or made).
+func _flap_text(d: Dictionary) -> String:
+	var kind: int = sheet.flap_type if not d.has("type") else d.type
+	match kind:
+		0:
+			return "Advancement %.0f mm defect, %.1f : 1" % [d.diameter_mm, d.ratio]
+		1:
+			return "Rotation %.0f mm defect, arc %.1f x defect width, turns %.0f deg" % [
+				d.diameter_mm, d.ratio, d.turn_deg]
+		_:
+			return "Rhomboid (Limberg) %.0f mm defect, turns %.0f deg" % [d.diameter_mm, d.turn_deg]
+
+
+## Release of the flap gesture: cut it, remove the defect, undermine.
+func _commit_flap(end: Vector2) -> void:
+	_flap_touch = -1
+	overlay.flap_preview = {}
+	if end.distance_to(_flap_start) < TAP_PX:
+		_status = "Flap: drag from the lesion outward, towards where the flap should come from."
+		return
+	var result := sheet.make_flap(_screen_to_sheet_plane(_flap_start), _screen_to_sheet_plane(end))
+	if result == 1:
+		_history.append({"kind": "flap"})
+		_status = "Flap raised and undermined. 'Tie key sutures' (panel) pulls it into place. " \
+			+ _lesion_summary()
+	elif result == 0:
+		_status = "No flap: start on the skin, and keep the design on the sheet."
+	else:
+		_status = "No flap: the defect's outline did not close (too near the edge of the sheet?)."
+
+
+## Tie the last flap's key sutures with the panel's thread and tightness.
+func _tie_key_sutures() -> void:
+	if sheet.get_flap_count() == 0:
+		_status = "Make a flap first (Flap tool)."
+		return
+	var ids: Array = sheet.tie_key_sutures(panel.tightness)
+	for id in ids:
+		_history.append({"kind": "suture", "id": id})
+	_status = "%d key sutures tied (%d-0)." % [ids.size(), sheet.suture_thread]
 
 
 ## Release of the excision gesture: a drag cuts and removes a fusiform
