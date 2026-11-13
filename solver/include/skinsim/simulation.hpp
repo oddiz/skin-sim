@@ -69,6 +69,30 @@ struct SutureInfo {
     // squeezes that tissue; strongly negative suggests strangulation or the
     // suture cutting through.
     double loop_stress = 0.0;
+    int thread = 0;            // USP size (5 = 5-0); 0 = ideal thread that never breaks
+    double tension = 0.0;      // in the thread itself: force / 2 (the loop crosses the wound twice), N
+    double strength = 0.0;     // the thread's knot-pull breaking strength, N (0 = unbreakable)
+    double load = 0.0;         // tension / strength: 1 = at breaking point (0 if unbreakable)
+};
+
+// A suture that snapped (SutureParams::can_break): reported once.
+struct SutureBreak {
+    int id = 0;
+    Eigen::Vector2d a, b;   // where its two ends were, mm
+    double tension = 0.0;   // thread tension when it snapped, N
+    int thread = 0;         // USP size
+};
+
+// Everything needed to tie a suture again exactly where it was, even on a
+// different mesh of the same skin (undo of "cut suture", re-meshing).
+// Ends are stored as rest (tissue) positions plus a point nudged a hair into
+// the end's own triangle: both lips of an incision share rest positions, and
+// the nudged point tells which lip the needle was in.
+struct SutureRecord {
+    int id = 0;
+    Eigen::Vector2d rest_a, inside_a, rest_b, inside_b;
+    double tightness = 0.0;
+    int thread = 0;
 };
 
 // Contact between incision lips, as reported for drawing and readouts.
@@ -158,9 +182,20 @@ public:
     // tightness 0 the wound edges just meet; tightness t shortens the loop by
     // t x (bite a + bite b) (squeezing the tissue in it), t < 0 leaves it loose.
     // Returns the suture id, or -1 if a point is invalid.
-    int add_suture(const MaterialPoint& a, const MaterialPoint& b, double tightness = 0.0);
+    // `thread` is the USP size (see thread_strength); 0 = an ideal thread that
+    // never breaks.
+    int add_suture(const MaterialPoint& a, const MaterialPoint& b, double tightness = 0.0, int thread = 0);
     // Re-tie an existing suture with a new tightness.
     bool set_suture_tightness(int id, double tightness);
+    // Swap a suture's thread for another size (same tightness, same bites).
+    bool set_suture_thread(int id, int thread);
+    // Snapshot of a suture, and tying it again from one (with its old id if
+    // that is free). restore_suture returns the id, or -1 if an end is no
+    // longer on skin (e.g. excised).
+    bool suture_record(int id, SutureRecord& out) const;
+    int restore_suture(const SutureRecord& record);
+    // Sutures that snapped since the last call (oldest first), then forgets them.
+    std::vector<SutureBreak> take_suture_breaks();
     // The nodes and weights (summing to 1) of one side's bite strip
     // (side 0 = entry, 1 = exit). For tests and drawing.
     bool suture_strip(int id, int side, std::vector<int>& nodes, std::vector<double>& weights) const;
@@ -272,6 +307,7 @@ private:
     struct Suture {
         MaterialPoint a, b;        // needle entry and exit (the material points)
         double tightness = 0.0;
+        int thread = 0;            // USP size, 0 = unbreakable
         Bite bite_a, bite_b;       // derived from a, b and the mesh
         double rest_length = 0.0;  // derived from the bites and tightness
     };
@@ -343,6 +379,11 @@ private:
     std::map<int, Grab> grabs_;
     std::map<int, Suture> sutures_;
     int next_suture_id_ = 1;
+    std::vector<SutureBreak> suture_breaks_;  // snapped, not yet collected
+    // Find the material point at rest position X on the side of `inside`.
+    bool locate_rest(const Eigen::Vector2d& X, const Eigen::Vector2d& inside, MaterialPoint& out) const;
+    // At equilibrium: snap the one most overloaded suture, if any (true if one did).
+    bool snap_overloaded_suture();
     std::map<Edge, int> lip_triangle_;  // incision lip edge -> the one triangle using it
     std::vector<LipSegment> lip_segments_;
     std::vector<int> lip_nodes_;        // every vertex on a lip

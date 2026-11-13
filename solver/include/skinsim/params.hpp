@@ -102,7 +102,39 @@ struct SutureParams {
     // thread anyway. A finite width keeps the stress finite and, because the
     // load is integrated over the elements, independent of the mesh.
     double strip_width = 2.0;  // mm
+
+    // Sutures snap when their thread is pulled harder than its knot can hold
+    // (see thread_strength). Off by default in the solver, so the tested
+    // behaviour is unchanged; the app turns it on.
+    bool can_break = false;
 };
+
+// Breaking strength of a tied thread ("knot-pull tensile strength"), in N, by
+// USP size: 7 means 7-0 (finest), 2 means 2-0. Returns 0 for any other size,
+// which means "ideal thread, never breaks".
+//
+// Values: the minimum average knot-pull strength the US Pharmacopeia requires
+// of sterile Class I non-absorbable sutures (silk, monofilament nylon or
+// polypropylene), USP <881> / "Nonabsorbable Surgical Suture", Table 1.
+// Real threads of good brands are typically somewhat stronger, so a suture
+// here snaps a little early rather than late. The knot is the weak point of
+// a thread, which is why knot-pull (not straight-pull) strength is used.
+//
+// Thread tension vs closing force: a simple interrupted suture is a loop that
+// crosses the wound twice (once deep in the dermis, once over the top with
+// the knot), so the force pulling the edges together is 2 x the tension in
+// the thread. The snap test compares tension = closing force / 2 with this.
+inline double thread_strength(int usp_size) {
+    switch (usp_size) {
+        case 7: return 1.08;
+        case 6: return 1.96;
+        case 5: return 3.92;
+        case 4: return 5.88;
+        case 3: return 9.41;
+        case 2: return 14.1;
+        default: return 0.0;
+    }
+}
 
 // Contact between incision lips: the two sides of a wound (or a flap and the
 // edge it is inset into) press against each other instead of passing through.

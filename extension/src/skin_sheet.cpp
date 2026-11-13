@@ -66,6 +66,14 @@ const Color kSequential[] = {Color(1.0, 1.0, 0.80), Color(0.996, 0.85, 0.46), Co
 
 }  // namespace
 
+// The app lets threads snap at their breaking strength (the solver's own
+// default is off, for its tests). The panel has a switch to turn it off.
+skinsim::SutureParams SkinSheet::app_default_sutures() {
+    skinsim::SutureParams p;
+    p.can_break = true;
+    return p;
+}
+
 skinsim::TissueParams SkinSheet::app_default_tissue() {
     // Illustrative values chosen to feel plausible, NOT calibrated: horizontal
     // RSTL; collagen fibres carry the strain-stiffening along them, so the
@@ -154,6 +162,11 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_suture_stiffness"), &SkinSheet::get_suture_stiffness);
     ClassDB::bind_method(D_METHOD("set_suture_strip_width", "mm"), &SkinSheet::set_suture_strip_width);
     ClassDB::bind_method(D_METHOD("get_suture_strip_width"), &SkinSheet::get_suture_strip_width);
+    ClassDB::bind_method(D_METHOD("set_sutures_can_snap", "on"), &SkinSheet::set_sutures_can_snap);
+    ClassDB::bind_method(D_METHOD("get_sutures_can_snap"), &SkinSheet::get_sutures_can_snap);
+    ClassDB::bind_method(D_METHOD("set_suture_thread", "usp_size"), &SkinSheet::set_suture_thread);
+    ClassDB::bind_method(D_METHOD("get_suture_thread"), &SkinSheet::get_suture_thread);
+    ClassDB::bind_static_method("SkinSheet", D_METHOD("thread_strength", "usp_size"), &SkinSheet::thread_strength);
     ClassDB::bind_method(D_METHOD("set_heatmap", "mode"), &SkinSheet::set_heatmap);
     ClassDB::bind_method(D_METHOD("get_heatmap"), &SkinSheet::get_heatmap);
     ClassDB::bind_method(D_METHOD("set_heatmap_range_kpa", "kpa"), &SkinSheet::set_heatmap_range_kpa);
@@ -180,6 +193,8 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("pick_suture", "point", "max_distance_mm"), &SkinSheet::pick_suture);
     ClassDB::bind_method(D_METHOD("is_on_skin", "point"), &SkinSheet::is_on_skin);
     ClassDB::bind_method(D_METHOD("remove_suture", "id"), &SkinSheet::remove_suture);
+    ClassDB::bind_method(D_METHOD("restore_suture", "id"), &SkinSheet::restore_suture);
+    ClassDB::bind_method(D_METHOD("set_suture_thread_of", "id", "usp_size"), &SkinSheet::set_suture_thread_of);
     ClassDB::bind_method(D_METHOD("clear_sutures"), &SkinSheet::clear_sutures);
     ClassDB::bind_method(D_METHOD("get_suture_count"), &SkinSheet::get_suture_count);
     ClassDB::bind_method(D_METHOD("get_suture_info"), &SkinSheet::get_suture_info);
@@ -264,6 +279,9 @@ void SkinSheet::_bind_methods() {
                  "set_suture_stiffness", "get_suture_stiffness");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "suture_strip_width", PROPERTY_HINT_RANGE, "0.1,6,0.1,suffix:mm"),
                  "set_suture_strip_width", "get_suture_strip_width");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sutures_can_snap"), "set_sutures_can_snap", "get_sutures_can_snap");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "suture_thread", PROPERTY_HINT_RANGE, "2,7,1"), "set_suture_thread",
+                 "get_suture_thread");
 
     ADD_GROUP("Lip contact", "");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lip_contact"), "set_lip_contact", "get_lip_contact");
@@ -288,6 +306,10 @@ void SkinSheet::_bind_methods() {
 
     ADD_SIGNAL(MethodInfo("mesh_rebuilt"));   // new sheet (geometry changed)
     ADD_SIGNAL(MethodInfo("cuts_changed"));   // incision made, undone or cleared
+    // A thread pulled beyond its strength broke (and the suture is gone).
+    ADD_SIGNAL(MethodInfo("suture_snapped", PropertyInfo(Variant::INT, "id"), PropertyInfo(Variant::VECTOR3, "a"),
+                          PropertyInfo(Variant::VECTOR3, "b"), PropertyInfo(Variant::FLOAT, "tension_n"),
+                          PropertyInfo(Variant::INT, "thread")));
 }
 
 void SkinSheet::_ready() {
@@ -304,6 +326,8 @@ void SkinSheet::_process(double /*p_delta*/) {
     last_step_ = s->step(iterations_per_frame_);
     last_step_ms_ = static_cast<double>(Time::get_singleton()->get_ticks_usec() - t0) / 1000.0;
     if (last_step_.iterations > 0) update_render_mesh();  // only re-upload when something moved
+    for (const skinsim::SutureBreak& b : s->take_suture_breaks())
+        emit_signal("suture_snapped", b.id, to_global(to_godot(b.a)), to_global(to_godot(b.b)), b.tension, b.thread);
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +541,19 @@ void SkinSheet::set_suture_strip_width(double p_mm) {
     push_params();
 }
 
+void SkinSheet::set_sutures_can_snap(bool p_on) {
+    suture_params_.can_break = p_on;
+    push_params();
+}
+
+void SkinSheet::set_suture_thread(int p_usp_size) {
+    suture_thread_ = std::clamp(p_usp_size, 2, 7);
+}
+
+double SkinSheet::thread_strength(int p_usp_size) {
+    return skinsim::thread_strength(p_usp_size);
+}
+
 void SkinSheet::set_lip_contact(bool p_on) {
     contact_params_.enabled = p_on;
     push_params();
@@ -646,7 +683,12 @@ int SkinSheet::suture(const Vector3& p_entry, const Vector3& p_exit, double p_ti
     if (!s || !s->material_point_at(world_to_sheet(p_entry), a) || !s->material_point_at(world_to_sheet(p_exit), b))
         return -1;
     if ((s->position_of(a) - s->position_of(b)).norm() < 1e-6) return -1;  // both ends on the same spot
-    return s->add_suture(a, b, p_tightness);
+    return s->add_suture(a, b, p_tightness, suture_thread_);
+}
+
+bool SkinSheet::set_suture_thread_of(int p_id, int p_usp_size) {
+    skinsim::Simulation* s = sim();
+    return s && s->set_suture_thread(p_id, std::clamp(p_usp_size, 2, 7));
 }
 
 bool SkinSheet::set_suture_tightness(int p_id, double p_tightness) {
@@ -681,7 +723,19 @@ int SkinSheet::pick_suture(const Vector3& p_world_point, double p_max_distance_m
 
 bool SkinSheet::remove_suture(int p_id) {
     skinsim::Simulation* s = sim();
-    return s && s->remove_suture(p_id);
+    if (!s) return false;
+    skinsim::SutureRecord record;
+    if (s->suture_record(p_id, record)) removed_sutures_[p_id] = record;
+    return s->remove_suture(p_id);
+}
+
+bool SkinSheet::restore_suture(int p_id) {
+    skinsim::Simulation* s = sim();
+    auto it = removed_sutures_.find(p_id);
+    if (!s || it == removed_sutures_.end()) return false;
+    const bool ok = s->restore_suture(it->second) >= 0;
+    removed_sutures_.erase(it);
+    return ok;
 }
 
 void SkinSheet::clear_sutures() {
@@ -706,6 +760,10 @@ Array SkinSheet::get_suture_info() const {
         d["tightness"] = su.tightness;
         d["slack"] = su.force == 0.0;
         d["loop_stress_kpa"] = su.loop_stress * 1000.0;
+        d["thread"] = su.thread;
+        d["tension_n"] = su.tension;
+        d["strength_n"] = su.strength;
+        d["load"] = su.load;
         out.push_back(d);
     }
     return out;

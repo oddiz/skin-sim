@@ -83,8 +83,17 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   blended with the flat membrane by a "wrinkling" fraction (default 0.9 in the app, 0 in the
   solver) so elements cannot invert; excess skin heatmap (where dog-ears pucker).
 
+- M9: Suture strength and editing: threads by USP size snap at their knot-pull strength
+  (thread tension = closing force / 2) once the sheet is at rest, worst first; switch to turn
+  off. Per-suture loosen / tighten / cut (undoable), thread swap. Sutures coloured by load;
+  "smart" labels (selected, > 75% load, hovered).
+- M10 (next): flap tool. Pick a flap type (advancement, rotation, rhomboid), drag from a
+  lesion outward: designs the excision around it and the flap together, preview + panel
+  parameters, then cuts and undermines in one go.
+
 ## Planned features
-- Local flaps (advancement, rotation, transposition) on excision defects.
+- Local flaps (advancement, rotation, transposition) on excision defects (M10).
+- Cheese-wiring (suture tearing through tissue): deliberately left out of M9.
 - Friction between the lips; calibration against measured skin properties.
 
 ## Working rules

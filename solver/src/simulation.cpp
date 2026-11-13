@@ -299,6 +299,8 @@ void Simulation::set_grab_params(const GrabParams& params) {
 void Simulation::set_suture_params(const SutureParams& params) {
     const SutureParams p = sanitized(params);
     const bool strips_changed = p.strip_width != suture_params_.strip_width;
+    // Switching snapping on must re-check sutures that are already overloaded.
+    if (p.can_break != suture_params_.can_break) converged_ = false;
     suture_params_ = p;
     if (strips_changed)
         for (auto& [id, su] : sutures_) rebuild_suture(su);
@@ -940,12 +942,13 @@ Eigen::Matrix2d Simulation::suture_stiffness(const Eigen::Vector2d& r, double L)
     return k * (along + (1.0 - L / s) * (Eigen::Matrix2d::Identity() - along));
 }
 
-int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b, double tightness) {
+int Simulation::add_suture(const MaterialPoint& a, const MaterialPoint& b, double tightness, int thread) {
     if (!valid(a) || !valid(b) || !std::isfinite(tightness)) return -1;
     Suture s;
     s.a = a;
     s.b = b;
     s.tightness = tightness;
+    s.thread = thread_strength(thread) > 0.0 ? thread : 0;
     rebuild_suture(s);
     const int id = next_suture_id_++;
     sutures_[id] = std::move(s);
@@ -959,6 +962,14 @@ bool Simulation::set_suture_tightness(int id, double tightness) {
     it->second.tightness = tightness;
     rebuild_suture(it->second);
     converged_ = false;
+    return true;
+}
+
+bool Simulation::set_suture_thread(int id, int thread) {
+    auto it = sutures_.find(id);
+    if (it == sutures_.end()) return false;
+    it->second.thread = thread_strength(thread) > 0.0 ? thread : 0;
+    converged_ = false;  // a weaker thread may now be overloaded
     return true;
 }
 
@@ -1016,6 +1027,10 @@ std::vector<SutureInfo> Simulation::suture_info() const {
         info.tightness = su.tightness;
         info.rest_length = su.rest_length;
         info.bites = su.bite_a.depth + su.bite_b.depth;
+        info.thread = su.thread;
+        info.tension = 0.5 * info.force;  // the loop crosses the wound twice
+        info.strength = thread_strength(su.thread);
+        info.load = info.strength > 0.0 ? info.tension / info.strength : 0.0;
 
         // Loop stress: the Cauchy stress component along the thread,
         // n^T sigma n, averaged over the elements of both bite strips with the
@@ -1106,35 +1121,103 @@ bool Simulation::opposite_lip_point(const MaterialPoint& p, MaterialPoint& out) 
     return best >= 0.0;
 }
 
+// A material point's rest position X, and a point nudged a hair from X into
+// its own triangle (towards the centroid). On an incision both lips share X;
+// the nudged point lies on the correct lip.
+static void rest_and_inside(const TriMesh& mesh, const Eigen::VectorXd& rest, const Eigen::Vector2d& X, int triangle,
+                            Eigen::Vector2d& inside) {
+    const Triangle& t = mesh.triangles[triangle];
+    const Eigen::Vector2d centroid =
+        (rest.segment<2>(2 * t[0]) + rest.segment<2>(2 * t[1]) + rest.segment<2>(2 * t[2])) / 3.0;
+    inside = X + 1e-3 * (centroid - X);
+}
+
+bool Simulation::suture_record(int id, SutureRecord& out) const {
+    auto it = sutures_.find(id);
+    if (it == sutures_.end()) return false;
+    const Suture& su = it->second;
+    out.id = id;
+    out.tightness = su.tightness;
+    out.thread = su.thread;
+    out.rest_a = point_at(su.a, rest_);
+    out.rest_b = point_at(su.b, rest_);
+    rest_and_inside(mesh_, rest_, out.rest_a, su.a.triangle, out.inside_a);
+    rest_and_inside(mesh_, rest_, out.rest_b, su.b.triangle, out.inside_b);
+    return true;
+}
+
+bool Simulation::locate_rest(const Eigen::Vector2d& X, const Eigen::Vector2d& inside, MaterialPoint& out) const {
+    int tri = rest_locator_.locate(inside, nullptr, 1e-6);
+    if (tri < 0) tri = rest_locator_.locate(X, nullptr, 1e-3);
+    if (tri < 0) return false;
+    const Triangle& t = mesh_.triangles[tri];
+    out.triangle = tri;
+    out.weights = barycentric(mesh_.rest_positions.col(t[0]), mesh_.rest_positions.col(t[1]),
+                              mesh_.rest_positions.col(t[2]), X);
+    return true;
+}
+
+int Simulation::restore_suture(const SutureRecord& r) {
+    Suture s;
+    s.tightness = r.tightness;
+    s.thread = thread_strength(r.thread) > 0.0 ? r.thread : 0;
+    if (!locate_rest(r.rest_a, r.inside_a, s.a) || !locate_rest(r.rest_b, r.inside_b, s.b)) return -1;
+    rebuild_suture(s);  // this mesh: new bite strips, same tissue
+    const int id = (r.id > 0 && sutures_.count(r.id) == 0) ? r.id : next_suture_id_;
+    sutures_[id] = std::move(s);
+    next_suture_id_ = std::max(next_suture_id_, id + 1);
+    converged_ = false;
+    return id;
+}
+
+// Re-create the sutures of a simulation of the same skin on another mesh:
+// a snapshot of each in the old mesh, tied again in this one.
 void Simulation::adopt_sutures(const Simulation& other) {
-    // Each end is a material point of the other mesh. Its rest position X
-    // is a point of the tissue, so it can be found again in this mesh. On an
-    // incision both lips share X: look up a point nudged into the end's own
-    // triangle instead, which lies on the correct side (as in Sheet::transfer).
-    const TriangleLocator locator(mesh_.rest_positions, mesh_.triangles);
-    auto relocate = [&](const MaterialPoint& p, MaterialPoint& q) {
-        const Triangle& t = other.mesh_.triangles[p.triangle];
-        const Eigen::Vector2d X = other.point_at(p, other.rest_);
-        const Eigen::Vector2d centroid = (other.rest_.segment<2>(2 * t[0]) + other.rest_.segment<2>(2 * t[1]) +
-                                          other.rest_.segment<2>(2 * t[2])) / 3.0;
-        int tri = locator.locate(X + 1e-3 * (centroid - X), nullptr, 1e-6);
-        if (tri < 0) tri = locator.locate(X, nullptr, 1e-3);
-        if (tri < 0) return false;
-        const Triangle& nt = mesh_.triangles[tri];
-        q.triangle = tri;
-        q.weights = barycentric(mesh_.rest_positions.col(nt[0]), mesh_.rest_positions.col(nt[1]),
-                                mesh_.rest_positions.col(nt[2]), X);
-        return true;
-    };
     for (const auto& [id, su] : other.sutures_) {
-        Suture copy;
-        copy.tightness = su.tightness;
-        if (!relocate(su.a, copy.a) || !relocate(su.b, copy.b)) continue;
-        rebuild_suture(copy);  // new mesh: new bite strips, same tissue
-        sutures_[id] = std::move(copy);
+        SutureRecord r;
+        if (other.suture_record(id, r)) restore_suture(r);
     }
     next_suture_id_ = std::max(next_suture_id_, other.next_suture_id_);
     converged_ = false;
+}
+
+std::vector<SutureBreak> Simulation::take_suture_breaks() {
+    std::vector<SutureBreak> out;
+    out.swap(suture_breaks_);
+    return out;
+}
+
+// Called by step() once the sheet is in equilibrium. Only then are the
+// suture forces meaningful: while Newton is still on its way (say, just after
+// a suture is tied across a wide gap), the thread is momentarily stretched
+// far more than it will be once the skin has followed.
+//
+// Only the single most overloaded suture snaps; the solver then finds the new
+// equilibrium, in which its neighbours carry its share of the load, and the
+// next check decides whether one of them snaps too. A closure that is too
+// tight therefore fails one suture at a time, worst first, as it does in
+// real life ("unzipping").
+bool Simulation::snap_overloaded_suture() {
+    if (!suture_params_.can_break) return false;
+    int worst = -1;
+    double worst_load = 1.0;
+    SutureBreak brk;
+    for (const SutureInfo& info : suture_info()) {
+        if (info.strength > 0.0 && info.load > worst_load) {
+            worst_load = info.load;
+            worst = info.id;
+            brk.id = info.id;
+            brk.a = info.a;
+            brk.b = info.b;
+            brk.tension = info.tension;
+            brk.thread = info.thread;
+        }
+    }
+    if (worst < 0) return false;
+    sutures_.erase(worst);
+    suture_breaks_.push_back(brk);
+    converged_ = false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,6 +1660,9 @@ StepInfo Simulation::step(int max_iterations) {
     info.energy = E;
     info.converged = info.residual <= tol || info.stalled;
     converged_ = info.converged;
+    // At equilibrium, a suture pulled beyond its thread's strength snaps;
+    // the sheet then has to settle again.
+    if (converged_ && snap_overloaded_suture()) info.converged = false;
     last_info_ = info;
     return info;
 }

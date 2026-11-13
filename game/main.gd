@@ -12,7 +12,10 @@ extends Node3D
 ##   CUT     a touch draws an incision (scalpel); it is made on release.
 ##   SUTURE  press where the needle goes in, drag, release where it comes out:
 ##           the thread is tied with the knot tightness set in the panel.
-##           Tap a suture to select it; the tightness slider then re-ties it.
+##           Tap a suture to select it; the tightness slider then re-ties it,
+##           - / + (or the buttons floating next to it) loosen / tighten it,
+##           Del cuts it out (Z ties it again). T cycles the suture labels.
+##           A thread pulled beyond its knot-pull strength snaps.
 ##   UNDERMINE paint the areas where the skin is freed from the underlying
 ##           tissue (brush size in the panel); they are shaded darker.
 ##   LESION  tap to mark a lesion (diameter in the panel).
@@ -27,6 +30,8 @@ extends Node3D
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
 ##   --demo-cut                cut a 30 mm vertical incision, then pull its
 ##                             right lip 8 mm right so it gapes (for checks)
+##   --demo-snap               close a cut with three 6-0 sutures and pull hard:
+##                             they snap, worst first (for checks)
 ##   --demo-suture             cut, close with three sutures (3 mm bites, the
 ##                             middle one tied 30% tight), then pull the right
 ##                             side; heatmap on (for checks)
@@ -69,8 +74,9 @@ var _undermine_new := true                # next stamp starts a new stroke (undo
 var _last_paint_pos := Vector2.ZERO
 var _excise_touch := -1                   # touch index designing an excision, -1 = none
 var _excise_start := Vector2.ZERO
-var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"} or {"kind": "suture", "id": n}
+var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"}, {"kind": "suture", "id": n}, ...
 var _status := ""                         # last action's result, shown in the HUD
+var _suture_buttons: HBoxContainer        # floating Loosen / Tighten / Cut next to the selected suture
 
 
 func _ready() -> void:
@@ -82,17 +88,22 @@ func _ready() -> void:
 	panel.tightness_changed.connect(func(t: float):
 		if _selected_suture >= 0:
 			sheet.set_suture_tightness(_selected_suture, t))
-	panel.remove_suture_requested.connect(func():
+	panel.remove_suture_requested.connect(_cut_selected_suture)
+	panel.adjust_tightness_requested.connect(_adjust_selected_tightness)
+	panel.thread_changed.connect(func(size: int):
+		sheet.suture_thread = size
 		if _selected_suture >= 0:
-			sheet.remove_suture(_selected_suture)
-			_select_suture(-1))
+			sheet.set_suture_thread_of(_selected_suture, size))
+	panel.label_mode_changed.connect(func(mode: int): overlay.label_mode = mode)
+	sheet.suture_snapped.connect(_on_suture_snapped)
 	panel.cuts_cleared.connect(func():  # clearing the incisions also puts excised skin back
 		_history = _history.filter(func(h): return h.kind != "cut" and h.kind != "excise"))
 	panel.lesions_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "lesion"))
 	panel.undermining_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "undermine"))
 	panel.sutures_cleared.connect(func():
-		_history = _history.filter(func(h): return h.kind != "suture")
+		_history = _history.filter(func(h): return h.kind != "suture" and h.kind != "suture_cut")
 		_select_suture(-1))
+	_build_suture_buttons()
 	overlay.sheet = sheet
 	overlay.camera = camera
 	sheet.mesh_rebuilt.connect(_frame_sheet)
@@ -107,6 +118,8 @@ func _ready() -> void:
 		_demo_cut()
 	if args.has("--demo-suture"):
 		_demo_suture()
+	if args.has("--demo-snap"):
+		_demo_snap()
 	if args.has("--demo-m6"):
 		_demo_m6()
 	if args.has("--demo-excise"):
@@ -127,7 +140,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		# Emulated touches are generated even over the UI panel; a press there
 		# is meant for a slider, not for the skin underneath.
-		if event.pressed and panel.get_global_rect().has_point(event.position):
+		if event.pressed and (panel.get_global_rect().has_point(event.position) 				or (_suture_buttons.visible and _suture_buttons.get_global_rect().has_point(event.position))):
 			return
 		if event.pressed:
 			_on_press(event.index, event.position)
@@ -175,6 +188,15 @@ func _unhandled_input(event: InputEvent) -> void:
 				panel.refresh()
 			KEY_Z:
 				_undo()
+			KEY_MINUS, KEY_KP_SUBTRACT:
+				_adjust_selected_tightness(-panel.TIGHTNESS_STEP)
+			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD:
+				_adjust_selected_tightness(panel.TIGHTNESS_STEP)
+			KEY_DELETE, KEY_BACKSPACE, KEY_X:
+				_cut_selected_suture()
+			KEY_T:
+				overlay.label_mode = (overlay.label_mode + 1) % 3
+				panel.show_label_mode(overlay.label_mode)
 
 
 func _on_press(index: int, pos: Vector2) -> void:
@@ -264,7 +286,81 @@ func _select_suture(id: int) -> void:
 	if id >= 0:
 		for su in sheet.get_suture_info():
 			if su.id == id:
+				# Like the tightness, the selected suture's thread becomes the
+				# one for new sutures too: what the panel shows is what you get.
 				panel.show_suture_tightness(su.tightness)
+				sheet.suture_thread = su.thread
+				panel.show_thread(su.thread)
+
+
+## Re-tie the selected suture looser (delta < 0) or tighter (delta > 0).
+func _adjust_selected_tightness(delta: float) -> void:
+	if _selected_suture < 0:
+		_status = "Select a suture first (tap it with the Suture tool)."
+		return
+	var t := clampf(panel.tightness + delta, -0.5, 0.6)
+	panel.show_suture_tightness(t)
+	sheet.set_suture_tightness(_selected_suture, t)
+	_status = "Suture #%d re-tied at %+.0f%%." % [_selected_suture, t * 100.0]
+
+
+## Cut the selected suture out (undo ties it again).
+func _cut_selected_suture() -> void:
+	if _selected_suture < 0:
+		return
+	if sheet.remove_suture(_selected_suture):
+		_history.append({"kind": "suture_cut", "id": _selected_suture})
+		_status = "Suture #%d cut." % _selected_suture
+	_select_suture(-1)
+
+
+func _on_suture_snapped(id: int, a: Vector3, b: Vector3, tension_n: float, thread: int) -> void:
+	overlay.add_snap(a, b, "SNAPPED %d-0 at %.1f N" % [thread, tension_n])
+	_status = "Suture #%d (%d-0) snapped: thread tension %.1f N, over its %.1f N strength." % [
+		id, thread, tension_n, SkinSheet.thread_strength(thread)]
+	if id == _selected_suture:
+		_select_suture(-1)
+
+
+## Small Loosen / Tighten / Cut buttons that float next to the selected
+## suture, so it can be adjusted without going to the panel (handy on touch).
+func _build_suture_buttons() -> void:
+	_suture_buttons = HBoxContainer.new()
+	_suture_buttons.add_theme_constant_override("separation", 4)
+	for spec in [["-", "Loosen [-]", -1], ["+", "Tighten [+]", 1], ["Cut", "Cut the suture [Del]", 0]]:
+		var b := Button.new()
+		b.text = spec[0]
+		b.tooltip_text = spec[1]
+		b.custom_minimum_size = Vector2(40, 34)
+		b.focus_mode = Control.FOCUS_NONE  # keep keyboard shortcuts working
+		var step: int = spec[2]
+		if step == 0:
+			b.pressed.connect(_cut_selected_suture)
+		else:
+			b.pressed.connect(func(): _adjust_selected_tightness(step * panel.TIGHTNESS_STEP))
+		_suture_buttons.add_child(b)
+	_suture_buttons.visible = false
+	$HUD.add_child(_suture_buttons)
+
+
+func _place_suture_buttons(su: Dictionary) -> void:
+	_suture_buttons.visible = not su.is_empty()
+	if su.is_empty():
+		return
+	var a := camera.unproject_position(su.a)
+	var b := camera.unproject_position(su.b)
+	# Just past the thread's left end, in line with it: neighbouring sutures
+	# sit side by side along the wound, so this spot is usually clear.
+	var size := _suture_buttons.get_combined_minimum_size()
+	var left := a if a.x <= b.x else b
+	var right := b if a.x <= b.x else a
+	var dir := (left - right).normalized() if left.distance_to(right) > 1.0 else Vector2.LEFT
+	var centre := left + dir * (14.0 + 0.5 * size.x)
+	var anchor := centre - 0.5 * size
+	var vp := get_viewport().get_visible_rect().size
+	anchor.x = clampf(anchor.x, 4.0, vp.x - panel.PANEL_WIDTH - size.x - 4.0)
+	anchor.y = clampf(anchor.y, 4.0, vp.y - size.y - 4.0)
+	_suture_buttons.position = anchor
 
 
 ## True if the screen point is over skin (not over an open wound or outside).
@@ -292,8 +388,17 @@ func _undo() -> void:
 		if last.with_cut:
 			sheet.undo_cut()
 		_status = "Excision undone."
+	elif last.kind == "suture_cut":
+		if sheet.restore_suture(last.id):
+			_select_suture(last.id)
+			_status = "Suture #%d tied again." % last.id
+		else:
+			_status = "That suture's skin is gone; nothing to tie."
 	else:
-		sheet.remove_suture(last.id)
+		if not sheet.remove_suture(last.id):
+			# It snapped since: nothing left to remove, undo the step before.
+			_undo()
+			return
 		if last.id == _selected_suture:
 			_select_suture(-1)
 		_status = "Suture removed."
@@ -319,13 +424,15 @@ func _process(_delta: float) -> void:
 		flags += " projected"
 	if s.regularized:
 		flags += " regularized"
-	panel.show_selected_suture(_selected_info())
+	var selected := _selected_info()
+	panel.show_selected_suture(selected)
+	_place_suture_buttons(selected)
 	panel.show_contact(sheet.get_contact_info())
 	panel.show_lesions(sheet.get_lesion_info())
 	var tool_line: String = [
 		"Tool: GRAB - drag the skin.",
 		"Tool: CUT - draw an incision.",
-		"Tool: SUTURE - drag from needle entry to exit; tap a suture to select it.",
+		"Tool: SUTURE - drag from needle entry to exit; tap a suture to select it (-/+ loosen/tighten, Del cut, T labels).",
 		"Tool: UNDERMINE - paint where the skin is freed from the tissue below.",
 		"Tool: LESION - tap to mark a lesion.",
 		"Tool: EXCISE - drag tip to tip for a fusiform excision; tap inside a closed outline to remove it.",
@@ -424,6 +531,32 @@ func _demo_suture() -> void:
 	_drag(0, Vector2(15, 0))
 	sheet.heatmap = 2
 	panel.refresh()
+
+
+## Close an incision with three fine 6-0 sutures, then pull one side hard:
+## the most loaded suture snaps first, then possibly the next (for checks).
+func _demo_snap() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.CUT)
+	_touch(0, Vector2(0, -15), true)
+	for k in range(1, 31):
+		_drag(0, Vector2(0, -15 + k))
+	_touch(0, Vector2(0, 15), false)
+	await get_tree().process_frame
+	_set_tool(Tool.SUTURE)
+	sheet.suture_thread = 6
+	panel.show_thread(6)
+	for y in [-8.0, 0.0, 8.0]:
+		_select_suture(-1)
+		panel.set_tightness(0.0)
+		_touch(0, Vector2(-3, y), true)
+		_drag(0, Vector2(3, y))
+		_touch(0, Vector2(3, y), false)
+		await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	sheet.max_pull_force = 20.0
+	_touch(0, Vector2(6, 0), true)
+	_drag(0, Vector2(18, 0))
 
 
 ## An orthographic camera's `size` is the visible *height* in world units (mm).

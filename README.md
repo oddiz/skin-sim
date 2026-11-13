@@ -103,7 +103,10 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 | Drag (Grab tool, G) | Grab and pull the skin with forceps; several fingers on a touch screen |
 | Drag (Cut tool, C), or Shift + drag | Draw an incision; it is made when you release |
 | Drag (Suture tool, S) | Press at the needle entry, release at the exit: a suture tied with the panel's knot tightness |
-| Tap a suture (Suture tool) | Select it; the knot tightness slider then re-ties it live |
+| Tap a suture (Suture tool) | Select it; the knot tightness slider and thread picker then apply to it |
+| - / + (or the buttons next to it) | Loosen / tighten the selected suture by 5% |
+| Del (or X, or "Cut") | Cut the selected suture out; Z ties it again |
+| T | Cycle the suture labels: smart / all / none |
 | Drag (Undermine tool, U) | Paint where the skin is freed from the tissue below (shaded darker) |
 | Tap (Lesion tool, L) | Mark a lesion (diameter in the panel) |
 | Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
@@ -122,9 +125,37 @@ ties it 20% shorter, squeezing the tissue in the loop; negative leaves it loose.
 Each bite pulls on a strip of dermis from the needle hole to the wound edge
 ("Bite strip width", default 2 mm), not on a single point, so the stress around
 the needle holes is finite and settles as the mesh is refined.
-Each suture shows its tension in newtons (green to red up to 3 N, grey = slack)
-and its loop stress: the stress along the thread in the tissue the loop holds
-(+ stretched, - squeezed). The heatmap
+### Suture strength and labels (M9)
+
+Each suture has a thread size (USP 7-0 to 2-0, picked in the panel; 4-0 by
+default). A thread snaps when its tension exceeds its knot-pull strength: the
+minimum the US Pharmacopeia requires of sterile Class I non-absorbable sutures
+(6-0: 2.0 N, 5-0: 3.9 N, 4-0: 5.9 N, 3-0: 9.4 N). Good threads are usually
+somewhat stronger, so sutures here snap a little early rather than late. The
+knot is a thread's weakest point, hence knot-pull rather than straight-pull
+strength.
+
+The thread carries half of the closing force: a simple interrupted suture is a
+loop that crosses the wound twice (deep in the dermis, and over the top with the
+knot). So a 4-0 thread snaps when its suture pulls the edges together with
+about 12 N. A gap that needs more than that can't be closed with that thread;
+it needs undermining, more sutures sharing the load, or a flap.
+
+Snapping is checked only once the skin has settled. While the solver is still
+moving (just after tying across a wide gap, say) the thread is momentarily
+stretched far more than it will be. Then only the most loaded suture snaps; the
+skin settles again with its neighbours taking up its load, and they may snap in
+turn. An overloaded closure therefore fails one suture at a time, worst first.
+"Sutures can snap" (Sutures section) turns this off: overloaded sutures then
+hold and flash, with OVER on their label.
+
+Sutures are coloured by load (thread tension over breaking strength): green,
+yellow at 50%, red at 100%, grey when slack. Text is shown only where it helps
+("Smart" labels): the selected suture, any suture above 75% of its strength,
+and the one under the mouse. Labels read closing force and load (e.g.
+"3.4 N  86%"); the selected suture also shows its loop stress: the stress along
+the thread in the tissue the loop holds (+ stretched, - squeezed). The panel
+shows the selected suture in full. The heatmap
 shows the Cauchy (true) stress in the skin; the colour scale is set by the
 "Stress scale" slider so that different closures can be compared on one scale.
 Where a single suture closes a gaping wound, the corner between the closed point
@@ -207,7 +238,11 @@ in `solver/include/skinsim/wrinkling.hpp`.
 
 ## Planned features
 
-- Local flaps (advancement, rotation, transposition) on the excision defects.
+- Local flaps (advancement, rotation, transposition) on the excision defects
+  (next, M10): a flap tool that designs the excision around a lesion and the
+  flap together, previews them, then cuts and undermines in one go.
+- Cheese-wiring (a suture tearing through the tissue it bites) as a second way
+  for a suture to fail.
 - Friction between the lips; calibration against measured skin properties.
 
 ## Tissue model (M6)

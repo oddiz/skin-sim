@@ -23,6 +23,12 @@ signal undo_requested
 ## Knot tightness slider moved (applies to the selected suture, and to new ones).
 signal tightness_changed(tightness: float)
 signal remove_suture_requested
+## Loosen (< 0) or tighten (> 0) the selected suture by this much tightness.
+signal adjust_tightness_requested(delta: float)
+## Thread size picked (USP: 5 = 5-0); applies to new sutures and the selected one.
+signal thread_changed(usp_size: int)
+## Which suture labels to draw: 0 smart, 1 all, 2 none.
+signal label_mode_changed(mode: int)
 signal cuts_cleared
 signal lesions_cleared
 signal undermining_cleared
@@ -101,6 +107,8 @@ const PARAMS := [
 	{"prop": "suture_strip_width", "label": "Bite strip width", "min": 0.1, "max": 6.0, "step": 0.1,
 		"fmt": "%.1f mm",
 		"tip": "Width of the strip of dermis each bite pulls on (needle hole to wound edge)."},
+	{"prop": "sutures_can_snap", "label": "Sutures can snap", "type": "bool",
+		"tip": "A suture whose thread is pulled harder than its knot-pull strength breaks. Off: it holds, drawn red with its overload shown."},
 	{"prop": "lip_contact", "label": "Lip contact", "type": "bool",
 		"tip": "The lips of incisions press on each other instead of passing through. Lips pressed together turn blue."},
 	{"section": "Heatmap"},
@@ -135,6 +143,14 @@ var _suture_label: Label
 var _contact_label: Label
 var _lesion_label: Label
 var _remove_suture: Button
+var _loosen: Button
+var _tighten: Button
+var _thread: OptionButton
+var _label_mode: OptionButton
+## USP sizes offered, finest first (7 = 7-0).
+const THREADS := [7, 6, 5, 4, 3, 2]
+## One press of Loosen / Tighten changes the knot tightness by this much.
+const TIGHTNESS_STEP := 0.05
 
 
 ## Called by main.gd once the sheet exists.
@@ -271,9 +287,26 @@ func _build_tools(box: VBoxContainer) -> void:
 	_build_knot(box)
 
 
+## Suture controls: thread size, knot tightness, the selected suture
+## (loosen / tighten / cut) and which labels to draw.
 ## Knot tightness: how short the thread is tied, relative to the length at
 ## which the wound edges just meet (the two bites added together).
 func _build_knot(box: VBoxContainer) -> void:
+	box.add_child(_section_label("Suture"))
+	var thread_row := HBoxContainer.new()
+	thread_row.tooltip_text = "Thread size (USP) for new sutures, and for the selected one. " 		+ "Finer threads break at lower tension (minimum knot-pull strength, USP Class I)."
+	var thread_label := Label.new()
+	thread_label.text = "Thread"
+	thread_row.add_child(thread_label)
+	_thread = OptionButton.new()
+	_thread.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for size in THREADS:
+		_thread.add_item("%d-0  (breaks at %.1f N)" % [size, SkinSheet.thread_strength(size)])
+	_thread.select(THREADS.find(sheet.suture_thread))
+	_thread.item_selected.connect(func(i: int): thread_changed.emit(THREADS[i]))
+	thread_row.add_child(_thread)
+	box.add_child(thread_row)
+
 	var v := VBoxContainer.new()
 	v.tooltip_text = "How tight the knot is tied. 0% = the edges just meet; " \
 		+ "more = the loop is shorter than the two bites, squeezing the tissue; " \
@@ -302,17 +335,40 @@ func _build_knot(box: VBoxContainer) -> void:
 	box.add_child(v)
 	_tightness_label.text = "+0%"
 
-	var row := HBoxContainer.new()
 	_suture_label = Label.new()
-	_suture_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_suture_label.add_theme_font_size_override("font_size", 12)
-	row.add_child(_suture_label)
+	_suture_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_suture_label)
+	var row := HBoxContainer.new()
+	_loosen = Button.new()
+	_loosen.text = "Loosen"
+	_loosen.tooltip_text = "Re-tie the selected suture %d%% looser [-]." % int(TIGHTNESS_STEP * 100)
+	_loosen.pressed.connect(func(): adjust_tightness_requested.emit(-TIGHTNESS_STEP))
+	_tighten = Button.new()
+	_tighten.text = "Tighten"
+	_tighten.tooltip_text = "Re-tie the selected suture %d%% tighter [+]." % int(TIGHTNESS_STEP * 100)
+	_tighten.pressed.connect(func(): adjust_tightness_requested.emit(TIGHTNESS_STEP))
 	_remove_suture = Button.new()
-	_remove_suture.text = "Remove"
-	_remove_suture.tooltip_text = "Remove the selected suture."
+	_remove_suture.text = "Cut"
+	_remove_suture.tooltip_text = "Cut the selected suture out [Del]. Undo ties it again."
 	_remove_suture.pressed.connect(func(): remove_suture_requested.emit())
-	row.add_child(_remove_suture)
+	for b in [_loosen, _tighten, _remove_suture]:
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.y = 30
+		row.add_child(b)
 	box.add_child(row)
+	var labels_row := HBoxContainer.new()
+	labels_row.tooltip_text = "Text on the sutures. Smart: only the selected suture, ones near " 		+ "breaking point, and the one under the mouse. Colour always shows the load [T]."
+	var labels_label := Label.new()
+	labels_label.text = "Labels"
+	labels_row.add_child(labels_label)
+	_label_mode = OptionButton.new()
+	_label_mode.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for o in ["Smart", "All", "None"]:
+		_label_mode.add_item(o)
+	_label_mode.item_selected.connect(func(i: int): label_mode_changed.emit(i))
+	labels_row.add_child(_label_mode)
+	box.add_child(labels_row)
 	_contact_label = Label.new()
 	_contact_label.add_theme_font_size_override("font_size", 12)
 	box.add_child(_contact_label)
@@ -331,15 +387,36 @@ func set_tightness(t: float) -> void:
 	_tightness_slider.value = t
 
 
+## Show the label mode (when it was changed by keyboard).
+func show_label_mode(mode: int) -> void:
+	_label_mode.select(mode)
+
+
+## Show a thread size in the picker without emitting thread_changed.
+func show_thread(usp_size: int) -> void:
+	var i := THREADS.find(usp_size)
+	if i != -1:
+		_thread.select(i)
+
+
 ## Called every frame by main.gd with the selected suture's info ({} = none).
 func show_selected_suture(info: Dictionary) -> void:
+	for b in [_loosen, _tighten, _remove_suture]:
+		b.disabled = info.is_empty()
 	if info.is_empty():
-		_suture_label.text = "No suture selected (tap one)."
-		_remove_suture.disabled = true
+		_suture_label.text = "No suture selected (tap one with the Suture tool)."
+		return
+	var text := "Suture #%d, %d-0: " % [info.id, info.thread]
+	if info.slack:
+		text += "slack"
 	else:
-		_suture_label.text = "Suture #%d: %s, loop %+.0f kPa" % [info.id,
-			"slack" if info.slack else "%.2f N" % info.force, info.loop_stress_kpa]
-		_remove_suture.disabled = false
+		# Closing force = what pulls the edges together; the thread carries
+		# half of it (the loop crosses the wound twice).
+		text += "closing %.2f N (thread %.2f N, %.0f%% of breaking)" % [
+			info.force, info.tension_n, info.load * 100.0]
+	text += "
+Loop stress %+.0f kPa" % info.loop_stress_kpa
+	_suture_label.text = text
 
 
 ## Called every frame by main.gd with sheet.get_lesion_info().

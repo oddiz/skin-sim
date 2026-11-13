@@ -14,6 +14,7 @@
 // +y appears at the top of the screen. 1 Godot unit = 1 mm.
 #pragma once
 
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -95,6 +96,14 @@ public:
     double get_suture_stiffness() const { return suture_params_.stiffness; }
     void set_suture_strip_width(double p_mm);
     double get_suture_strip_width() const { return suture_params_.strip_width; }
+    // Sutures snap when the thread tension exceeds its knot-pull strength.
+    void set_sutures_can_snap(bool p_on);
+    bool get_sutures_can_snap() const { return suture_params_.can_break; }
+    // USP size of the thread for new sutures: 5 means 5-0 (2..7).
+    void set_suture_thread(int p_usp_size);
+    int get_suture_thread() const { return suture_thread_; }
+    // Knot-pull breaking strength of a USP size, N (0 if unknown).
+    static double thread_strength(int p_usp_size);
 
     // --- Lip contact (the lips of incisions press on each other instead of
     // passing through) ---
@@ -180,16 +189,24 @@ public:
     int suture(const Vector3& p_entry, const Vector3& p_exit, double p_tightness);
     // Re-tie a suture with a new tightness (same meaning as above).
     bool set_suture_tightness(int p_id, double p_tightness);
+    // Swap one suture's thread for another USP size.
+    bool set_suture_thread_of(int p_id, int p_usp_size);
     // True if there is skin under the point (not an open wound, not outside).
     bool is_on_skin(const Vector3& p_world_point) const;
     // The suture whose thread passes within p_max_distance_mm of the point, or -1.
     int pick_suture(const Vector3& p_world_point, double p_max_distance_mm) const;
+    // Cut a suture out. It is remembered, so restore_suture() can tie it
+    // again where it was (undo), as long as its skin is still there.
     bool remove_suture(int p_id);
+    bool restore_suture(int p_id);
     void clear_sutures();
     int get_suture_count() const;
     // One Dictionary per suture: id, a (entry), b (exit) in world space,
-    // force (N), tightness, slack (bool), loop_stress_kpa (stress along the
-    // thread in the tissue the loop holds; negative = squeezed).
+    // force (N, closing force), tightness, slack (bool), loop_stress_kpa
+    // (stress along the thread in the tissue the loop holds; negative =
+    // squeezed), thread (USP size), tension_n (in the thread: force / 2),
+    // strength_n (its breaking strength), load (tension / strength, 1 = at
+    // breaking point; 0 for an unbreakable thread).
     Array get_suture_info() const;
     // Lips pressed together: pairs (lip nodes in contact), max_pressure_kpa,
     // force_n (total across the contact), max_overlap_mm.
@@ -232,7 +249,11 @@ private:
     skinsim::TissueParams params_ = app_default_tissue();
     static skinsim::TissueParams app_default_tissue();
     skinsim::GrabParams grab_params_;   // how the user's finger acts
-    skinsim::SutureParams suture_params_;
+    skinsim::SutureParams suture_params_ = app_default_sutures();
+    static skinsim::SutureParams app_default_sutures();
+    int suture_thread_ = 4;  // 4-0: a common skin suture on the trunk and limbs
+    // Sutures cut out by the user, kept so undo can tie them again.
+    std::map<int, skinsim::SutureRecord> removed_sutures_;
     skinsim::ContactParams contact_params_;
     int iterations_per_frame_ = 5;
     bool show_wireframe_ = true;
