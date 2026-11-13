@@ -28,7 +28,13 @@ extends Node3D
 ##           direction, previewed while dragging; on release it is cut, the
 ##           defect removed and the area undermined. "Tie key sutures" then
 ##           pulls the flap into place.
+##   MARK    draw on the skin with a surgical marker (planning only). The
+##           lines are kept in rest (tissue) coordinates, so they stretch and
+##           move with the skin. Tap a line to erase it.
 ## On desktop, Shift + drag cuts whatever the tool.
+##
+## The user interface around the skin (tool rail, panels, hints) is built by
+## ui/app_shell.gd; this script handles the skin: input, tools, undo, demos.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
 ##   --screenshot <path.png>   save a screenshot after a moment, then quit
@@ -53,13 +59,14 @@ extends Node3D
 ##                             excised and closed: dog-ears at both ends;
 ##                             excess skin heatmap (for checks)
 
-enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP }
+enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK }
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
-@onready var info: Label = $HUD/Info
-@onready var panel: ControlPanel = $HUD/ControlPanel
+@onready var ui: AppShell = $HUD/AppShell
 @onready var overlay: GrabOverlay = $HUD/GrabOverlay
+## The current tool's settings (part of ui; kept as a short name).
+var panel: ContextPanel
 
 ## Empty space around the sheet, as a fraction of its size.
 const FRAME_MARGIN := 1.3
@@ -85,16 +92,32 @@ var _excise_start := Vector2.ZERO
 var _flap_touch := -1                     # touch index designing a flap, -1 = none
 var _flap_start := Vector2.ZERO
 var _history: Array[Dictionary] = []      # undo stack: {"kind": "cut"}, {"kind": "suture", "id": n}, ...
-var _status := ""                         # last action's result, shown in the HUD
+## Last action's result: setting it shows a short message (a "toast").
+var _status := "":
+	set(v):
+		_status = v
+		if ui != null and ui.context != null:
+			ui.toast(v, "danger" if v.contains("snapped") else ("warn" if v.begins_with("No") \
+				or v.begins_with("Nothing") else "info"))
+## Pen markings: {"rest": PackedVector2Array (tissue coordinates), "color": int}.
+var marks: Array[Dictionary] = []
+var _mark_touch := -1                     # touch index drawing with the pen, -1 = none
+var _mark_rest := PackedVector2Array()    # the stroke so far, rest coordinates
+var _mark_screen := PackedVector2Array()  # and on screen, while drawing
+var _mark_start := Vector2.ZERO
+var _pen_color := 0
 var _suture_buttons: HBoxContainer        # floating Loosen / Tighten / Cut next to the selected suture
 
 
 func _ready() -> void:
 	# Children are ready before their parent, so the sheet already exists.
-	panel.setup(sheet)
-	panel.reset_requested.connect(sheet.reset_simulation)
-	panel.tool_selected.connect(_set_tool)
-	panel.undo_requested.connect(_undo)
+	ui.setup(sheet)
+	panel = ui.context
+	ui.reset_requested.connect(sheet.reset_simulation)
+	ui.tool_selected.connect(_set_tool)
+	ui.undo_requested.connect(_undo)
+	ui.cleared.connect(_on_cleared)
+	panel.pen_color_changed.connect(func(i: int): _pen_color = i)
 	panel.tightness_changed.connect(func(t: float):
 		if _selected_suture >= 0:
 			sheet.set_suture_tightness(_selected_suture, t))
@@ -106,17 +129,12 @@ func _ready() -> void:
 			sheet.set_suture_thread_of(_selected_suture, size))
 	panel.label_mode_changed.connect(func(mode: int): overlay.label_mode = mode)
 	sheet.suture_snapped.connect(_on_suture_snapped)
-	panel.cuts_cleared.connect(func():  # clearing the incisions also puts excised skin back
-		_history = _history.filter(func(h): return h.kind != "cut" and h.kind != "excise" and h.kind != "flap"))
 	panel.tie_key_sutures_requested.connect(_tie_key_sutures)
-	panel.lesions_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "lesion"))
-	panel.undermining_cleared.connect(func(): _history = _history.filter(func(h): return h.kind != "undermine"))
-	panel.sutures_cleared.connect(func():
-		_history = _history.filter(func(h): return h.kind != "suture" and h.kind != "suture_cut")
-		_select_suture(-1))
 	_build_suture_buttons()
 	overlay.sheet = sheet
 	overlay.camera = camera
+	overlay.ui = ui
+	overlay.main = self
 	sheet.mesh_rebuilt.connect(_frame_sheet)
 	sheet.mesh_rebuilt.connect(func(): _history.clear())  # new geometry: nothing to undo
 	get_viewport().size_changed.connect(_frame_sheet)
@@ -129,6 +147,8 @@ func _ready() -> void:
 		_demo_cut()
 	if args.has("--demo-suture"):
 		_demo_suture()
+	if args.has("--demo-mark"):
+		_demo_mark()
 	if args.has("--demo-snap"):
 		_demo_snap()
 	if args.has("--demo-flap"):
@@ -140,6 +160,12 @@ func _ready() -> void:
 		_demo_excise()
 	if args.has("--demo-wrinkle"):
 		_demo_wrinkle()
+	var o := args.find("--open")  # for screenshots: --open tissue | view | help
+	if o != -1 and o + 1 < args.size():
+		ui.open_panel(args[o + 1])
+	var tl := args.find("--tool")  # for screenshots: --tool 2 (suture)...
+	if tl != -1 and tl + 1 < args.size():
+		_set_tool(int(args[tl + 1]))
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
@@ -147,14 +173,31 @@ func _ready() -> void:
 
 func _set_tool(t: int) -> void:
 	tool = t as Tool
-	panel.show_tool(tool)
+	ui.show_tool(tool)
+
+
+## Something was cleared (menu or panel): drop its steps from the undo history.
+func _on_cleared(what: String) -> void:
+	var kinds: Array = {
+		"cuts": ["cut", "excise", "flap"],  # clearing the incisions also puts excised skin back
+		"sutures": ["suture", "suture_cut"],
+		"undermining": ["undermine"],
+		"lesions": ["lesion"],
+		"markings": ["mark", "mark_erase"],
+	}.get(what, [])
+	_history = _history.filter(func(h): return not h.kind in kinds)
+	if what == "sutures":
+		_select_suture(-1)
+	if what == "markings":
+		marks.clear()
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		# Emulated touches are generated even over the UI panel; a press there
 		# is meant for a slider, not for the skin underneath.
-		if event.pressed and (panel.get_global_rect().has_point(event.position) 				or (_suture_buttons.visible and _suture_buttons.get_global_rect().has_point(event.position))):
+		if event.pressed and (ui.is_over_ui(event.position) \
+				or (_suture_buttons.visible and _suture_buttons.get_global_rect().has_point(event.position))):
 			return
 		if event.pressed:
 			_on_press(event.index, event.position)
@@ -171,6 +214,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_preview_excision(event.position)
 		elif event.index == _flap_touch:
 			_preview_flap(event.position)
+		elif event.index == _mark_touch:
+			_extend_mark(event.position)
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
@@ -185,6 +230,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		match event.keycode:
 			KEY_W:
 				sheet.show_wireframe = not sheet.show_wireframe
+				ui.refresh()
 			KEY_R:
 				sheet.reset_simulation()
 			KEY_G:
@@ -202,8 +248,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_F:
 				_set_tool(Tool.FLAP)
 			KEY_H:
-				sheet.heatmap = (sheet.heatmap + 1) % 6
-				panel.refresh()
+				ui.cycle_heatmap()
+			KEY_M:
+				_set_tool(Tool.MARK)
+			KEY_ESCAPE:
+				if not ui.close_overlays():
+					_select_suture(-1)
+			KEY_SLASH, KEY_QUESTION:
+				ui.toggle_help()
 			KEY_Z:
 				_undo()
 			KEY_MINUS, KEY_KP_SUBTRACT:
@@ -246,6 +298,13 @@ func _on_press(index: int, pos: Vector2) -> void:
 		if _flap_touch == -1:
 			_flap_touch = index
 			_flap_start = pos
+	elif tool == Tool.MARK:
+		if _mark_touch == -1:
+			_mark_touch = index
+			_mark_start = pos
+			_mark_rest = PackedVector2Array()
+			_mark_screen = PackedVector2Array()
+			_extend_mark(pos)
 	else:
 		sheet.grab(index, _screen_to_sheet_plane(pos))
 
@@ -260,6 +319,8 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_excision(pos)
 	elif index == _flap_touch:
 		_commit_flap(pos)
+	elif index == _mark_touch:
+		_commit_mark(pos)
 	elif index == _undermine_touch:
 		_undermine_touch = -1
 		if not _undermine_new:  # something was painted: one undo step
@@ -351,12 +412,17 @@ func _on_suture_snapped(id: int, a: Vector3, b: Vector3, tension_n: float, threa
 func _build_suture_buttons() -> void:
 	_suture_buttons = HBoxContainer.new()
 	_suture_buttons.add_theme_constant_override("separation", 4)
-	for spec in [["-", "Loosen [-]", -1], ["+", "Tighten [+]", 1], ["Cut", "Cut the suture [Del]", 0]]:
+	for spec in [["−", "Loosen [-]", -1], ["+", "Tighten [+]", 1], ["", "Cut the suture [Del]", 0]]:
 		var b := Button.new()
 		b.text = spec[0]
 		b.tooltip_text = spec[1]
-		b.custom_minimum_size = Vector2(40, 34)
+		b.custom_minimum_size = Vector2(Style.TOUCH, Style.TOUCH)
+		b.add_theme_font_size_override("font_size", 20)
 		b.focus_mode = Control.FOCUS_NONE  # keep keyboard shortcuts working
+		if spec[2] == 0:
+			b.icon = Style.icon("scissors")
+			b.expand_icon = true
+			b.add_theme_constant_override("icon_max_width", 20)
 		var step: int = spec[2]
 		if step == 0:
 			b.pressed.connect(_cut_selected_suture)
@@ -364,7 +430,7 @@ func _build_suture_buttons() -> void:
 			b.pressed.connect(func(): _adjust_selected_tightness(step * panel.TIGHTNESS_STEP))
 		_suture_buttons.add_child(b)
 	_suture_buttons.visible = false
-	$HUD.add_child(_suture_buttons)
+	ui.add_child(_suture_buttons)  # inside the UI: it gets the app's look
 
 
 func _place_suture_buttons(su: Dictionary) -> void:
@@ -382,7 +448,8 @@ func _place_suture_buttons(su: Dictionary) -> void:
 	var centre := left + dir * (14.0 + 0.5 * size.x)
 	var anchor := centre - 0.5 * size
 	var vp := get_viewport().get_visible_rect().size
-	anchor.x = clampf(anchor.x, 4.0, vp.x - panel.PANEL_WIDTH - size.x - 4.0)
+	var fr := ui.free_rect()
+	anchor.x = clampf(anchor.x, fr.position.x + 4.0, fr.end.x - size.x - 4.0)
 	anchor.y = clampf(anchor.y, 4.0, vp.y - size.y - 4.0)
 	_suture_buttons.position = anchor
 
@@ -407,6 +474,12 @@ func _undo() -> void:
 	elif last.kind == "lesion":
 		sheet.undo_lesion()
 		_status = "Lesion removed."
+	elif last.kind == "mark":
+		marks.pop_back()
+		_status = "Marking removed."
+	elif last.kind == "mark_erase":
+		marks.insert(mini(last.index, marks.size()), last.mark)
+		_status = "Marking restored."
 	elif last.kind == "flap":
 		sheet.undo_flap()
 		_status = "Flap undone."
@@ -443,41 +516,61 @@ func _screen_to_sheet_plane(screen_pos: Vector2) -> Vector3:
 
 func _process(_delta: float) -> void:
 	var s: Dictionary = sheet.get_step_info()
-	var status := "at rest" if s.converged else "solving"
-	if s.stalled:
-		status += " (stalled)"
+	var selected := _selected_info()
+	panel.show_selected_suture(selected)
+	_place_suture_buttons(selected)
+	panel.show_contact(sheet.get_contact_info())
+	var lesions: Array = sheet.get_lesion_info()
+	panel.show_lesions(lesions)
+	panel.show_flaps(sheet.get_flap_info())
+	ui.set_status(s.converged, s.stalled)
+	ui.set_undo_enabled(not _history.is_empty())
+	ui.set_hint(_hint(selected, lesions))
 	var flags := ""
 	if s.projected:
 		flags += " projected"
 	if s.regularized:
 		flags += " regularized"
-	var selected := _selected_info()
-	panel.show_selected_suture(selected)
-	_place_suture_buttons(selected)
-	panel.show_contact(sheet.get_contact_info())
-	panel.show_lesions(sheet.get_lesion_info())
-	panel.show_flaps(sheet.get_flap_info())
-	var tool_line: String = [
-		"Tool: GRAB - drag the skin.",
-		"Tool: CUT - draw an incision.",
-		"Tool: SUTURE - drag from needle entry to exit; tap a suture to select it (-/+ loosen/tighten, Del cut, T labels).",
-		"Tool: UNDERMINE - paint where the skin is freed from the tissue below.",
-		"Tool: LESION - tap to mark a lesion.",
-		"Tool: EXCISE - drag tip to tip for a fusiform excision; tap inside a closed outline to remove it.",
-		"Tool: FLAP - drag from a lesion outward: excision + flap in that direction (type in the panel).",
-	][tool]
-	# The web version can be opened by anyone with the link: say what it is.
-	var notice := "Research prototype: illustrative tissue values, not for clinical use.\n" \
-		if OS.has_feature("web") else ""
-	info.text = notice + "%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
+	ui.set_stats("%s\n%d vertices, %d triangles, %d incisions, %d sutures\n" % [
 			sheet.get_solver_info(), sheet.get_vertex_count(), sheet.get_triangle_count(),
 			sheet.get_cut_count(), sheet.get_suture_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [
-			status, s.iterations, s.step_ms, _sci(s.residual), flags] \
-		+ "energy %.3f N*mm, area ratio %.2f-%.2f, grabs %d\n" % [
-			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
-		+ (_status + "\n" if _status != "" else "") \
-		+ tool_line + "\n[G]rab [C]ut [S]uture [U]ndermine [L]esion [E]xcise [F]lap  [Shift] cut  [Z] undo  [H] heatmap  [W] wire  [R] reset"
+			"at rest" if s.converged else "solving", s.iterations, s.step_ms, _sci(s.residual), flags] \
+		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d" % [
+			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs])
+
+
+## What to do next, in one line, for the current tool and state.
+func _hint(selected: Dictionary, lesions: Array) -> String:
+	match tool:
+		Tool.GRAB:
+			return "Drag the skin with the forceps." if sheet.get_grab_info().is_empty() \
+				else "Let go to release; the skin settles back."
+		Tool.CUT:
+			return "Draw an incision across the skin. Lift to cut."
+		Tool.SUTURE:
+			if not selected.is_empty():
+				return "Suture #%d selected: − / + to re-tie it, scissors to cut it. Tap elsewhere to deselect." % selected.id
+			if sheet.get_cut_count() == 0 and sheet.get_flap_count() == 0:
+				return "Make an incision first (Cut tool), then suture it here."
+			return "Press at the needle entry, drag across the wound, lift at the exit."
+		Tool.UNDERMINE:
+			return "Paint over the skin to free it from the tissue below."
+		Tool.LESION:
+			return "Tap on the skin to mark a lesion."
+		Tool.EXCISE:
+			if lesions.is_empty():
+				return "Drag tip to tip to design an ellipse. (Mark a lesion first to check the margins.)"
+			return "Drag across the lesion from one tip of the ellipse to the other, along the tension lines."
+		Tool.FLAP:
+			if lesions.is_empty():
+				return "Mark a lesion first (Lesion tool), then drag outward from it."
+			if sheet.get_flap_count() > 0:
+				return "Flap raised: 'Tie key sutures' pulls it in, then close the gaps with the Suture tool."
+			return "Drag from the lesion outward, towards where the flap should come from."
+		Tool.MARK:
+			return "Draw on the skin to plan. Tap a line to erase it."
+	return ""
 
 
 ## Compact scientific notation, e.g. 1.2e-14 (GDScript's % has no %e).
@@ -559,7 +652,7 @@ func _demo_suture() -> void:
 	_touch(0, Vector2(8, 0), true)
 	_drag(0, Vector2(15, 0))
 	sheet.heatmap = 2
-	panel.refresh()
+	ui.refresh()
 
 
 ## Lesion in the middle, a flap of the given type harvested to its right,
@@ -567,7 +660,7 @@ func _demo_suture() -> void:
 func _demo_flap(type: int) -> void:
 	await get_tree().process_frame
 	sheet.flap_type = type
-	panel.refresh()
+	ui.refresh()
 	_set_tool(Tool.LESION)
 	_touch(0, Vector2(0, 0), true)
 	_touch(0, Vector2(0, 0), false)
@@ -583,7 +676,22 @@ func _demo_flap(type: int) -> void:
 		await get_tree().process_frame
 	_tie_key_sutures()
 	sheet.heatmap = 1
-	panel.refresh()
+	ui.refresh()
+
+
+## Draw a planning line with the pen, then pull the skin: the line stretches
+## with it (for checks).
+func _demo_mark() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.MARK)
+	_touch(0, Vector2(-20, -10), true)
+	for k in range(1, 41):
+		_drag(0, Vector2(-20 + k, -10 + 10.0 * sin(k / 6.0)))
+	_touch(0, Vector2(20, -10), false)
+	await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	_touch(0, Vector2(0, -15), true)
+	_drag(0, Vector2(0, -25))
 
 
 ## Close an incision with three fine 6-0 sutures, then pull one side hard:
@@ -617,10 +725,13 @@ func _demo_snap() -> void:
 ## then slide the camera right so the sheet is centred in that free area.
 func _frame_sheet() -> void:
 	var vp := get_viewport().get_visible_rect().size
-	var free_width := maxf(vp.x - panel.PANEL_WIDTH, 100.0)
+	var fr := ui.free_rect()
+	var free_width := fr.size.x
 	camera.size = maxf(sheet.height, sheet.width / (free_width / vp.y)) * FRAME_MARGIN
 	var mm_per_px := camera.size / vp.y
-	camera.position.x = 0.5 * panel.PANEL_WIDTH * mm_per_px
+	# Put the sheet's centre (world x = 0) in the middle of the free area:
+	# a world point x shows at screen x = vp.x / 2 + (x - camera.x) / mm_per_px.
+	camera.position.x = (0.5 * vp.x - fr.get_center().x) * mm_per_px
 
 
 func _save_screenshot_and_quit(path: String) -> void:
@@ -677,7 +788,7 @@ func _demo_m6() -> void:
 	_touch(0, Vector2(8, 18), false)
 	await get_tree().process_frame
 	sheet.heatmap = 1
-	panel.refresh()
+	ui.refresh()
 
 
 ## Show the fusiform excision that releasing here would cut.
@@ -741,7 +852,7 @@ func _commit_flap(end: Vector2) -> void:
 	var result := sheet.make_flap(_screen_to_sheet_plane(_flap_start), _screen_to_sheet_plane(end))
 	if result == 1:
 		_history.append({"kind": "flap"})
-		_status = "Flap raised and undermined. 'Tie key sutures' (panel) pulls it into place. " \
+		_status = "Flap raised and undermined. 'Tie key sutures' pulls it into place. " \
 			+ _lesion_summary()
 	elif result == 0:
 		_status = "No flap: start on the skin, and keep the design on the sheet."
@@ -758,6 +869,48 @@ func _tie_key_sutures() -> void:
 	for id in ids:
 		_history.append({"kind": "suture", "id": id})
 	_status = "%d key sutures tied (%d-0)." % [ids.size(), sheet.suture_thread]
+
+
+## Pen: add the point under the finger to the stroke (rest coordinates, so
+## the line belongs to the tissue and follows it as it moves).
+func _extend_mark(screen_pos: Vector2) -> void:
+	if not _mark_screen.is_empty() and screen_pos.distance_to(_mark_screen[_mark_screen.size() - 1]) < CUT_SAMPLE_PX:
+		return
+	var X: Vector2 = sheet.to_rest(_screen_to_sheet_plane(screen_pos))
+	if is_nan(X.x):
+		return  # not over skin
+	_mark_rest.append(X)
+	_mark_screen.append(screen_pos)
+	overlay.pen_path = _mark_screen
+	overlay.pen_color = ContextPanel.PEN_COLORS[_pen_color]
+
+
+func _commit_mark(end: Vector2) -> void:
+	_mark_touch = -1
+	overlay.pen_path = PackedVector2Array()
+	if end.distance_to(_mark_start) < TAP_PX:
+		_erase_mark_at(end)
+		return
+	_extend_mark(end)
+	if _mark_rest.size() >= 2:
+		marks.append({"rest": _mark_rest, "color": _pen_color})
+		_history.append({"kind": "mark"})
+
+
+## A tap with the pen: erase the marking under the finger (undoable).
+func _erase_mark_at(screen_pos: Vector2) -> void:
+	for i in range(marks.size() - 1, -1, -1):
+		for piece in sheet.rest_to_world(marks[i].rest):
+			var pts := PackedVector2Array()
+			for p in piece:
+				pts.append(camera.unproject_position(p))
+			for k in range(pts.size() - 1):
+				var q := Geometry2D.get_closest_point_to_segment(screen_pos, pts[k], pts[k + 1])
+				if q.distance_to(screen_pos) < PICK_PX:
+					_history.append({"kind": "mark_erase", "mark": marks[i], "index": i})
+					marks.remove_at(i)
+					_status = "Marking erased."
+					return
 
 
 ## Release of the excision gesture: a drag cuts and removes a fusiform
@@ -830,7 +983,7 @@ func _demo_excise() -> void:
 		await get_tree().process_frame
 	_set_tool(Tool.GRAB)
 	sheet.heatmap = 4
-	panel.refresh()
+	ui.refresh()
 
 
 ## A short, blunt ellipse (15 x 10 mm: 1.5:1, 90 degree tips) excised along
@@ -840,7 +993,7 @@ func _demo_wrinkle() -> void:
 	await get_tree().process_frame
 	sheet.ellipse_ratio = 1.5
 	sheet.tip_angle_deg = 90.0
-	panel.refresh()
+	ui.refresh()
 	_set_tool(Tool.EXCISE)
 	_touch(0, Vector2(-7.5, 0), true)
 	for k in range(1, 16):
@@ -860,4 +1013,4 @@ func _demo_wrinkle() -> void:
 		await get_tree().process_frame
 	_set_tool(Tool.GRAB)
 	sheet.heatmap = 5
-	panel.refresh()
+	ui.refresh()

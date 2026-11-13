@@ -135,6 +135,8 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_wrinkling_pct", "pct"), &SkinSheet::set_wrinkling_pct);
     ClassDB::bind_method(D_METHOD("get_wrinkling_pct"), &SkinSheet::get_wrinkling_pct);
     ClassDB::bind_method(D_METHOD("excise", "point"), &SkinSheet::excise);
+    ClassDB::bind_method(D_METHOD("to_rest", "point"), &SkinSheet::to_rest);
+    ClassDB::bind_method(D_METHOD("rest_to_world", "rest_points"), &SkinSheet::rest_to_world);
     ClassDB::bind_method(D_METHOD("get_flap_preview", "start", "end"), &SkinSheet::get_flap_preview);
     ClassDB::bind_method(D_METHOD("make_flap", "start", "end"), &SkinSheet::make_flap);
     ClassDB::bind_method(D_METHOD("undo_flap"), &SkinSheet::undo_flap);
@@ -493,6 +495,33 @@ PackedVector3Array SkinSheet::get_fusiform_outline(const Vector3& p_tip_a, const
          skinsim::fusiform_outline(world_to_sheet(p_tip_a), world_to_sheet(p_tip_b), ellipse_ratio_, tip_angle_deg_))
         out.push_back(to_global(to_godot(p)));
     return out;
+}
+
+Vector2 SkinSheet::to_rest(const Vector3& p_world_point) const {
+    const skinsim::Simulation* s = sim();
+    skinsim::MaterialPoint m;
+    if (!s || !s->material_point_at(world_to_sheet(p_world_point), m)) return Vector2(NAN, NAN);
+    const Eigen::Vector2d X = s->rest_position_of(m);
+    return Vector2(static_cast<real_t>(X.x()), static_cast<real_t>(X.y()));
+}
+
+Array SkinSheet::rest_to_world(const PackedVector2Array& p_rest_points) const {
+    Array pieces;
+    const skinsim::Simulation* s = sim();
+    if (!s) return pieces;
+    PackedVector3Array piece;
+    for (int i = 0; i < p_rest_points.size(); ++i) {
+        Eigen::Vector2d now;
+        const Vector2 X = p_rest_points[i];
+        if (s->current_position_at_rest(Eigen::Vector2d(X.x, X.y), now)) {
+            piece.push_back(to_global(to_godot(now, 0.05f)));  // a hair above the skin
+        } else if (piece.size() > 0) {
+            pieces.push_back(piece);
+            piece = PackedVector3Array();
+        }
+    }
+    if (piece.size() > 0) pieces.push_back(piece);
+    return pieces;
 }
 
 skinsim::FlapDesign SkinSheet::flap_design(const Vector3& p_start, const Vector3& p_end) const {

@@ -1,26 +1,15 @@
 [gd_scene format=3]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
-[ext_resource type="Script" path="res://ui/control_panel.gd" id="2_panel"]
+[ext_resource type="Script" path="res://ui/app_shell.gd" id="2_shell"]
 [ext_resource type="Script" path="res://ui/grab_overlay.gd" id="3_overlay"]
 
 [sub_resource type="Environment" id="Environment_bg"]
 background_mode = 1
-background_color = Color(0.12, 0.13, 0.15, 1)
+background_color = Color(0.071, 0.078, 0.094, 1)
 ambient_light_source = 2
 ambient_light_color = Color(1, 1, 1, 1)
 ambient_light_energy = 0.35
-
-[sub_resource type="StyleBoxFlat" id="StyleBox_hud"]
-bg_color = Color(0, 0, 0, 0.55)
-content_margin_left = 10.0
-content_margin_top = 6.0
-content_margin_right = 10.0
-content_margin_bottom = 6.0
-corner_radius_top_left = 4
-corner_radius_top_right = 4
-corner_radius_bottom_right = 4
-corner_radius_bottom_left = 4
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -44,15 +33,8 @@ far = 500.0
 
 [node name="HUD" type="CanvasLayer" parent="."]
 
-[node name="Info" type="Label" parent="HUD"]
-offset_left = 12.0
-offset_top = 10.0
-theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
-theme_override_font_sizes/font_size = 14
-theme_override_styles/normal = SubResource("StyleBox_hud")
-
 [node name="GrabOverlay" type="Control" parent="HUD"]
 script = ExtResource("3_overlay")
 
-[node name="ControlPanel" type="PanelContainer" parent="HUD"]
-script = ExtResource("2_panel")
+[node name="AppShell" type="Control" parent="HUD"]
+script = ExtResource("2_shell")

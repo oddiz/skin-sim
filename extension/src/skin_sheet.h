@@ -161,6 +161,14 @@ public:
     void set_tip_angle_deg(double p_deg) { tip_angle_deg_ = p_deg; }
     double get_tip_angle_deg() const { return tip_angle_deg_; }
 
+    // --- Tissue (rest) coordinates, e.g. for pen markings that move with the skin ---
+    // The rest position (mm) of the skin under a world point; (NAN, NAN) if
+    // the point is not on skin.
+    Vector2 to_rest(const Vector3& p_world_point) const;
+    // Where the tissue at these rest points is now, as world-space pieces:
+    // points not on skin (excised, in an open wound) split the line.
+    Array rest_to_world(const PackedVector2Array& p_rest_points) const;
+
     // --- Local flaps (world-space points) ---
     // A flap designed from a drag: pressed on a lesion, the defect is the
     // lesion plus flap_margin all round (elsewhere: a lesion_diameter circle

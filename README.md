@@ -98,6 +98,13 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 
 ## Controls
 
+The screen: tools on the left rail; the current tool's settings and results
+in the panel on the right; **View** (colour map, mesh, solver details),
+**Tissue** (body-site presets and skin properties, raw model parameters under
+"Advanced") and **⋯** (reset, clear) along the top. The line at the bottom
+says what to do next with the current tool; short messages above it report
+what just happened. Every setting has an (i) button with a short explanation.
+
 | Input | Action |
 |---|---|
 | Drag (Grab tool, G) | Grab and pull the skin with forceps; several fingers on a touch screen |
@@ -113,8 +120,10 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
 | Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release |
 | "Tie key sutures" (Flap section) | Tie the last flap's key sutures: they pull it into place |
-| Z | Undo the last incision, suture, undermining stroke, lesion, excision or flap |
-| H | Cycle the heatmap: off / max principal / von Mises / area change / min principal stress / excess skin |
+| Drag (Mark tool, M) | Draw on the skin with a surgical marker to plan cuts and flaps (no effect on the skin). Lines are kept in tissue coordinates, so they stretch and move with the skin. Tap a line to erase it |
+| Z | Undo the last incision, suture, undermining stroke, lesion, excision, flap or marking |
+| Esc / ? | Close panels and deselect / keyboard shortcuts |
+| H | Next colour map: plain / tension (max principal) / von Mises / area change / squeezing (min principal) / excess skin |
 | W / R | Wireframe on/off / reset the deformation (incisions and sutures stay) |
 
 Incisions are stored in rest (tissue) coordinates, so you can cut skin that is

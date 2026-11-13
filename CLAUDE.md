@@ -92,6 +92,11 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   coordinates), preview + panel parameters, then cuts, removes and undermines in one undo
   step (Sheet::make_flap). "Tie key sutures"; base stress readout.
 
+- UI revision (plan: UI1 foundation, UI2 phone + navigation, UI3 tissue drawer, UI4 guidance):
+  UI built in code under game/ui/ (style.gd tokens + Theme, app_shell, context_panel per tool,
+  tissue_drawer, param_row). Inter font (OFL) + Lucide icons (ISC). Mark (pen) tool: markings
+  in rest coordinates (SkinSheet.to_rest / rest_to_world).
+
 ## Planned features
 - More flap designs (Burow's triangles, bilateral advancement, bilobed).
 - Cheese-wiring (suture tearing through tissue): deliberately left out of M9.

@@ -15,6 +15,11 @@ extends Control
 
 var sheet: SkinSheet
 var camera: Camera3D
+var ui: AppShell
+var main: Node            # main.gd: holds the pen markings
+## The pen stroke being drawn (screen) and its colour.
+var pen_path := PackedVector2Array()
+var pen_color := Color.BLACK
 ## Screen positions of the incision being drawn (empty when not cutting).
 var cut_path := PackedVector2Array()
 ## Needle entry and current exit (screen) of a suture being placed (empty otherwise).
@@ -71,8 +76,9 @@ func _draw() -> void:
 		# Dark halo underneath so the line shows on skin and background alike.
 		draw_polyline(cut_path, Color(0, 0, 0, 0.6), 5.0, true)
 		draw_polyline(cut_path, COLOR_SCALPEL, 2.5, true)
-	var font := ThemeDB.fallback_font
+	var font: Font = Style.FONT_REGULAR
 	_draw_lesions()
+	_draw_marks()
 	if excise_outline.size() >= 2:
 		draw_polyline(excise_outline, Color(0, 0, 0, 0.6), 4.0, true)
 		draw_polyline(excise_outline, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
@@ -98,8 +104,7 @@ func _draw() -> void:
 		var label := "%.2f N%s" % [g.force, "  (max)" if g.force_limited else ""]
 		# Dark outline first, then the text on top: readable over any background.
 		var pos := t + Vector2(10, -10)
-		draw_string_outline(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, 5, Color(0, 0, 0, 0.85))
-		draw_string(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, color)
+		_pill(font, pos, label, 16, color)
 
 
 func _draw_sutures(font: Font) -> void:
@@ -159,8 +164,7 @@ func _draw_sutures(font: Font) -> void:
 			# holds (+ stretched, - squeezed).
 			label += "  %+.0f kPa" % su.loop_stress_kpa
 		var pos := (a + b) * 0.5 + Vector2(8, -6)
-		draw_string_outline(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 4, Color(0, 0, 0, 0.85))
-		draw_string(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)
+		_pill(font, pos, label, 12, color)
 	_draw_snaps(font)
 
 
@@ -190,8 +194,7 @@ func _draw_snaps(font: Font) -> void:
 		draw_polyline(PackedVector2Array([b, b - dir * 7.0 - side * 3.0, b - dir * 10.0 + side * 2.0]),
 			red, 2.0, true)
 		var pos := (a + b) * 0.5 + Vector2(8, 14)
-		draw_string_outline(font, pos, s.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.85 * alpha))
-		draw_string(font, pos, s.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, red)
+		_pill(font, pos, s.text, 13, red)
 
 
 ## The flap design under the finger: the flap shaded, the defect (purple,
@@ -228,8 +231,7 @@ func _draw_flap_preview(font: Font) -> void:
 	if defect.size() > 0:
 		var pos := defect[0] + Vector2(10, -12)
 		var text: String = flap_preview.text
-		draw_string_outline(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.85))
-		draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.95, 0.95, 0.95))
+		_pill(font, pos, text, 13, Color(0.95, 0.95, 0.95))
 
 
 ## Vertical colour bar, bottom-left, with its scale and the current extreme.
@@ -237,21 +239,23 @@ func _draw_legend(font: Font) -> void:
 	var legend: Dictionary = sheet.get_heatmap_legend()
 	if legend.is_empty():
 		return
+	# A compact horizontal colour bar in a card, bottom-left of the skin area:
+	# low values on the left, high on the right.
 	var colors: PackedColorArray = legend.colors
-	var h := 180.0
-	var w := 18.0
-	var origin := Vector2(20, get_viewport_rect().size.y - h - 40)
-	draw_rect(Rect2(origin - Vector2(8, 26), Vector2(150, h + 52)), Color(0, 0, 0, 0.55))
+	var w := 200.0
+	var h := 10.0
+	var card := Rect2(Vector2(ui.free_rect().position.x + 16.0, get_viewport_rect().size.y - 100.0),
+		Vector2(w + 28.0, 84.0))
+	draw_style_box(Style.box(Color(Style.SURFACE, 0.94), Style.RADIUS_CARD, Style.BORDER), card)
+	var origin := card.position + Vector2(14, 36)
 	var n := colors.size()
 	for i in n:
-		# Index 0 = low value, drawn at the bottom.
-		var y := origin.y + h * (1.0 - float(i + 1) / n)
-		draw_rect(Rect2(Vector2(origin.x, y), Vector2(w, h / n + 1.0)), colors[i])
-	var white := Color(0.92, 0.92, 0.92)
-	draw_string(font, origin + Vector2(0, -8), legend.title, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, white)
-	draw_string(font, origin + Vector2(w + 6, 10), legend.high, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, white)
-	draw_string(font, origin + Vector2(w + 6, h), legend.low, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, white)
-	draw_string(font, origin + Vector2(0, h + 20), legend.extreme, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, white)
+		draw_rect(Rect2(origin + Vector2(w * i / n, 0), Vector2(w / n + 1.0, h)), colors[i])
+	var dim := Style.TEXT_DIM
+	draw_string(font, card.position + Vector2(14, 24), legend.title, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Style.TEXT)
+	draw_string(font, origin + Vector2(0, h + 16), legend.low, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, dim)
+	draw_string(font, origin + Vector2(0, h + 16), legend.high, HORIZONTAL_ALIGNMENT_RIGHT, w, 11, dim)
+	draw_string(font, origin + Vector2(0, h + 31), legend.extreme, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, dim)
 
 
 ## Small compass, top-right of the 3D view: the RSTL (fibre) direction.
@@ -259,7 +263,9 @@ func _draw_rstl(font: Font) -> void:
 	if sheet.fibre_stiffness_kpa <= 0.0 and sheet.prestretch_along_pct <= 0.0 \
 			and sheet.prestretch_across_pct <= 0.0:
 		return
-	var centre := Vector2(get_viewport_rect().size.x - ControlPanel.PANEL_WIDTH - 60, 60)
+	# Bottom-right corner of the skin area (clear of the top bar and panel).
+	var fr := ui.free_rect()
+	var centre := Vector2(fr.end.x - 56.0, fr.end.y - 120.0)
 	# Screen y points down while the sheet's y points up: flip the angle.
 	var a := deg_to_rad(sheet.fibre_angle_deg)
 	var d := Vector2(cos(a), -sin(a)) * 28.0
@@ -288,3 +294,32 @@ func _draw_lesions() -> void:
 				# (Without the repeated closing point: the polygon fill wants each corner once.)
 				draw_colored_polygon(pts.slice(0, pts.size() - 1), Color(0.35, 0.2, 0.12, 0.85))
 			draw_polyline(pts, edge, 2.0, true)
+
+
+## A text label on a rounded dark pill (readable over skin and heatmaps).
+## `pos` is the text's baseline start, as for draw_string.
+func _pill(font: Font, pos: Vector2, text: String, size: int, color: Color) -> void:
+	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	var asc := font.get_ascent(size)
+	var r := Rect2(pos + Vector2(-7, -asc - 4), Vector2(w + 14, asc + font.get_descent(size) + 8))
+	var bg := Style.box(Color(Style.BG, 0.82 * color.a), 9)
+	draw_style_box(bg, r)
+	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+## Pen markings: each line is kept in rest coordinates and drawn where that
+## tissue is now, so it stretches with the skin; parts over a wound or an
+## excised area are not drawn. Then the stroke being drawn.
+func _draw_marks() -> void:
+	if main != null:
+		for m in main.marks:
+			var c: Color = ContextPanel.PEN_COLORS[m.color]
+			for piece in sheet.rest_to_world(m.rest):
+				if piece.size() < 2:
+					continue
+				var pts := PackedVector2Array()
+				for p in piece:
+					pts.append(camera.unproject_position(p))
+				draw_polyline(pts, Color(c, 0.9), 3.0, true)
+	if pen_path.size() >= 2:
+		draw_polyline(pen_path, Color(pen_color, 0.9), 3.0, true)
