@@ -171,30 +171,48 @@ int Sheet::make_flap(const FlapDesign& design, double undermine_margin) {
     // All the cuts as one stroke: one re-mesh, one undo step.
     CutGraph g = cuts_;
     const CutOptions options = geometry_.cut_options();
-    int added = add_cut(g, design.defect, options);
+    int added = 0;
+    if (!design.defect.empty()) added += add_cut(g, design.defect, options);
+    for (const Polyline& p : design.burow) added += add_cut(g, p, options);
     for (const Polyline& p : design.incisions) added += add_cut(g, p, options);
     if (added == 0) return 0;
     history_.push_back(cuts_);
     remesh(std::move(g));
 
-    // Remove the defect's skin: the island around the design's centre.
-    if (island_at(mesh(), design.centre) != 1) {
-        CutGraph previous = std::move(history_.back());
-        history_.pop_back();
-        remesh(std::move(previous));
-        return -1;
+    // Remove the skin of the defect (the island around the design's centre)
+    // and of any Burow's triangles (islands around their centroids). If one
+    // did not come free, undo the whole flap.
+    std::vector<Eigen::Vector2d> remove;
+    if (!design.defect.empty()) remove.push_back(design.centre);
+    for (const Polyline& p : design.burow) {
+        Eigen::Vector2d c = Eigen::Vector2d::Zero();
+        for (size_t i = 0; i + 1 < p.size(); ++i) c += p[i];
+        remove.push_back(c / static_cast<double>(std::max<size_t>(1, p.size() - 1)));
     }
-    excised_.push_back(design.centre);
-    remesh(cuts_);
-
-    // Undermine the convex region around the defect and the flap, widened by
-    // the margin: soft stamps on a grid, as if painted with the brush.
+    for (const Eigen::Vector2d& point : remove)
+        if (island_at(mesh(), point) != 1) {
+            CutGraph previous = std::move(history_.back());
+            history_.pop_back();
+            remesh(std::move(previous));
+            return -1;
+        }
     Flap f;
     f.design = design;
-    Polyline region = design.defect;
-    region.insert(region.end(), design.flap.begin(), design.flap.end());
+    f.excised = static_cast<int>(remove.size());
+    if (!remove.empty()) {
+        excised_.insert(excised_.end(), remove.begin(), remove.end());
+        remesh(cuts_);
+    }
+
+    // Undermine the region around the defect and the flaps, widened by the
+    // margin: soft stamps on a grid, as if painted with the brush. Island
+    // flaps keep their pedicle: no stamps well inside them.
+    std::vector<const Polyline*> parts;
+    if (!design.defect.empty()) parts.push_back(&design.defect);
+    for (const Polyline& p : design.flaps) parts.push_back(&p);
     Eigen::AlignedBox2d box;
-    for (const Eigen::Vector2d& p : region) box.extend(p);
+    for (const Polyline* poly : parts)
+        for (const Eigen::Vector2d& p : *poly) box.extend(p);
     const double margin = std::isfinite(undermine_margin) ? std::max(0.0, undermine_margin) : 0.0;
     const double radius = std::clamp(0.5 * margin, 2.5, 6.0);
     const double spacing = 0.6 * radius;  // inner 60% of each stamp is fully undermined
@@ -204,14 +222,25 @@ int Sheet::make_flap(const FlapDesign& design, double undermine_margin) {
         for (size_t i = 0; i + 1 < poly.size(); ++i) d = std::min(d, point_segment_distance(p, poly[i], poly[i + 1]));
         return d;
     };
+    auto edge_distance = [](const Polyline& poly, const Eigen::Vector2d& p) {
+        double d = 1e300;
+        for (size_t i = 0; i + 1 < poly.size(); ++i) d = std::min(d, point_segment_distance(p, poly[i], poly[i + 1]));
+        return d;
+    };
     std::vector<Stamp> stroke;
     const double reach = margin + 0.4 * radius;  // stamps fade out over their outer 40%
-    for (double y = box.min().y() - reach; y <= box.max().y() + reach; y += spacing)
-        for (double x = box.min().x() - reach; x <= box.max().x() + reach; x += spacing) {
-            const Eigen::Vector2d p(x, y);
-            if (std::min(distance_to(design.defect, p), distance_to(design.flap, p)) + 0.4 * radius <= reach + 1e-9)
-                stroke.push_back({p, radius});
-        }
+    if (!parts.empty())
+        for (double y = box.min().y() - reach; y <= box.max().y() + reach; y += spacing)
+            for (double x = box.min().x() - reach; x <= box.max().x() + reach; x += spacing) {
+                const Eigen::Vector2d p(x, y);
+                double d = 1e300;
+                for (const Polyline* poly : parts) d = std::min(d, distance_to(*poly, p));
+                if (d + 0.4 * radius > reach + 1e-9) continue;
+                bool on_pedicle = false;
+                for (const Polyline& island : design.islands)
+                    if (inside_polygon(island, p) && edge_distance(island, p) > 0.5 * radius) on_pedicle = true;
+                if (!on_pedicle) stroke.push_back({p, radius});
+            }
     if (!stroke.empty()) {
         undermine_strokes_.push_back(std::move(stroke));
         f.undermine_stroke = static_cast<int>(undermine_strokes_.size()) - 1;
@@ -222,13 +251,14 @@ int Sheet::make_flap(const FlapDesign& design, double undermine_margin) {
 }
 
 bool Sheet::undo_flap() {
-    if (flaps_.empty() || excised_.empty() || history_.empty()) return false;
+    if (flaps_.empty() || history_.empty()) return false;
     const Flap& f = flaps_.back();
+    if (static_cast<int>(excised_.size()) < f.excised) return false;
     // Its undermining, unless that was cleared since.
     if (f.undermine_stroke >= 0 && static_cast<int>(undermine_strokes_.size()) == f.undermine_stroke + 1)
         undermine_strokes_.pop_back();
+    excised_.resize(excised_.size() - f.excised);
     flaps_.pop_back();
-    excised_.pop_back();
     CutGraph previous = std::move(history_.back());
     history_.pop_back();
     remesh(std::move(previous));  // also re-applies the undermining
@@ -254,7 +284,8 @@ std::vector<int> Sheet::tie_key_sutures(int i, double tightness, int thread) {
 
 double Sheet::flap_base_stress(int i) const {
     if (i < 0 || i >= flap_count()) return 0.0;
-    const Polyline& base = flaps_[i].design.base;
+    if (flaps_[i].design.bases.empty()) return 0.0;
+    const Polyline& base = flaps_[i].design.bases.front();
     if (base.size() < 2) return 0.0;
     const TriMesh& m = mesh();
     const TriangleLocator locator(m.rest_positions, m.triangles);

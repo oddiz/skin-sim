@@ -24,26 +24,38 @@ extends Node3D
 ##           Or tap inside any outline already cut free (e.g. a rhomboid
 ##           drawn with the scalpel) to remove it.
 ##   FLAP    drag from a lesion outward: designs the excision around it and
-##           a local flap (type and shape in the panel) in the drag's
-##           direction, previewed while dragging; on release it is cut, the
-##           defect removed and the area undermined. "Tie key sutures" then
+##           a local flap (one of eleven designs, ui/flap_catalog.gd) in the
+##           drag's direction, previewed while dragging; on release it is
+##           cut, the defect removed and the area undermined ("Plan with the
+##           marker": drawn with the pen instead). "Tie key sutures" then
 ##           pulls the flap into place.
 ##   MARK    draw on the skin with a surgical marker (planning only). The
 ##           lines are kept in rest (tissue) coordinates, so they stretch and
 ##           move with the skin. Tap a line to erase it.
 ## On desktop, Shift + drag cuts whatever the tool.
 ##
+## Navigation: two fingers pan and pinch-zoom the view. A second finger that
+## lands soon after the first (or before the first has moved) turns both
+## into navigation and cancels what the first had started; once a finger
+## is busy with a tool, more fingers are ignored. Mouse: the wheel zooms
+## about the pointer, right or middle drag pans, Home (or the Fit button)
+## fits the skin in the window.
+##
 ## The user interface around the skin (tool rail, panels, hints) is built by
 ## ui/app_shell.gd; this script handles the skin: input, tools, undo, demos.
 ##
 ## Command-line options (everything after a lone "--" goes to the game):
 ##   --screenshot <path.png>   save a screenshot after a moment, then quit
+##   --ui-scale <x>            size of the interface (default: the screen's
+##                             pixel density, e.g. 3 on a phone)
+##   --open <panel>            open tissue | view | help | sheet | sheet-full
+##   --tool <n>                pick a tool (0 grab .. 7 mark)
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
 ##   --demo-cut                cut a 30 mm vertical incision, then pull its
 ##                             right lip 8 mm right so it gapes (for checks)
-##   --demo-flap [--flap-type 0|1|2]  mark a lesion, raise a flap (0 advancement,
-##                             1 rotation, 2 rhomboid, the default) to its right,
-##                             tie its key sutures; max principal stress heatmap
+##   --demo-flap [--flap-type N]  mark a lesion, raise a flap to its right
+##                             (N: skinsim FlapType, 0..10; default 2,
+##                             rhomboid), tie its key sutures; tension map
 ##   --demo-snap               close a cut with three 6-0 sutures and pull hard:
 ##                             they snap, worst first (for checks)
 ##   --demo-suture             cut, close with three sutures (3 mm bites, the
@@ -55,6 +67,8 @@ extends Node3D
 ##   --demo-excise             a 6 mm lesion, fusiform excision along the
 ##                             RSTL with a 2 mm margin, closed with five
 ##                             sutures; min principal stress heatmap (for checks)
+##   --demo-nav                two fingers: pinch out (zoom in) and pan, with
+##                             the Cut tool on; prints what happened (for checks)
 ##   --demo-wrinkle            a short, blunt ellipse (1.5:1, 90 degree tips)
 ##                             excised and closed: dog-ears at both ends;
 ##                             excess skin heatmap (for checks)
@@ -77,6 +91,13 @@ const CUT_SAMPLE_PX := 4.0
 const TAP_PX := 10.0
 ## A tap within this many pixels of a suture's thread selects it.
 const PICK_PX := 14.0
+## A second finger within this time (s) of the first, or before the first
+## has moved this far (px), makes a two-finger navigation gesture.
+const NAV_WINDOW_S := 0.25
+const NAV_STILL_PX := 10.0
+## Zoom limits, relative to the size that fits the skin in the window.
+const ZOOM_IN_MAX := 10.0
+const ZOOM_OUT_MAX := 2.0
 
 var tool: Tool = Tool.GRAB
 var _cut_touch := -1                      # touch index drawing the incision, -1 = none
@@ -107,15 +128,32 @@ var _mark_screen := PackedVector2Array()  # and on screen, while drawing
 var _mark_start := Vector2.ZERO
 var _pen_color := 0
 var _suture_buttons: HBoxContainer        # floating Loosen / Tighten / Cut next to the selected suture
+var _lesion_touch := -1                   # touch index about to mark a lesion (on release)
+## Touches on the skin: index -> position. The first one drives the tool;
+## see _unhandled_input for how a second one becomes navigation.
+var _touches := {}
+var _first_touch := -1
+var _first_time := 0.0                    # s
+var _first_start := Vector2.ZERO
+var _first_moved := false
+var _ignored := {}                        # touch indices that do nothing
+var _navigating := false
+var _nav_centre := Vector2.ZERO           # two-finger midpoint, last frame
+var _nav_span := 0.0                      # distance between them, last frame
+var _pan_button := false                  # right / middle mouse drag
+var _fit_size := 100.0                    # camera.size that fits the skin
 
 
 func _ready() -> void:
+	_apply_ui_scale()
+	get_window().size_changed.connect(_apply_ui_scale)
 	# Children are ready before their parent, so the sheet already exists.
 	ui.setup(sheet)
 	panel = ui.context
 	ui.reset_requested.connect(sheet.reset_simulation)
 	ui.tool_selected.connect(_set_tool)
 	ui.undo_requested.connect(_undo)
+	ui.fit_requested.connect(_frame_sheet)
 	ui.cleared.connect(_on_cleared)
 	panel.pen_color_changed.connect(func(i: int): _pen_color = i)
 	panel.tightness_changed.connect(func(t: float):
@@ -160,6 +198,8 @@ func _ready() -> void:
 		_demo_excise()
 	if args.has("--demo-wrinkle"):
 		_demo_wrinkle()
+	if args.has("--demo-nav"):
+		_demo_nav()
 	var o := args.find("--open")  # for screenshots: --open tissue | view | help
 	if o != -1 and o + 1 < args.size():
 		ui.open_panel(args[o + 1])
@@ -183,7 +223,7 @@ func _on_cleared(what: String) -> void:
 		"sutures": ["suture", "suture_cut"],
 		"undermining": ["undermine"],
 		"lesions": ["lesion"],
-		"markings": ["mark", "mark_erase"],
+		"markings": ["mark", "mark_erase", "mark_group"],
 	}.get(what, [])
 	_history = _history.filter(func(h): return not h.kind in kinds)
 	if what == "sutures":
@@ -200,10 +240,20 @@ func _unhandled_input(event: InputEvent) -> void:
 				or (_suture_buttons.visible and _suture_buttons.get_global_rect().has_point(event.position))):
 			return
 		if event.pressed:
-			_on_press(event.index, event.position)
+			_touch_down(event.index, event.position)
 		else:
-			_on_release(event.index, event.position)
+			_touch_up(event.index, event.position)
 	elif event is InputEventScreenDrag:
+		if not _touches.has(event.index):
+			return
+		_touches[event.index] = event.position
+		if _navigating:
+			_navigate()
+			return
+		if _ignored.has(event.index):
+			return
+		if event.index == _first_touch and event.position.distance_to(_first_start) > NAV_STILL_PX:
+			_first_moved = true
 		if event.index == _cut_touch:
 			if event.position.distance_to(_cut_path[_cut_path.size() - 1]) >= CUT_SAMPLE_PX:
 				_cut_path.append(event.position)
@@ -220,11 +270,28 @@ func _unhandled_input(event: InputEvent) -> void:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
 				and _on_skin(event.position)
+		elif event.index == _lesion_touch:
+			pass
 		else:
 			sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
+	elif event is InputEventMouseButton and event.pressed and not ui.is_over_ui(event.position) \
+			and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+		var steps: float = event.factor if event.factor > 0.0 else 1.0
+		_zoom_about(event.position, pow(0.88, steps) if event.button_index == MOUSE_BUTTON_WHEEL_UP \
+			else pow(1.0 / 0.88, steps))
+	elif event is InputEventMouseButton and event.button_index in [MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE]:
+		_pan_button = event.pressed and not ui.is_over_ui(event.position)
+	elif event is InputEventMagnifyGesture:  # trackpad pinch (macOS)
+		_zoom_about(event.position, 1.0 / maxf(event.factor, 0.01))
+	elif event is InputEventPanGesture:  # trackpad two-finger scroll
+		_pan_by(-event.delta * 4.0)
 	elif event is InputEventMouseMotion:
-		# Preview the brush under the mouse (desktop only; touch has no hover).
+		if _pan_button:
+			_pan_by(event.relative)
+		# Preview the brush under the mouse (desktop only; touch has no hover),
+		# and read the colour map there.
 		overlay.brush_pos = event.position if tool == Tool.UNDERMINE else Vector2(-1, -1)
+		overlay.probe_pos = event.position
 		overlay.brush_radius_px = sheet.undermine_radius * get_viewport().get_visible_rect().size.y / camera.size
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
@@ -256,6 +323,8 @@ func _unhandled_input(event: InputEvent) -> void:
 					_select_suture(-1)
 			KEY_SLASH, KEY_QUESTION:
 				ui.toggle_help()
+			KEY_HOME:
+				_frame_sheet()
 			KEY_Z:
 				_undo()
 			KEY_MINUS, KEY_KP_SUBTRACT:
@@ -267,6 +336,142 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_T:
 				overlay.label_mode = (overlay.label_mode + 1) % 3
 				panel.show_label_mode(overlay.label_mode)
+
+
+## A finger (or the mouse) comes down on the skin. The first one uses the
+## tool. A second one, soon after or while the first is still, turns both
+## into a two-finger pan / pinch (the first one's action is cancelled);
+## otherwise it is ignored, as are any further fingers.
+func _touch_down(index: int, pos: Vector2) -> void:
+	_touches[index] = pos
+	if _navigating:
+		_ignored[index] = true
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	if _touches.size() == 1:
+		_first_touch = index
+		_first_time = now
+		_first_start = pos
+		_first_moved = false
+		_on_press(index, pos)
+	elif _touches.size() == 2 and not _ignored.has(_first_touch) \
+			and (now - _first_time < NAV_WINDOW_S or not _first_moved):
+		_cancel_action(_first_touch)
+		_navigating = true
+		_nav_centre = _two_finger_centre()
+		_nav_span = _two_finger_span()
+	else:
+		_ignored[index] = true
+
+
+func _touch_up(index: int, pos: Vector2) -> void:
+	if not _touches.has(index):
+		return
+	_touches.erase(index)
+	if _navigating:
+		if _touches.is_empty():
+			_navigating = false
+			_ignored.clear()
+		else:
+			_ignored[_touches.keys()[0]] = true  # the finger left behind does nothing
+		return
+	if _ignored.has(index):
+		_ignored.erase(index)
+		return
+	_on_release(index, pos)
+	if _touches.is_empty():
+		_ignored.clear()
+
+
+## Stop what a finger started, without committing it (it became part of a
+## two-finger gesture).
+func _cancel_action(index: int) -> void:
+	if index == _cut_touch:
+		_cut_touch = -1
+		_cut_path = PackedVector2Array()
+		overlay.cut_path = _cut_path
+	elif index == _suture_touch:
+		_suture_touch = -1
+		overlay.suture_line = PackedVector2Array()
+	elif index == _undermine_touch:
+		_undermine_touch = -1
+		if not _undermine_new:
+			sheet.undo_undermine()  # the few stamps already painted
+		overlay.brush_pos = Vector2(-1, -1)
+	elif index == _excise_touch:
+		_excise_touch = -1
+		overlay.excise_outline = PackedVector2Array()
+	elif index == _flap_touch:
+		_flap_touch = -1
+		overlay.flap_preview = {}
+	elif index == _mark_touch:
+		_mark_touch = -1
+		overlay.pen_path = PackedVector2Array()
+	elif index == _lesion_touch:
+		_lesion_touch = -1
+	else:
+		sheet.release_grab(index)
+
+
+func _two_finger_centre() -> Vector2:
+	var k: Array = _touches.keys()
+	return (_touches[k[0]] + _touches[k[1]]) * 0.5
+
+
+func _two_finger_span() -> float:
+	var k: Array = _touches.keys()
+	return (_touches[k[0]] as Vector2).distance_to(_touches[k[1]])
+
+
+## Two fingers: the view follows their midpoint and zooms with their spread.
+func _navigate() -> void:
+	if _touches.size() < 2:
+		return
+	var centre := _two_finger_centre()
+	var span := _two_finger_span()
+	_pan_by(centre - _nav_centre)
+	if _nav_span > 1.0 and span > 1.0:
+		_zoom_about(centre, _nav_span / span)
+	_nav_centre = centre
+	_nav_span = span
+
+
+## Move the view so the skin follows a drag of `delta` pixels.
+func _pan_by(delta: Vector2) -> void:
+	var a := _screen_to_sheet_plane(Vector2.ZERO)
+	var b := _screen_to_sheet_plane(delta)
+	camera.position.x -= b.x - a.x
+	camera.position.z -= b.z - a.z
+
+
+## Zoom by `factor` (< 1 = in) keeping the skin under `screen_pos` in place.
+func _zoom_about(screen_pos: Vector2, factor: float) -> void:
+	var before := _screen_to_sheet_plane(screen_pos)
+	camera.size = clampf(camera.size * factor, _fit_size / ZOOM_IN_MAX, _fit_size * ZOOM_OUT_MAX)
+	var after := _screen_to_sheet_plane(screen_pos)
+	camera.position.x += before.x - after.x
+	camera.position.z += before.z - after.z
+
+
+## Interface size: the screen's pixel density (a phone draws 2-3 pixels per
+## "point"), so text and buttons are the same physical size everywhere.
+## The window's content is laid out at (window size / scale) and scaled up.
+func _apply_ui_scale() -> void:
+	var w := get_window()
+	var scale := DisplayServer.screen_get_scale()
+	if OS.get_name() == "Windows" or OS.get_name() == "Linux":
+		# These report 1 here; the DPI says how dense the screen is.
+		scale = DisplayServer.screen_get_dpi() / 96.0
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--ui-scale")
+	if i != -1 and i + 1 < args.size():
+		scale = float(args[i + 1])
+	scale = clampf(scale, 1.0, 4.0)
+	var logical := Vector2i((Vector2(w.size) / scale).round())
+	if w.content_scale_mode != Window.CONTENT_SCALE_MODE_CANVAS_ITEMS or w.content_scale_size != logical:
+		w.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		w.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+		w.content_scale_size = logical
 
 
 func _on_press(index: int, pos: Vector2) -> void:
@@ -285,11 +490,7 @@ func _on_press(index: int, pos: Vector2) -> void:
 			_undermine_new = true
 			_paint_undermining(pos)
 	elif tool == Tool.LESION:
-		if sheet.add_lesion(_screen_to_sheet_plane(pos)):
-			_history.append({"kind": "lesion"})
-			_status = "Lesion marked (%.1f mm)." % sheet.lesion_diameter
-		else:
-			_status = "A lesion must be on the skin."
+		_lesion_touch = index  # marked on release: the finger may yet start a pinch
 	elif tool == Tool.EXCISE:
 		if _excise_touch == -1:
 			_excise_touch = index
@@ -321,6 +522,13 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_flap(pos)
 	elif index == _mark_touch:
 		_commit_mark(pos)
+	elif index == _lesion_touch:
+		_lesion_touch = -1
+		if sheet.add_lesion(_screen_to_sheet_plane(pos)):
+			_history.append({"kind": "lesion"})
+			_status = "Lesion marked (%.1f mm)." % sheet.lesion_diameter
+		else:
+			_status = "A lesion must be on the skin."
 	elif index == _undermine_touch:
 		_undermine_touch = -1
 		if not _undermine_new:  # something was painted: one undo step
@@ -477,6 +685,10 @@ func _undo() -> void:
 	elif last.kind == "mark":
 		marks.pop_back()
 		_status = "Marking removed."
+	elif last.kind == "mark_group":
+		for _k in last.count:
+			marks.pop_back()
+		_status = "Planned flap removed."
 	elif last.kind == "mark_erase":
 		marks.insert(mini(last.index, marks.size()), last.mark)
 		_status = "Marking restored."
@@ -523,6 +735,7 @@ func _process(_delta: float) -> void:
 	var lesions: Array = sheet.get_lesion_info()
 	panel.show_lesions(lesions)
 	panel.show_flaps(sheet.get_flap_info())
+	overlay.show_tension_lines = ui.show_tension_lines
 	ui.set_status(s.converged, s.stalled)
 	ui.set_undo_enabled(not _history.is_empty())
 	ui.set_hint(_hint(selected, lesions))
@@ -563,10 +776,14 @@ func _hint(selected: Dictionary, lesions: Array) -> String:
 				return "Drag tip to tip to design an ellipse. (Mark a lesion first to check the margins.)"
 			return "Drag across the lesion from one tip of the ellipse to the other, along the tension lines."
 		Tool.FLAP:
+			if sheet.flap_type == 10:
+				return "Z-plasty: drag along the scar (the central limb)."
 			if lesions.is_empty():
 				return "Mark a lesion first (Lesion tool), then drag outward from it."
 			if sheet.get_flap_count() > 0:
 				return "Flap raised: 'Tie key sutures' pulls it in, then close the gaps with the Suture tool."
+			if sheet.flap_type == 4:
+				return "A-T: drag from the lesion towards the line the T's bar should lie in."
 			return "Drag from the lesion outward, towards where the flap should come from."
 		Tool.MARK:
 			return "Draw on the skin to plan. Tap a line to erase it."
@@ -727,11 +944,16 @@ func _frame_sheet() -> void:
 	var vp := get_viewport().get_visible_rect().size
 	var fr := ui.free_rect()
 	var free_width := fr.size.x
-	camera.size = maxf(sheet.height, sheet.width / (free_width / vp.y)) * FRAME_MARGIN
+	# Fit both ways: the sheet's height in the free height, its width in the
+	# free width (camera.size is the height of the whole window, in mm).
+	camera.size = maxf(sheet.height * vp.y / fr.size.y, sheet.width * vp.y / free_width) * FRAME_MARGIN
+	_fit_size = camera.size
 	var mm_per_px := camera.size / vp.y
-	# Put the sheet's centre (world x = 0) in the middle of the free area:
-	# a world point x shows at screen x = vp.x / 2 + (x - camera.x) / mm_per_px.
+	# Put the sheet's centre (world 0, 0) in the middle of the free area:
+	# a world point x shows at screen x = vp.x / 2 + (x - camera.x) / mm_per_px,
+	# and z likewise downwards.
 	camera.position.x = (0.5 * vp.x - fr.get_center().x) * mm_per_px
+	camera.position.z = (0.5 * vp.y - fr.get_center().y) * mm_per_px
 
 
 func _save_screenshot_and_quit(path: String) -> void:
@@ -817,39 +1039,50 @@ func _preview_flap(screen_pos: Vector2) -> void:
 		for p in pts:
 			out.append(camera.unproject_position(p))
 		return out
-	var incisions: Array = []
-	for p in d.incisions:
-		incisions.append(screen.call(p))
-	var keys: Array = []
-	for p in d.key_sutures:
-		keys.append(screen.call(p))
+	var all := func(list: Array) -> Array:
+		var out: Array = []
+		for p in list:
+			out.append(screen.call(p))
+		return out
 	overlay.flap_preview = {
-		"defect": screen.call(d.defect), "flap": screen.call(d.flap), "base": screen.call(d.base),
-		"incisions": incisions, "key_sutures": keys, "text": _flap_text(d),
+		"defect": screen.call(d.defect), "flaps": all.call(d.flaps), "bases": all.call(d.bases),
+		"burow": all.call(d.burow), "incisions": all.call(d.incisions),
+		"key_sutures": all.call(d.key_sutures), "text": _flap_text(d),
 	}
 
 
 ## One line describing a flap design (preview or made).
 func _flap_text(d: Dictionary) -> String:
-	var kind: int = sheet.flap_type if not d.has("type") else d.type
+	var kind: int = d.type
+	var name: String = FlapCatalog.by_type(kind).name
 	match kind:
-		0:
-			return "Advancement %.0f mm defect, %.1f : 1" % [d.diameter_mm, d.ratio]
-		1:
-			return "Rotation %.0f mm defect, arc %.1f x defect width, turns %.0f deg" % [
-				d.diameter_mm, d.ratio, d.turn_deg]
-		_:
-			return "Rhomboid (Limberg) %.0f mm defect, turns %.0f deg" % [d.diameter_mm, d.turn_deg]
+		0, 3:
+			return "%s · %.0f mm defect · %.1f : 1" % [name, d.diameter_mm, d.ratio]
+		1, 7:
+			return "%s · %.0f mm defect · arc %.1f x width · turns %.0f°" % [name, d.diameter_mm, d.ratio, d.turn_deg]
+		10:
+			return "%s · +%.0f%% length" % [name, d.lengthening * 100.0]
+		2, 8, 9:
+			return "%s · %.0f mm defect · turns %.0f°" % [name, d.diameter_mm, d.turn_deg]
+	return "%s · %.0f mm defect" % [name, d.diameter_mm]
 
 
-## Release of the flap gesture: cut it, remove the defect, undermine.
+## Release of the flap gesture: cut it, remove the defect, undermine. Or,
+## with "Plan with the marker", draw the design on the skin instead.
 func _commit_flap(end: Vector2) -> void:
 	_flap_touch = -1
 	overlay.flap_preview = {}
 	if end.distance_to(_flap_start) < TAP_PX:
 		_status = "Flap: drag from the lesion outward, towards where the flap should come from."
 		return
-	var result := sheet.make_flap(_screen_to_sheet_plane(_flap_start), _screen_to_sheet_plane(end))
+	var a := _screen_to_sheet_plane(_flap_start)
+	var b := _screen_to_sheet_plane(end)
+	if panel.flap_plan_only or sheet.flap_type == 10:
+		# (The Z-plasty is always planned: its two flaps cross over each
+		# other, which a flat sheet cannot do. See FlapCatalog.)
+		_plan_flap(a, b)
+		return
+	var result := sheet.make_flap(a, b)
 	if result == 1:
 		_history.append({"kind": "flap"})
 		_status = "Flap raised and undermined. 'Tie key sutures' pulls it into place. " \
@@ -858,6 +1091,24 @@ func _commit_flap(end: Vector2) -> void:
 		_status = "No flap: start on the skin, and keep the design on the sheet."
 	else:
 		_status = "No flap: the defect's outline did not close (too near the edge of the sheet?)."
+
+
+## Draw a flap design with the marker: incisions in violet, key sutures in
+## blue. One undo step.
+func _plan_flap(a: Vector3, b: Vector3) -> void:
+	var d: Dictionary = sheet.get_flap_design_rest(a, b)
+	if d.is_empty():
+		_status = "No plan: start on the skin."
+		return
+	var n := 0
+	for line in d.cuts:
+		marks.append({"rest": line, "color": 0})
+		n += 1
+	for k in d.key_sutures:
+		marks.append({"rest": k, "color": 1})
+		n += 1
+	_history.append({"kind": "mark_group", "count": n})
+	_status = "Flap planned on the skin: violet = cut, blue = key sutures. Cut along it, then excise the defect."
 
 
 ## Tie the last flap's key sutures with the panel's thread and tightness.
@@ -1014,3 +1265,30 @@ func _demo_wrinkle() -> void:
 	_set_tool(Tool.GRAB)
 	sheet.heatmap = 5
 	ui.refresh()
+
+
+## Two fingers land together with the Cut tool on, spread apart and move:
+## the view zooms in and pans, and nothing is cut. Prints the result.
+func _demo_nav() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.CUT)
+	var size_before := camera.size
+	var cuts_before := sheet.get_cut_count()
+	_touch(0, Vector2(-10, 0), true)
+	_touch(1, Vector2(10, 0), true)
+	await get_tree().process_frame
+	# Drag events in screen pixels: spread the fingers and move them right.
+	var a0 := _sheet_to_screen(Vector2(-10, 0))
+	var b0 := _sheet_to_screen(Vector2(10, 0))
+	for k in range(1, 11):
+		for f in [[0, a0 + Vector2(-6.0 * k + 3.0 * k, 0)], [1, b0 + Vector2(6.0 * k + 3.0 * k, 0)]]:
+			var drag := InputEventScreenDrag.new()
+			drag.index = f[0]
+			drag.position = f[1]
+			Input.parse_input_event(drag)
+		await get_tree().process_frame
+	_touch(0, Vector2(-10, 0), false)
+	_touch(1, Vector2(10, 0), false)
+	await get_tree().process_frame
+	print("nav demo: camera size %.1f -> %.1f mm, camera x %.1f, cuts %d -> %d, navigating %s" % [
+		size_before, camera.size, camera.position.x, cuts_before, sheet.get_cut_count(), _navigating])

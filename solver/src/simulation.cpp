@@ -722,41 +722,69 @@ double Simulation::max_area_ratio() const {
     return m;
 }
 
-Eigen::VectorXd Simulation::triangle_field(Field field) const {
-    Eigen::VectorXd out = Eigen::VectorXd::Zero(mesh_.triangle_count());
+namespace {
+
+// Principal stresses of a symmetric 2x2 tensor: mean +/- the radius of
+// Mohr's circle; the direction of the largest from the angle 2 theta.
+PrincipalStress principal(const Eigen::Matrix2d& sigma) {
+    PrincipalStress p;
+    const double mean = 0.5 * (sigma(0, 0) + sigma(1, 1));
+    const double half_diff = 0.5 * (sigma(0, 0) - sigma(1, 1));
+    const double shear = 0.5 * (sigma(0, 1) + sigma(1, 0));
+    const double radius = std::sqrt(half_diff * half_diff + shear * shear);
+    p.s1 = mean + radius;
+    p.s2 = mean - radius;
+    const double theta = 0.5 * std::atan2(shear, half_diff);
+    p.dir1 = Eigen::Vector2d(std::cos(theta), std::sin(theta));
+    return p;
+}
+
+}  // namespace
+
+Eigen::Matrix2d Simulation::resting_stress() const {
+    // At rest F = I, so sigma = P(I) I^T.
+    return element_piola(Eigen::Matrix2d::Identity());
+}
+
+std::vector<PrincipalStress> Simulation::triangle_principal(bool relative) const {
+    std::vector<PrincipalStress> out(mesh_.triangle_count());
+    const Eigen::Matrix2d rest = relative ? resting_stress() : Eigen::Matrix2d::Zero();
     for (const Element& e : elements_) {
-        const Eigen::Matrix2d F = deformation_gradient(e, x_);
-        if (field == Field::AreaChange) {
-            out[e.triangle] = F.determinant();  // relative to the rest (in vivo) area
-            continue;
-        }
-        if (field == Field::ExcessSkin) {
-            // Measured from the natural (unstretched) skin: F_e = F G.
-            out[e.triangle] = membrane::excess_length(membrane::relax(F * prestretch_, material_));
-            continue;
-        }
         // Cauchy ("true") stress: force per area of the *deformed* skin.
         // In general sigma = P F^T / det(F_3D); skin is incompressible, so the
         // 3D volume ratio det(F_3D) is 1 and sigma = P F^T. With prestretch,
         // P F^T = P_e G^T F^T = P_e F_e^T. Plane stress means the third
         // (through-thickness) principal stress is 0.
-        const Eigen::Matrix2d sigma = element_piola(F) * F.transpose();
-        // Principal stresses: eigenvalues of the symmetric 2x2 tensor,
-        // mean +/- radius of Mohr's circle.
-        const double mean = 0.5 * (sigma(0, 0) + sigma(1, 1));
-        const double half_diff = 0.5 * (sigma(0, 0) - sigma(1, 1));
-        const double shear = 0.5 * (sigma(0, 1) + sigma(1, 0));
-        const double radius = std::sqrt(half_diff * half_diff + shear * shear);
-        const double s1 = mean + radius, s2 = mean - radius;
-        out[e.triangle] = field == Field::MaxPrincipalStress   ? s1
-                          : field == Field::MinPrincipalStress ? s2
-                                                               : std::sqrt(s1 * s1 - s1 * s2 + s2 * s2);
+        const Eigen::Matrix2d F = deformation_gradient(e, x_);
+        out[e.triangle] = principal(element_piola(F) * F.transpose() - rest);
     }
     return out;
 }
 
-Eigen::VectorXd Simulation::vertex_field(Field field) const {
-    const Eigen::VectorXd per_triangle = triangle_field(field);
+Eigen::VectorXd Simulation::triangle_field(Field field, bool relative) const {
+    Eigen::VectorXd out = Eigen::VectorXd::Zero(mesh_.triangle_count());
+    if (field != Field::AreaChange && field != Field::ExcessSkin) {
+        const std::vector<PrincipalStress> p = triangle_principal(relative);
+        for (const Element& e : elements_) {
+            const double s1 = p[e.triangle].s1, s2 = p[e.triangle].s2;
+            out[e.triangle] = field == Field::MaxPrincipalStress   ? s1
+                              : field == Field::MinPrincipalStress ? s2
+                                                                   : std::sqrt(s1 * s1 - s1 * s2 + s2 * s2);
+        }
+        return out;
+    }
+    for (const Element& e : elements_) {
+        const Eigen::Matrix2d F = deformation_gradient(e, x_);
+        if (field == Field::AreaChange)
+            out[e.triangle] = F.determinant();  // relative to the rest (in vivo) area
+        else  // ExcessSkin, measured from the natural (unstretched) skin: F_e = F G.
+            out[e.triangle] = membrane::excess_length(membrane::relax(F * prestretch_, material_));
+    }
+    return out;
+}
+
+Eigen::VectorXd Simulation::vertex_field(Field field, bool relative) const {
+    const Eigen::VectorXd per_triangle = triangle_field(field, relative);
     Eigen::VectorXd sum = Eigen::VectorXd::Zero(mesh_.vertex_count());
     Eigen::VectorXd weight = Eigen::VectorXd::Zero(mesh_.vertex_count());
     for (const Element& e : elements_)

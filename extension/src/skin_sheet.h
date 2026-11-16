@@ -21,11 +21,17 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/plane_mesh.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_color_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
 
 #include "skinsim/params.hpp"
@@ -128,6 +134,19 @@ public:
     int get_heatmap() const { return heatmap_; }
     void set_heatmap_range_kpa(double p_kpa);
     double get_heatmap_range_kpa() const { return heatmap_range_kpa_; }
+    // Stress maps: show the stress the surgery added (minus the resting
+    // skin's prestress), so untouched skin is neutral.
+    void set_heatmap_relative(bool p_on);
+    bool get_heatmap_relative() const { return heatmap_relative_; }
+    // Stress maps: pick the colour scale from what the skin carries now (a
+    // round number just above most of it), instead of heatmap_range_kpa.
+    void set_heatmap_auto_range(bool p_on);
+    bool get_heatmap_auto_range() const { return heatmap_auto_range_; }
+    // Contour lines (isolines) over the colours, every tenth of the scale.
+    void set_heatmap_contours(bool p_on);
+    bool get_heatmap_contours() const { return heatmap_contours_; }
+    // The colour scale in use now, kPa (auto or fixed).
+    double get_heatmap_range_now() const;
 
     // --- Interaction (positions in Godot world space) ---
     bool grab(int p_id, const Vector3& p_world_point);
@@ -184,10 +203,17 @@ public:
     // Tie the last flap's key sutures (thread suture_thread). Returns their ids.
     Array tie_key_sutures(double p_tightness);
     int get_flap_count() const { return sheet_ ? sheet_->flap_count() : 0; }
-    // One Dictionary per flap: type (0 advancement, 1 rotation, 2 rhomboid),
-    // ratio, turn_deg, diameter_mm, base_stress_kpa.
+    // One Dictionary per flap: type (skinsim::FlapType: 0 advancement,
+    // 1 rotation, 2 rhomboid, 3 H-plasty, 4 A-T, 5 V-Y island, 6 keystone,
+    // 7 O-Z, 8 Dufourmentel, 9 bilobed, 10 Z-plasty), ratio, turn_deg,
+    // diameter_mm, lengthening, base_stress_kpa.
     Array get_flap_info() const;
-    void set_flap_type(int p_type) { flap_type_ = std::clamp(p_type, 0, 2); }
+    // The design for a drag in rest (tissue) coordinates, for drawing it on
+    // the skin with the marker: cuts (Array of PackedVector2Array: the
+    // defect, Burow's triangles, incisions), flaps (outlines), key_sutures
+    // (pairs). Empty if the drag does not start on skin.
+    Dictionary get_flap_design_rest(const Vector3& p_start, const Vector3& p_end) const;
+    void set_flap_type(int p_type) { flap_type_ = std::clamp(p_type, 0, skinsim::kFlapTypeCount - 1); }
     int get_flap_type() const { return flap_type_; }
     void set_flap_margin(double p_mm) { flap_margin_ = std::clamp(p_mm, 0.0, 20.0); }
     double get_flap_margin() const { return flap_margin_; }
@@ -197,6 +223,12 @@ public:
     double get_flap_arc_deg() const { return flap_shape_.arc_angle_deg; }
     void set_flap_mirror(bool p_on) { flap_shape_.mirror = p_on; }
     bool get_flap_mirror() const { return flap_shape_.mirror; }
+    void set_flap_burow(bool p_on) { flap_shape_.burow = p_on; }
+    bool get_flap_burow() const { return flap_shape_.burow; }
+    void set_flap_rhombus_deg(double p_deg) { flap_shape_.rhombus_angle_deg = std::clamp(p_deg, 50.0, 90.0); }
+    double get_flap_rhombus_deg() const { return flap_shape_.rhombus_angle_deg; }
+    void set_flap_z_angle_deg(double p_deg) { flap_shape_.z_angle_deg = std::clamp(p_deg, 30.0, 90.0); }
+    double get_flap_z_angle_deg() const { return flap_shape_.z_angle_deg; }
     void set_flap_undermine_margin(double p_mm) { flap_undermine_margin_ = std::clamp(p_mm, 0.0, 30.0); }
     double get_flap_undermine_margin() const { return flap_undermine_margin_; }
 
@@ -260,6 +292,14 @@ public:
     // For drawing a colour bar: title, colors (PackedColorArray, low to high),
     // low/high labels, and the current extreme value as text.
     Dictionary get_heatmap_legend() const;
+    // Short strokes along the principal stress direction, about p_spacing_mm
+    // apart over the skin, for the stress maps: segments (PackedVector3Array,
+    // world space, two points per stroke), strength (PackedFloat32Array, the
+    // stress over the colour scale). Tension (the largest principal stress)
+    // for the tension maps, squeezing (the smallest) for the squeezing map.
+    Dictionary get_tension_lines(double p_spacing_mm) const;
+    // The current map's value at a point on the skin: ok (bool), text.
+    Dictionary sample_heatmap(const Vector3& p_world_point) const;
     // One Dictionary per active grab: point/target (world space), force (N),
     // force_limited (bool), radius (mm).
     Array get_grab_info() const;
@@ -275,7 +315,12 @@ private:
     void ensure_render_objects();
     Eigen::Vector2d world_to_sheet(const Vector3& p_world) const;
     Color heat_color(double p_value) const;  // colour scale of the current heatmap mode
+    double heat_t(double p_value) const;      // position on that scale, 0..1 (beyond: off scale)
+    double stress_range() const;              // the stress scale in use, MPa
+    bool stress_map() const;
+    skinsim::Field heat_field() const;
     void update_skin_material();
+    void update_auto_range(const Eigen::VectorXd& p_values);
     // The sheet's current simulation. Cutting replaces it, so never keep this
     // pointer across a cut: call sim() again.
     skinsim::Simulation* sim() const { return sheet_ ? &sheet_->simulation() : nullptr; }
@@ -295,7 +340,7 @@ private:
     std::map<int, skinsim::SutureRecord> removed_sutures_;
     skinsim::ContactParams contact_params_;
     int iterations_per_frame_ = 5;
-    bool show_wireframe_ = true;
+    bool show_wireframe_ = false;  // on: the triangles over the skin (W)
     Color skin_color_ = Color(0.85, 0.64, 0.53);
     int heatmap_ = 0;
     double undermine_radius_ = 8.0;  // mm
@@ -303,6 +348,13 @@ private:
     double ellipse_ratio_ = 3.0;     // length : width
     double tip_angle_deg_ = 30.0;
     double heatmap_range_kpa_ = 50.0;
+    bool heatmap_relative_ = true;
+    bool heatmap_auto_range_ = true;
+    bool heatmap_contours_ = true;
+    double auto_range_kpa_ = 20.0;
+    // Triangles sampled for the tension strokes (rest grid), per topology.
+    mutable std::vector<int> stroke_triangles_;
+    mutable double stroke_spacing_ = -1.0;
     int flap_type_ = 0;
     double flap_margin_ = 2.0;            // mm of normal skin around the lesion
     skinsim::FlapShape flap_shape_;
@@ -323,6 +375,10 @@ private:
 
     Ref<ArrayMesh> render_mesh_;
     Ref<StandardMaterial3D> skin_material_;
+    // Heatmaps: a shader that looks the colour up in a ramp texture from the
+    // value (per pixel, so the scale is exact) and draws contour lines.
+    Ref<ShaderMaterial> heat_material_;
+    Ref<ImageTexture> heat_ramp_;
     Ref<StandardMaterial3D> wire_material_;
     Ref<StandardMaterial3D> lip_material_;
     Ref<PlaneMesh> wound_bed_mesh_;

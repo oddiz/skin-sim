@@ -45,6 +45,8 @@ const PEN_COLORS := [Color("#7b3fe4"), Color("#1f6feb"), Color("#1a1a1a")]
 const PEN_NAMES := ["Violet", "Blue", "Black"]
 
 var sheet: SkinSheet
+## Phone layout: grab bar at the top of the sheet (app_shell.gd drives it).
+var handle: Button
 ## Knot tightness for new sutures (and the selected one).
 var tightness := 0.0
 
@@ -63,7 +65,13 @@ var _suture_actions: Array[Button] = []
 var _contact_label: Label
 var _lesion_labels: Array[Label] = []
 var _flap_label: Label
-var _flap_rows := {}  # prop -> ParamRow (shown only for the flap types they apply to)
+var _flap_rows := {}  # prop -> ParamRow (shape rows shown only for the flaps they apply to)
+var _flap_picker: OptionButton
+var _flap_short: Label
+var _flap_card: PanelContainer
+var _flap_text := {}  # "moves", "uses", "design", "watch" -> Label
+## Flap tool: draw the design with the marker instead of cutting it.
+var flap_plan_only := false
 var _pen_buttons: Array[Button] = []
 
 
@@ -71,9 +79,26 @@ func setup(p_sheet: SkinSheet) -> void:
 	sheet = p_sheet
 	theme_type_variation = "Card"
 	mouse_filter = Control.MOUSE_FILTER_STOP  # clicks here never reach the skin
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 4)
+	add_child(outer)
+	# On a phone the panel is a sheet pulled up from the bottom: this handle
+	# (tap or drag) resizes it. Hidden on wide screens.
+	handle = Button.new()
+	handle.theme_type_variation = "FlatButton"
+	handle.focus_mode = Control.FOCUS_NONE
+	handle.icon = Style.icon("chevron_up")
+	handle.expand_icon = true
+	handle.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	handle.add_theme_constant_override("icon_max_width", 18)
+	handle.custom_minimum_size.y = 24
+	handle.tooltip_text = "Show more / less"
+	handle.visible = false
+	outer.add_child(handle)
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(_scroll)
+	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(_scroll)
 	var stack := VBoxContainer.new()
 	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var pad := MarginContainer.new()  # room for the scrollbar
@@ -295,24 +320,129 @@ func _build_excise(page: VBoxContainer) -> void:
 
 
 func _build_flap(page: VBoxContainer) -> void:
-	_row(page, {"prop": "flap_type", "label": "Flap", "type": "segment",
-		"options": ["Advance", "Rotate", "Rhomboid"],
-		"tip": "Advancement slides forward into a square defect. Rotation swings around into a triangular one. Rhomboid (Limberg) jumps across into a 60/120° rhombus."})
-	_row(page, {"prop": "flap_margin", "label": "Excision margin", "min": 0.0, "max": 10.0, "step": 0.5,
-		"fmt": "%.1f mm", "tip": "Normal skin removed all round the lesion: the defect is the lesion plus this margin."})
+	# The picker: every flap, grouped by how the skin moves.
+	_flap_picker = OptionButton.new()
+	_flap_picker.focus_mode = Control.FOCUS_NONE
+	_flap_picker.custom_minimum_size.y = Style.TOUCH
+	_flap_picker.fit_to_longest_item = false
+	for fam in FlapCatalog.FAMILIES.size():
+		_flap_picker.add_separator(FlapCatalog.FAMILIES[fam].to_upper())
+		for f in FlapCatalog.FLAPS:
+			if f.family == fam:
+				_flap_picker.add_item(f.name, f.type)
+	_flap_picker.item_selected.connect(func(index: int): _pick_flap(_flap_picker.get_item_id(index)))
+	page.add_child(_flap_picker)
+	_flap_short = Style.label("", "Caption", true)
+	page.add_child(_flap_short)
+	# The teaching card, folded away until asked for.
+	var learn := _fold_button(page, "About this flap", "info")
+	_flap_card = PanelContainer.new()
+	_flap_card.theme_type_variation = "Inset"
+	_flap_card.visible = false
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 4)
+	_flap_card.add_child(v)
+	var titles := {"moves": "HOW IT MOVES", "uses": "USED FOR", "design": "HOW TO DRAW IT", "watch": "WATCH FOR"}
+	for key in titles:
+		v.add_child(Style.label(titles[key], "SectionTitle"))
+		var body := Style.label("", "Caption", true)
+		v.add_child(body)
+		_flap_text[key] = body
+	page.add_child(_flap_card)
+	learn.toggled.connect(func(on: bool): _flap_card.visible = on)
+
+	_flap_rows["flap_margin"] = _row(page, {"prop": "flap_margin", "label": "Excision margin", "min": 0.0,
+		"max": 10.0, "step": 0.5, "fmt": "%.1f mm",
+		"tip": "Normal skin removed all round the lesion: the defect is the lesion plus this margin."})
 	_flap_rows["flap_length_ratio"] = _row(page, {"prop": "flap_length_ratio", "label": "Length : width",
 		"min": 0.5, "max": 6.0, "step": 0.1, "fmt": "%.1f : 1",
-		"tip": "A longer flap advances with less tension, but a long narrow flap risks the blood supply of its tip."})
+		"tip": "Advancement: a longer flap advances with less tension, but a long narrow flap risks the blood supply of its tip. V-Y: length of the V over the defect's width."})
 	_flap_rows["flap_arc_deg"] = _row(page, {"prop": "flap_arc_deg", "label": "Arc", "min": 30.0, "max": 240.0,
-		"step": 1.0, "fmt": "%.0f°", "tip": "Angle swept by the arc around the triangle's apex. Longer arcs spread the tension."})
+		"step": 1.0, "fmt": "%.0f°", "tip": "Angle the arc sweeps around its centre. Longer arcs spread the tension."})
+	_flap_rows["flap_rhombus_deg"] = _row(page, {"prop": "flap_rhombus_deg", "label": "Rhombus angle",
+		"min": 50.0, "max": 90.0, "step": 1.0, "fmt": "%.0f°",
+		"tip": "The defect's acute angle. 60° is Limberg's rhombus; the Dufourmentel design works for any."})
+	_flap_rows["flap_z_angle_deg"] = _row(page, {"prop": "flap_z_angle_deg", "label": "Limb angle",
+		"min": 30.0, "max": 90.0, "step": 5.0, "fmt": "%.0f°",
+		"tip": "Angle between the lateral limbs and the central one. 60° is classic (about 75% longer)."})
+	_flap_rows["flap_burow"] = _row(page, {"prop": "flap_burow", "label": "Burow's triangles", "type": "bool",
+		"tip": "Excise a small triangle beside the end of each incision, so the longer outer lip has no dog-ear."})
 	_flap_rows["flap_mirror"] = _row(page, {"prop": "flap_mirror", "label": "Mirror (other side)", "type": "bool",
 		"tip": "Build the flap on the other side of the drag direction."})
-	_row(page, {"prop": "flap_undermine_margin", "label": "Undermine beyond", "min": 0.0, "max": 30.0,
-		"step": 0.5, "fmt": "%.1f mm", "tip": "The flap and defect are undermined, plus this much skin around them."})
+	_row(page, {"prop": "flap_undermine_margin", "label": "Undermine beyond",
+		"min": 0.0, "max": 30.0, "step": 0.5, "fmt": "%.1f mm",
+		"tip": "The flaps and the defect are undermined, plus this much skin around them (island flaps keep their pedicle)."})
+	var plan := HBoxContainer.new()
+	var pl := Style.label("Plan with the marker")
+	pl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	plan.add_child(pl)
+	var plan_switch := CheckButton.new()
+	plan_switch.focus_mode = Control.FOCUS_NONE
+	plan_switch.toggled.connect(func(on: bool): flap_plan_only = on)
+	plan.add_child(plan_switch)
+	page.add_child(plan)
+	page.add_child(Style.label("On: the design is drawn on the skin instead of cut. Then cut along it yourself (Cut tool) and remove the defect (Excise tool, tap inside).",
+		"Caption", true))
 	var tie := _button(page, "Tie key sutures", "suture", func(): tie_key_sutures_requested.emit(), "PrimaryButton")
 	tie.tooltip_text = "Ties the last flap's key sutures (thread and tightness from the Suture tool): they pull the flap into place."
 	_flap_label = Style.label("", "Caption", true)
 	page.add_child(_flap_label)
+
+	# Flaps this simulator does not design.
+	var more := _fold_button(page, "Other local flaps", "chevron_down")
+	var others := VBoxContainer.new()
+	others.visible = false
+	others.add_theme_constant_override("separation", 6)
+	others.add_child(Style.label("Not simulated: interpolation flaps pass their pedicle over intact skin (a third dimension); the others are variants of the designs above.",
+		"Caption", true))
+	for o in FlapCatalog.OTHERS:
+		var n := Style.label(o[0])
+		n.add_theme_font_override("font", Style.FONT_SEMIBOLD)
+		others.add_child(n)
+		others.add_child(Style.label(o[1], "Caption", true))
+	page.add_child(others)
+	more.toggled.connect(func(on: bool): others.visible = on)
+	show_flap_type(sheet.flap_type)
+
+
+## A flat toggle button that folds a section open and closed.
+func _fold_button(page: VBoxContainer, text: String, icon_name: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.theme_type_variation = "FlatButton"
+	b.toggle_mode = true
+	b.focus_mode = Control.FOCUS_NONE
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.icon = Style.icon(icon_name)
+	b.expand_icon = true
+	b.add_theme_constant_override("icon_max_width", 16)
+	b.custom_minimum_size.y = 36
+	page.add_child(b)
+	return b
+
+
+## The picker chose a flap: set it, and start its length : width where that
+## flap is usually drawn (the slider means different things per flap).
+func _pick_flap(type: int) -> void:
+	sheet.flap_type = type
+	var f: Dictionary = FlapCatalog.by_type(type)
+	if f.has("ratio"):
+		sheet.flap_length_ratio = f.ratio
+	refresh()
+
+
+func show_flap_type(type: int) -> void:
+	var f: Dictionary = FlapCatalog.by_type(type)
+	for i in _flap_picker.item_count:
+		if not _flap_picker.is_item_separator(i) and _flap_picker.get_item_id(i) == type:
+			_flap_picker.select(i)
+	_flap_short.text = f.short
+	for key in _flap_text:
+		_flap_text[key].text = f[key]
+	for prop in ["flap_length_ratio", "flap_arc_deg", "flap_rhombus_deg", "flap_z_angle_deg", "flap_burow",
+			"flap_mirror"]:
+		_flap_rows[prop].visible = prop in f.shape
+	_flap_rows["flap_margin"].visible = type != 10  # the Z-plasty removes no skin
 
 
 func _build_mark(page: VBoxContainer) -> void:
@@ -345,15 +475,8 @@ func show_tool(tool: int) -> void:
 func refresh() -> void:
 	for r in _rows:
 		r.refresh()
-
-
-func _process(_delta: float) -> void:
-	if sheet == null:
-		return
-	# Only the shape setting that applies to the chosen flap type.
-	_flap_rows["flap_length_ratio"].visible = sheet.flap_type == 0
-	_flap_rows["flap_arc_deg"].visible = sheet.flap_type == 1
-	_flap_rows["flap_mirror"].visible = sheet.flap_type != 0
+	if _flap_picker != null:
+		show_flap_type(sheet.flap_type)
 
 
 func show_suture_tightness(t: float) -> void:
@@ -430,15 +553,20 @@ func show_flaps(info: Array) -> void:
 	var i := 0
 	for f in info:
 		i += 1
-		var kind: String = ["Advancement", "Rotation", "Rhomboid"][f.type]
+		var c: Dictionary = FlapCatalog.by_type(f.type)
+		var kind: String = c.name.get_slice(" (", 0)
 		var shape := ""
-		if f.type == 0:
-			shape = ", %.1f : 1" % f.ratio
-		elif f.type == 1:
-			shape = ", arc %.1f × width" % f.ratio
+		match int(f.type):
+			0, 3:
+				shape = ", %.1f : 1" % f.ratio
+			1, 7:
+				shape = ", arc %.1f × width" % f.ratio
+			10:
+				shape = ", +%.0f%% length" % (f.lengthening * 100.0)
+		var size := "" if f.type == 10 else ", %.0f mm defect" % f.diameter_mm
 		# Base stress: a rough sign of how hard the closure pulls on the
-		# pedicle; not a model of its blood supply.
-		lines.append("Flap %d: %s, %.0f mm defect%s. Base stress %+.0f kPa." % [
-			i, kind, f.diameter_mm, shape, f.base_stress_kpa])
+		# pedicle; not a model of its blood supply. Island flaps have no base.
+		var base := "" if f.type in [5, 6] else " Base stress %+.0f kPa." % f.base_stress_kpa
+		lines.append("Flap %d: %s%s%s.%s" % [i, kind, size, shape, base])
 	_flap_label.text = "\n".join(lines)
 	_flap_label.visible = not lines.is_empty()

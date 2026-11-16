@@ -116,6 +116,12 @@ enum class Field {
                          // Where real skin puckers (dog-ears), see wrinkling.hpp.
 };
 
+// Principal stresses of one triangle (for drawing tension directions).
+struct PrincipalStress {
+    double s1 = 0.0, s2 = 0.0;  // largest and smallest principal Cauchy stress, MPa
+    Eigen::Vector2d dir1 = Eigen::Vector2d::UnitX();  // unit direction of s1 (current shape)
+};
+
 // What a grab is doing right now (for drawing and for reporting forces).
 struct GrabInfo {
     int id = 0;
@@ -242,10 +248,19 @@ public:
     // --- output ---
     // One value per mesh triangle (0 for degenerate triangles, which the
     // solver skips). Stress is the Cauchy ("true") stress in the deformed skin.
-    Eigen::VectorXd triangle_field(Field field) const;
+    //
+    // relative = true: stress minus the stress of resting, intact skin (the
+    // in-vivo prestress, the same everywhere at rest). That is the stress the
+    // surgery added: untouched skin reads 0 however tight the skin is.
+    // Ignored for AreaChange and ExcessSkin.
+    Eigen::VectorXd triangle_field(Field field, bool relative = false) const;
     // One value per vertex: the area-weighted average of the surrounding
     // triangles, the usual way to draw smooth FEM results.
-    Eigen::VectorXd vertex_field(Field field) const;
+    Eigen::VectorXd vertex_field(Field field, bool relative = false) const;
+    // Principal stresses and direction per triangle (relative as above).
+    std::vector<PrincipalStress> triangle_principal(bool relative = false) const;
+    // Cauchy stress of resting, intact skin (from the prestretch alone), MPa.
+    Eigen::Matrix2d resting_stress() const;
 
     // --- solving ---
     // Run up to max_iterations Newton iterations. Returns immediately (and

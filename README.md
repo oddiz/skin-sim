@@ -99,15 +99,32 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 ## Controls
 
 The screen: tools on the left rail; the current tool's settings and results
-in the panel on the right; **View** (colour map, mesh, solver details),
-**Tissue** (body-site presets and skin properties, raw model parameters under
-"Advanced") and **⋯** (reset, clear) along the top. The line at the bottom
-says what to do next with the current tool; short messages above it report
-what just happened. Every setting has an (i) button with a short explanation.
+in the panel on the right; **Fit**, **View** (colour map, mesh, solver
+details), **Tissue** (body-site presets and skin properties, raw model
+parameters under "Advanced") and **⋯** (reset, clear) along the top. The line
+at the bottom says what to do next with the current tool; short messages above
+it report what just happened. Every setting has an (i) button with a short
+explanation.
+
+On a phone (a window narrower than 820 points) the skin fills the screen: the
+tools are a bar along the bottom (swipe it sideways for more), and the tool's
+settings are a sheet above it. Tap or drag the sheet's handle to show more
+(peek, half, full). The interface is drawn at the screen's pixel density
+(about 3 pixels per point on a phone), so it has the same physical size on
+every screen; `--ui-scale <x>` overrides it.
+
+**Moving around.** Two fingers pan the view and pinch to zoom; one finger uses
+the tool. A second finger that lands within a quarter of a second of the
+first, or before the first has moved, turns both into a two-finger gesture
+and cancels whatever the first had started (no stray cut or grab). Once a
+finger is busy with a tool, more fingers are ignored. With a mouse: the wheel
+zooms about the pointer, right or middle drag pans, Home or **Fit** frames the
+skin again.
 
 | Input | Action |
 |---|---|
-| Drag (Grab tool, G) | Grab and pull the skin with forceps; several fingers on a touch screen |
+| Drag (Grab tool, G) | Grab and pull the skin with forceps |
+| Two fingers / wheel / right drag | Pan and zoom the view; Home fits the skin again |
 | Drag (Cut tool, C), or Shift + drag | Draw an incision; it is made when you release |
 | Drag (Suture tool, S) | Press at the needle entry, release at the exit: a suture tied with the panel's knot tightness |
 | Tap a suture (Suture tool) | Select it; the knot tightness slider and thread picker then apply to it |
@@ -118,7 +135,7 @@ what just happened. Every setting has an (i) button with a short explanation.
 | Tap (Lesion tool, L) | Mark a lesion (diameter in the panel) |
 | Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
-| Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release |
+| Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release (or draws it with the marker: "Plan with the marker") |
 | "Tie key sutures" (Flap section) | Tie the last flap's key sutures: they pull it into place |
 | Drag (Mark tool, M) | Draw on the skin with a surgical marker to plan cuts and flaps (no effect on the skin). Lines are kept in tissue coordinates, so they stretch and move with the skin. Tap a line to erase it |
 | Z | Undo the last incision, suture, undermining stroke, lesion, excision, flap or marking |
@@ -166,9 +183,8 @@ yellow at 50%, red at 100%, grey when slack. Text is shown only where it helps
 and the one under the mouse. Labels read closing force and load (e.g.
 "3.4 N  86%"); the selected suture also shows its loop stress: the stress along
 the thread in the tissue the loop holds (+ stretched, - squeezed). The panel
-shows the selected suture in full. The heatmap
-shows the Cauchy (true) stress in the skin; the colour scale is set by the
-"Stress scale" slider so that different closures can be compared on one scale.
+shows the selected suture in full. The stress heatmaps
+show the Cauchy (true) stress in the skin (see "Reading the tension map").
 Where a single suture closes a gaping wound, the corner between the closed point
 and the open wound is a sharp notch: the stress right there keeps growing as the
 mesh is refined (as it would at any sharp notch in an elastic material). Suture
@@ -213,42 +229,92 @@ defect opens wider than the skin removed; close it with sutures. The heatmap's
 an ellipse that is too short or too blunt. That is where real skin would pucker
 into a dog-ear; the "excess skin" heatmap (M8) shows how much skin bunches up there.
 
-## Local flaps (M10)
+## Local flaps (M10, catalogue)
 
-Mark a lesion, pick a flap type in the panel's Flap section, then drag with
-the Flap tool from the lesion outward, towards where the flap should come
-from. While you drag, the design is previewed: the defect (purple, the lesion
-plus the excision margin all round), the flap (shaded blue), its incisions
-(red), its uncut base (dashed green: what it stays attached by) and its key
-sutures (dotted blue). On release the incisions are cut, the defect's skin is
-removed and the flap, the defect and a margin around them are undermined, all
-as one undo step. Prestressed skin retracts, so the defect opens. "Tie key
-sutures" then ties the design's key sutures (thread and tightness from the
-Suture section), pulling the flap into place. Close the rest with the Suture
-tool.
+Mark a lesion, pick a flap in the Flap panel, then drag with the Flap tool
+from the lesion outward, towards where the flap should come from. While you
+drag, the design is previewed: the defect (purple, the lesion plus the
+excision margin all round) and any Burow's triangles, the flaps (shaded
+blue), their incisions (red), their uncut bases (dashed green: what they stay
+attached by) and the key sutures (dotted blue). On release the incisions are
+cut, the defect's skin is removed and the flaps, the defect and a margin
+around them are undermined, all as one undo step. Prestressed skin retracts,
+so the defect opens. "Tie key sutures" then ties the design's key sutures
+(thread and tightness from the Suture panel), pulling the flaps into place.
+Close the rest with the Suture tool.
 
-| Type | Defect | Flap | Moves by |
-|---|---|---|---|
-| Advancement | square | two parallel limbs, length : width from the panel | sliding forward |
-| Rotation | triangle (height 2 x the defect's diameter) | an arc around the triangle's apex; arc angle from the panel | turning about the apex by the triangle's apex angle |
-| Rhomboid (Limberg) | rhombus, 60 / 120 degree angles | an identical rhombus beside it | turning 60 degrees about the far end of its base |
+Each flap has a teaching card ("About this flap"): how the skin moves, where
+it is used, how it is drawn and what to watch for. "Plan with the marker"
+draws the design on the skin instead of cutting it (violet: cut, blue: key
+sutures), to cut along it yourself.
 
-The key sutures pull each flap's leading corner to the far side of the defect
-(advancement: two across its width; rotation: the corner and halfway along;
-rhomboid: both moving corners plus one across the donor site's V). The panel
-shows each flap's design and its base stress: the mean largest principal
-stress along its uncut base, a rough sign of how hard the closure pulls on the
-pedicle. It is not a model of the flap's blood supply.
+| Family | Flap | Design here |
+|---|---|---|
+| Advancement | Advancement (U-flap) | square defect, two parallel limbs (length : width); optional Burow's triangles at their ends |
+| | H-plasty | two advancement flaps facing each other, each moving half the defect |
+| | A-T plasty | triangular defect, its base (the T's bar) extended both ways; drag towards the line the bar should lie in |
+| | V-Y island | a triangle cut free all round, left on its pedicle (not undermined), slides in; the V closes as a Y |
+| | Keystone (Behan) | 3 : 1 fusiform defect, a keystone-shaped island beside it with V-Y ends |
+| Rotation | Rotation | triangular defect, an arc centred on its apex (arc angle) |
+| | O-Z | round defect, two opposite arcs, each flap fills half; the scar is an S |
+| Transposition | Rhomboid (Limberg) | 60 / 120 degree rhombus, an identical rhombus beside it, turned 60 degrees |
+| | Dufourmentel | rhombus of any angle (50-90 degrees); first limb bisects the extended short diagonal and side, second parallel to the long diagonal |
+| | Bilobed (Zitelli) | round defect, pivot one radius from its edge, two lobes 45 degrees apart, Burow's triangle at the pivot |
+| | Z-plasty | the drag is the central limb; two equal limbs at the chosen angle (30-90 degrees: about 25-125% longer) |
+
+The Z-plasty is only drawn with the marker: its two flaps are lifted over each
+other, which a flat sheet cannot do (tied in the simulation they pull through
+each other at forces no thread survives). Interpolation flaps (paramedian
+forehead, nasolabial, Abbe) pass their pedicle over intact skin and are listed
+in the panel for reference only.
+
+An island flap (V-Y, keystone) is held by its *pedicle*: the fat and vessels
+beneath it. Here that is its tethering to the base, so its middle is not
+undermined; only a rim around it is. It therefore moves less than a flap
+raised on undermined skin, as in surgery.
+
+The panel shows each flap's design and its base stress: the mean largest
+principal stress along its uncut base, a rough sign of how hard the closure
+pulls on the pedicle. It is not a model of the flap's blood supply.
 
 Checked against surgical rules of thumb (tests in `test_flaps.cpp`): a longer
 rotation arc closes with less tension (70 degrees: 2.5 N, 150 degrees: 0.6 N on
 the key sutures), and so does a longer advancement flap (1 : 1: 2.3 N, 3 : 1:
-1.3 N). The numbers themselves are illustrative (uncalibrated tissue).
+1.3 N). Every design closes its defect with its key sutures, none above about
+60% of a 4-0 thread except the Limberg's donor-site corner (~85%). The numbers
+themselves are illustrative (uncalibrated tissue).
 
-Not modelled yet: Burow's triangles (the small triangles excised at an
-advancement flap's base to remove its dog-ears; the excess skin heatmap shows
-where they would go), double flaps (bilateral advancement, bilobed), and
-choosing the direction to suit the RSTL automatically.
+Sources for the designs: StatPearls (local flaps, rhombic flaps); Zitelli's
+bilobed geometry (pivot one radius away, 45-50 degree lobes); Webster et al.
+1978 and Dufourmentel 1962 via review articles; Behan 2003 (keystone).
+
+## Reading the tension map
+
+The **Tension** map colours the largest principal stress; **Squeezing** the
+smallest; **Overall stress** the von Mises stress (View, or H to cycle).
+
+- **Only what the surgery added** (on by default): living skin is always under
+  tension (its prestress, Tissue panel), so with absolute stress every bit of
+  skin is reddish. This subtracts the resting skin's own stress: untouched
+  skin is neutral and the colours show what cutting, pulling and suturing
+  changed.
+- **Automatic scale** (on by default): the colour scale is a round number
+  (1, 2, 5 x 10^n kPa) just above the stress over most of the skin (its 92nd
+  percentile), so a few extreme points (needle holes, flap corners) don't turn
+  everything red. It only changes when the stresses outgrow it or fall well
+  below it. Turn it off for a fixed scale, to compare closures on one scale.
+- **Contour lines**: lines of equal stress every tenth of the scale (ticks on
+  the legend), like the contours of a map: close together where the stress
+  changes fast. They carry on beyond the end of the scale, so a saturated red
+  area still shows where it is worst.
+- **Direction strokes**: a short stroke every ~20 pixels along the direction
+  the skin is pulled (squeezed, on the Squeezing map), longer and darker
+  where the stress is higher. Around a flap they trace the lines of tension.
+- The value under the mouse is shown next to it.
+
+The colours are computed per pixel on the graphics card: the stress's place
+on the scale is passed with each vertex and a small shader looks it up in a
+colour ramp and draws the contour lines.
 
 ## Wrinkling (M8)
 
@@ -286,8 +352,8 @@ in `solver/include/skinsim/wrinkling.hpp`.
 
 ## Planned features
 
-- More flap designs: Burow's triangles, bilateral advancement (H-plasty),
-  bilobed and note flaps.
+- Z-plasty in the simulation (the flaps would need to pass over each other).
+- Guided scenarios (UI4) and a tissue drawer polish (UI3).
 - Cheese-wiring (a suture tearing through the tissue it bites) as a second way
   for a suture to fail.
 - Friction between the lips; calibration against measured skin properties.

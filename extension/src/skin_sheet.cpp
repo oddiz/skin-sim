@@ -143,6 +143,13 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("tie_key_sutures", "tightness"), &SkinSheet::tie_key_sutures);
     ClassDB::bind_method(D_METHOD("get_flap_count"), &SkinSheet::get_flap_count);
     ClassDB::bind_method(D_METHOD("get_flap_info"), &SkinSheet::get_flap_info);
+    ClassDB::bind_method(D_METHOD("get_flap_design_rest", "start", "end"), &SkinSheet::get_flap_design_rest);
+    ClassDB::bind_method(D_METHOD("set_flap_burow", "on"), &SkinSheet::set_flap_burow);
+    ClassDB::bind_method(D_METHOD("get_flap_burow"), &SkinSheet::get_flap_burow);
+    ClassDB::bind_method(D_METHOD("set_flap_rhombus_deg", "deg"), &SkinSheet::set_flap_rhombus_deg);
+    ClassDB::bind_method(D_METHOD("get_flap_rhombus_deg"), &SkinSheet::get_flap_rhombus_deg);
+    ClassDB::bind_method(D_METHOD("set_flap_z_angle_deg", "deg"), &SkinSheet::set_flap_z_angle_deg);
+    ClassDB::bind_method(D_METHOD("get_flap_z_angle_deg"), &SkinSheet::get_flap_z_angle_deg);
     ClassDB::bind_method(D_METHOD("set_flap_type", "type"), &SkinSheet::set_flap_type);
     ClassDB::bind_method(D_METHOD("get_flap_type"), &SkinSheet::get_flap_type);
     ClassDB::bind_method(D_METHOD("set_flap_margin", "mm"), &SkinSheet::set_flap_margin);
@@ -191,6 +198,15 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_heatmap"), &SkinSheet::get_heatmap);
     ClassDB::bind_method(D_METHOD("set_heatmap_range_kpa", "kpa"), &SkinSheet::set_heatmap_range_kpa);
     ClassDB::bind_method(D_METHOD("get_heatmap_range_kpa"), &SkinSheet::get_heatmap_range_kpa);
+    ClassDB::bind_method(D_METHOD("set_heatmap_relative", "on"), &SkinSheet::set_heatmap_relative);
+    ClassDB::bind_method(D_METHOD("get_heatmap_relative"), &SkinSheet::get_heatmap_relative);
+    ClassDB::bind_method(D_METHOD("set_heatmap_auto_range", "on"), &SkinSheet::set_heatmap_auto_range);
+    ClassDB::bind_method(D_METHOD("get_heatmap_auto_range"), &SkinSheet::get_heatmap_auto_range);
+    ClassDB::bind_method(D_METHOD("set_heatmap_contours", "on"), &SkinSheet::set_heatmap_contours);
+    ClassDB::bind_method(D_METHOD("get_heatmap_contours"), &SkinSheet::get_heatmap_contours);
+    ClassDB::bind_method(D_METHOD("get_heatmap_range_now"), &SkinSheet::get_heatmap_range_now);
+    ClassDB::bind_method(D_METHOD("get_tension_lines", "spacing_mm"), &SkinSheet::get_tension_lines);
+    ClassDB::bind_method(D_METHOD("sample_heatmap", "world_point"), &SkinSheet::sample_heatmap);
     ClassDB::bind_method(D_METHOD("set_iterations_per_frame", "n"), &SkinSheet::set_iterations_per_frame);
     ClassDB::bind_method(D_METHOD("get_iterations_per_frame"), &SkinSheet::get_iterations_per_frame);
     ClassDB::bind_method(D_METHOD("set_show_wireframe", "show"), &SkinSheet::set_show_wireframe);
@@ -284,8 +300,15 @@ void SkinSheet::_bind_methods() {
                  "set_tip_angle_deg", "get_tip_angle_deg");
 
     ADD_GROUP("Flaps", "");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "flap_type", PROPERTY_HINT_ENUM, "Advancement,Rotation,Rhomboid"),
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "flap_type", PROPERTY_HINT_ENUM,
+                              "Advancement,Rotation,Rhomboid,H-plasty,A-T plasty,V-Y island,Keystone,O-Z,"
+                              "Dufourmentel,Bilobed,Z-plasty"),
                  "set_flap_type", "get_flap_type");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "flap_burow"), "set_flap_burow", "get_flap_burow");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_rhombus_deg", PROPERTY_HINT_RANGE, "50,90,1,suffix:deg"),
+                 "set_flap_rhombus_deg", "get_flap_rhombus_deg");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_z_angle_deg", PROPERTY_HINT_RANGE, "30,90,1,suffix:deg"),
+                 "set_flap_z_angle_deg", "get_flap_z_angle_deg");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_margin", PROPERTY_HINT_RANGE, "0,20,0.5,suffix:mm"),
                  "set_flap_margin", "get_flap_margin");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flap_length_ratio", PROPERTY_HINT_RANGE, "0.5,6,0.1"),
@@ -336,6 +359,10 @@ void SkinSheet::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heatmap_range_kpa", PROPERTY_HINT_RANGE,
                               "1,2000,1,exp,suffix:kPa"),
                  "set_heatmap_range_kpa", "get_heatmap_range_kpa");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "heatmap_relative"), "set_heatmap_relative", "get_heatmap_relative");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "heatmap_auto_range"), "set_heatmap_auto_range",
+                 "get_heatmap_auto_range");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "heatmap_contours"), "set_heatmap_contours", "get_heatmap_contours");
 
     ADD_SIGNAL(MethodInfo("mesh_rebuilt"));   // new sheet (geometry changed)
     ADD_SIGNAL(MethodInfo("cuts_changed"));   // incision made, undone or cleared
@@ -559,18 +586,45 @@ Dictionary SkinSheet::get_flap_preview(const Vector3& p_start, const Vector3& p_
         }
         return pts;
     };
+    auto all = [&](const std::vector<skinsim::Polyline>& polys) {
+        Array a;
+        for (const skinsim::Polyline& p : polys) a.push_back(now(p));
+        return a;
+    };
+    out["type"] = static_cast<int>(d.type);
     out["defect"] = now(d.defect);
-    out["flap"] = now(d.flap);
-    out["base"] = now(d.base);
-    Array incisions;
-    for (const skinsim::Polyline& p : d.incisions) incisions.push_back(now(p));
-    out["incisions"] = incisions;
+    out["flaps"] = all(d.flaps);
+    out["bases"] = all(d.bases);
+    out["burow"] = all(d.burow);
+    out["incisions"] = all(d.incisions);
     Array keys;
     for (const auto& kp : d.key_sutures) keys.push_back(now({kp.first, kp.second}));
     out["key_sutures"] = keys;
     out["ratio"] = d.length_to_width;
     out["turn_deg"] = d.turn_deg;
     out["diameter_mm"] = d.defect_diameter;
+    out["lengthening"] = d.lengthening;
+    return out;
+}
+
+Dictionary SkinSheet::get_flap_design_rest(const Vector3& p_start, const Vector3& p_end) const {
+    Dictionary out;
+    const skinsim::FlapDesign d = flap_design(p_start, p_end);
+    if (!d.valid) return out;
+    auto rest = [](const skinsim::Polyline& poly) {
+        PackedVector2Array pts;
+        for (const Eigen::Vector2d& X : poly) pts.push_back(Vector2(static_cast<real_t>(X.x()), static_cast<real_t>(X.y())));
+        return pts;
+    };
+    Array cuts, flaps, keys;
+    if (!d.defect.empty()) cuts.push_back(rest(d.defect));
+    for (const skinsim::Polyline& p : d.burow) cuts.push_back(rest(p));
+    for (const skinsim::Polyline& p : d.incisions) cuts.push_back(rest(p));
+    for (const skinsim::Polyline& p : d.flaps) flaps.push_back(rest(p));
+    for (const auto& kp : d.key_sutures) keys.push_back(rest({kp.first, kp.second}));
+    out["cuts"] = cuts;
+    out["flaps"] = flaps;
+    out["key_sutures"] = keys;
     return out;
 }
 
@@ -606,6 +660,7 @@ Array SkinSheet::get_flap_info() const {
         f["ratio"] = d.length_to_width;
         f["turn_deg"] = d.turn_deg;
         f["diameter_mm"] = d.defect_diameter;
+        f["lengthening"] = d.lengthening;
         f["base_stress_kpa"] = sheet_->flap_base_stress(i) * 1000.0;
         out.push_back(f);
     }
@@ -724,6 +779,64 @@ void SkinSheet::set_heatmap_range_kpa(double p_kpa) {
     if (is_inside_tree()) update_render_mesh();
 }
 
+void SkinSheet::set_heatmap_relative(bool p_on) {
+    heatmap_relative_ = p_on;
+    auto_range_kpa_ = 0.0;  // re-pick the scale for the new quantity
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::set_heatmap_auto_range(bool p_on) {
+    heatmap_auto_range_ = p_on;
+    auto_range_kpa_ = 0.0;
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::set_heatmap_contours(bool p_on) {
+    heatmap_contours_ = p_on;
+    if (heat_material_.is_valid()) heat_material_->set_shader_parameter("line_strength", p_on ? 0.55 : 0.0);
+}
+
+bool SkinSheet::stress_map() const {
+    return heatmap_ == HEATMAP_MAX_PRINCIPAL || heatmap_ == HEATMAP_MIN_PRINCIPAL || heatmap_ == HEATMAP_VON_MISES;
+}
+
+skinsim::Field SkinSheet::heat_field() const {
+    return heatmap_ == HEATMAP_MAX_PRINCIPAL   ? skinsim::Field::MaxPrincipalStress
+           : heatmap_ == HEATMAP_MIN_PRINCIPAL ? skinsim::Field::MinPrincipalStress
+           : heatmap_ == HEATMAP_VON_MISES     ? skinsim::Field::VonMisesStress
+           : heatmap_ == HEATMAP_EXCESS_SKIN   ? skinsim::Field::ExcessSkin
+                                               : skinsim::Field::AreaChange;
+}
+
+double SkinSheet::get_heatmap_range_now() const { return stress_range() * 1000.0; }
+
+double SkinSheet::stress_range() const {
+    const double kpa = heatmap_auto_range_ && auto_range_kpa_ > 0.0 ? auto_range_kpa_ : heatmap_range_kpa_;
+    return kpa / 1000.0;  // solver stresses are in MPa
+}
+
+// The automatic scale: a round number (1, 2, 5 x 10^k kPa) just above the
+// 92nd percentile of the stress magnitude over the skin, so a few extreme
+// spots (suture holes, flap corners) do not wash everything else out. It
+// only changes when the stresses outgrow it or fall well below it, so the
+// colours do not flicker while the skin settles.
+void SkinSheet::update_auto_range(const Eigen::VectorXd& p_values) {
+    if (!heatmap_auto_range_ || !stress_map() || p_values.size() == 0) return;
+    std::vector<double> mag(p_values.size());
+    for (Eigen::Index i = 0; i < p_values.size(); ++i) mag[i] = std::abs(p_values[i]) * 1000.0;  // kPa
+    const size_t k = static_cast<size_t>(0.92 * (mag.size() - 1));
+    std::nth_element(mag.begin(), mag.begin() + k, mag.end());
+    const double level = std::max(mag[k], 5.0);  // floor: noise on intact skin stays pale
+    const double decade = std::pow(10.0, std::floor(std::log10(level)));
+    double nice = 10.0 * decade;
+    for (double m : {1.0, 2.0, 5.0})
+        if (m * decade >= level) {
+            nice = m * decade;
+            break;
+        }
+    if (auto_range_kpa_ <= 0.0 || nice > auto_range_kpa_ || nice < 0.4 * auto_range_kpa_) auto_range_kpa_ = nice;
+}
+
 void SkinSheet::update_skin_material() {
     if (skin_material_.is_null()) return;
     if (is_inside_tree()) update_render_mesh();  // skin colour lives in the vertex colours
@@ -736,6 +849,23 @@ void SkinSheet::update_skin_material() {
     skin_material_->set_shading_mode(heat ? BaseMaterial3D::SHADING_MODE_UNSHADED
                                           : BaseMaterial3D::SHADING_MODE_PER_PIXEL);
     skin_material_->set_albedo(Color(1, 1, 1));
+    if (heat_material_.is_null()) return;
+    // The ramp for this map, 256 steps: the shader samples it per pixel.
+    Ref<Image> img = Image::create_empty(256, 1, false, Image::FORMAT_RGBA8);
+    for (int i = 0; i < 256; ++i) {
+        const double t = i / 255.0;
+        const bool diverging = heatmap_ == HEATMAP_MAX_PRINCIPAL || heatmap_ == HEATMAP_MIN_PRINCIPAL ||
+                               heatmap_ == HEATMAP_AREA_CHANGE;
+        img->set_pixel(i, 0, diverging ? ramp(kDiverging, 5, t) : ramp(kSequential, 5, t));
+    }
+    const bool two_sided = heatmap_ == HEATMAP_MAX_PRINCIPAL || heatmap_ == HEATMAP_MIN_PRINCIPAL ||
+                           heatmap_ == HEATMAP_AREA_CHANGE;
+    heat_material_->set_shader_parameter("skip_line", two_sided ? 5.0 : -10.0);
+    if (heat_ramp_.is_null())
+        heat_ramp_ = ImageTexture::create_from_image(img);
+    else
+        heat_ramp_->update(img);
+    heat_material_->set_shader_parameter("ramp", heat_ramp_);
 }
 
 void SkinSheet::set_iterations_per_frame(int p_iterations) {
@@ -932,16 +1062,27 @@ Dictionary SkinSheet::get_contact_info() const {
 // Info
 // ---------------------------------------------------------------------------
 
-Color SkinSheet::heat_color(double p_value) const {
-    const double range = heatmap_range_kpa_ / 1000.0;  // solver stresses are in MPa
+double SkinSheet::heat_t(double p_value) const {
+    const double range = stress_range();
     switch (heatmap_) {
         case HEATMAP_MAX_PRINCIPAL:
-        case HEATMAP_MIN_PRINCIPAL: return ramp(kDiverging, 5, 0.5 + 0.5 * p_value / range);
-        case HEATMAP_VON_MISES: return ramp(kSequential, 5, p_value / range);
-        case HEATMAP_EXCESS_SKIN: return ramp(kSequential, 5, p_value / kExcessRange);
+        case HEATMAP_MIN_PRINCIPAL: return 0.5 + 0.5 * p_value / range;
+        case HEATMAP_VON_MISES: return p_value / range;
+        case HEATMAP_EXCESS_SKIN: return p_value / kExcessRange;
         case HEATMAP_AREA_CHANGE:
             // Log scale: halving and doubling are equally far from "unchanged".
-            return ramp(kDiverging, 5, 0.5 + 0.5 * std::log(p_value > 1e-9 ? p_value : 1e-9) / std::log(kAreaRange));
+            return 0.5 + 0.5 * std::log(p_value > 1e-9 ? p_value : 1e-9) / std::log(kAreaRange);
+        default: return 0.0;
+    }
+}
+
+Color SkinSheet::heat_color(double p_value) const {
+    switch (heatmap_) {
+        case HEATMAP_MAX_PRINCIPAL:
+        case HEATMAP_MIN_PRINCIPAL:
+        case HEATMAP_AREA_CHANGE: return ramp(kDiverging, 5, heat_t(p_value));
+        case HEATMAP_VON_MISES:
+        case HEATMAP_EXCESS_SKIN: return ramp(kSequential, 5, heat_t(p_value));
         default: return skin_color_;
     }
 }
@@ -949,21 +1090,21 @@ Color SkinSheet::heat_color(double p_value) const {
 Dictionary SkinSheet::get_heatmap_legend() const {
     Dictionary d;
     if (heatmap_ == HEATMAP_OFF || !sim()) return d;
-    const double range = heatmap_range_kpa_ / 1000.0;
+    const double range = stress_range();
     double lo = 0.0, hi = range;
     String title, unit = " kPa";
     double scale = 1000.0;  // MPa -> kPa for display
     skinsim::Field field = skinsim::Field::VonMisesStress;
     if (heatmap_ == HEATMAP_MAX_PRINCIPAL) {
-        title = "Max principal stress";
+        title = heatmap_relative_ ? "Added tension" : "Max principal stress";
         field = skinsim::Field::MaxPrincipalStress;
         lo = -range;
     } else if (heatmap_ == HEATMAP_MIN_PRINCIPAL) {
-        title = "Min principal stress";
+        title = heatmap_relative_ ? "Added squeezing" : "Min principal stress";
         field = skinsim::Field::MinPrincipalStress;
         lo = -range;
     } else if (heatmap_ == HEATMAP_VON_MISES) {
-        title = "Von Mises stress";
+        title = heatmap_relative_ ? "Added von Mises stress" : "Von Mises stress";
     } else if (heatmap_ == HEATMAP_EXCESS_SKIN) {
         title = "Excess skin (wrinkles)";
         field = skinsim::Field::ExcessSkin;
@@ -985,7 +1126,7 @@ Dictionary SkinSheet::get_heatmap_legend() const {
         const double v = (heatmap_ == HEATMAP_AREA_CHANGE) ? lo * std::pow(hi / lo, t) : lo + t * (hi - lo);
         colors.push_back(heat_color(v));
     }
-    const Eigen::VectorXd values = sim()->vertex_field(field);
+    const Eigen::VectorXd values = sim()->vertex_field(field, heatmap_relative_);
     String extreme;
     if (values.size() > 0) {
         if (heatmap_ == HEATMAP_AREA_CHANGE)
@@ -1000,6 +1141,10 @@ Dictionary SkinSheet::get_heatmap_legend() const {
     d["low"] = vformat(heatmap_ == HEATMAP_AREA_CHANGE ? "%.2f%s" : "%.0f%s", lo * scale, unit);
     d["high"] = vformat(heatmap_ == HEATMAP_AREA_CHANGE ? "%.2f%s" : "%.0f%s", hi * scale, unit);
     d["extreme"] = extreme;
+    // Contour lines: every tenth of the scale (every fifth either side of 0
+    // on the two-sided maps); the overlay draws matching ticks.
+    d["ticks"] = heatmap_contours_ ? 10 : 0;
+    d["auto"] = heatmap_auto_range_ && stress_map();
     return d;
 }
 
@@ -1045,6 +1190,73 @@ Array SkinSheet::get_grab_info() const {
     return out;
 }
 
+Dictionary SkinSheet::get_tension_lines(double p_spacing_mm) const {
+    Dictionary out;
+    const skinsim::Simulation* s = sim();
+    if (!s || !stress_map()) return out;
+    const double spacing = std::clamp(p_spacing_mm, 1.0, 50.0);
+    // One triangle per grid point of the rest shape: the strokes ride with
+    // the tissue instead of swimming over it. Found again only after a cut.
+    if (stroke_spacing_ != spacing || stroke_triangles_.empty()) {
+        stroke_triangles_.clear();
+        stroke_spacing_ = spacing;
+        const skinsim::TriangleLocator locator(mesh_.rest_positions, mesh_.triangles);
+        const double half_w = 0.5 * width_, half_h = 0.5 * height_;
+        for (double y = -half_h + 0.5 * spacing; y < half_h; y += spacing)
+            for (double x = -half_w + 0.5 * spacing; x < half_w; x += spacing) {
+                const int t = locator.locate(Eigen::Vector2d(x, y), nullptr);
+                if (t >= 0) stroke_triangles_.push_back(t);
+            }
+    }
+    const std::vector<skinsim::PrincipalStress> p = s->triangle_principal(heatmap_relative_);
+    const Eigen::Map<const Eigen::Matrix2Xd> x = s->positions();
+    const double range = stress_range();
+    const bool squeezing = heatmap_ == HEATMAP_MIN_PRINCIPAL;
+    PackedVector3Array segments;
+    PackedFloat32Array strength;
+    for (int t : stroke_triangles_) {
+        if (t >= static_cast<int>(p.size())) continue;
+        // Tension: along the largest principal stress. Squeezing: the
+        // smallest, at right angles to it.
+        const double value = squeezing ? -p[t].s2 : p[t].s1;
+        const double rel = value / range;
+        if (rel < 0.08) continue;
+        Eigen::Vector2d dir = squeezing ? Eigen::Vector2d(-p[t].dir1.y(), p[t].dir1.x()) : p[t].dir1;
+        const skinsim::Triangle& tri = mesh_.triangles[t];
+        const Eigen::Vector2d centre = (x.col(tri[0]) + x.col(tri[1]) + x.col(tri[2])) / 3.0;
+        const double len = spacing * (0.3 + 0.55 * std::min(rel, 1.0));
+        segments.push_back(to_global(to_godot(centre - 0.5 * len * dir, kWireLift)));
+        segments.push_back(to_global(to_godot(centre + 0.5 * len * dir, kWireLift)));
+        strength.push_back(static_cast<float>(rel));
+    }
+    out["segments"] = segments;
+    out["strength"] = strength;
+    return out;
+}
+
+Dictionary SkinSheet::sample_heatmap(const Vector3& p_world_point) const {
+    Dictionary out;
+    out["ok"] = false;
+    const skinsim::Simulation* s = sim();
+    if (!s || heatmap_ == HEATMAP_OFF) return out;
+    const Eigen::Map<const Eigen::Matrix2Xd> x = s->positions();
+    const skinsim::TriangleLocator locator(Eigen::Matrix2Xd(x), mesh_.triangles);
+    const int t = locator.locate(world_to_sheet(p_world_point), nullptr);
+    if (t < 0) return out;
+    const double v = s->triangle_field(heat_field(), heatmap_relative_)[t];
+    String text;
+    if (heatmap_ == HEATMAP_AREA_CHANGE)
+        text = vformat("%.2fx area", v);
+    else if (heatmap_ == HEATMAP_EXCESS_SKIN)
+        text = vformat("%.0f%% excess", v * 100.0);
+    else
+        text = vformat("%+.0f kPa", v * 1000.0);
+    out["ok"] = true;
+    out["text"] = text;
+    out["value"] = v;
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -1057,6 +1269,38 @@ void SkinSheet::ensure_render_objects() {
     skin_material_.instantiate();
     skin_material_->set_albedo(skin_color_);
     skin_material_->set_roughness(0.85);
+    update_skin_material();
+
+    // The heatmap shader. UV.x holds the value's position on the colour
+    // scale (0..1; beyond = off the scale). Colours come from the ramp; the
+    // contour lines are where UV.x * bands crosses a whole number, drawn a
+    // constant ~1 px wide (fwidth: how fast it changes per pixel). They carry
+    // on beyond the scale, so a saturated area still shows its gradient.
+    Ref<Shader> shader;
+    shader.instantiate();
+    shader->set_code(R"(shader_type spatial;
+render_mode unshaded;
+uniform sampler2D ramp : source_color, filter_linear, repeat_disable;
+uniform float bands = 10.0;
+uniform float line_strength = 0.55;
+uniform float skip_line = -10.0;  // the zero line of two-sided maps (it would trace noise)
+varying float t;
+void vertex() { t = UV.x; }
+void fragment() {
+    vec3 c = texture(ramp, vec2(clamp(t, 0.0, 1.0), 0.5)).rgb;
+    float f = t * bands;
+    float w = max(fwidth(f), 1e-4);
+    float d = abs(fract(f + 0.5) - 0.5);
+    float line = 1.0 - smoothstep(0.5 * w, 1.5 * w, d);
+    line *= step(0.5, abs(f - skip_line));
+    // Fade the lines where they would crowd into a smear.
+    line *= clamp(1.5 - 4.0 * w, 0.0, 1.0);
+    ALBEDO = mix(c, c * 0.35, line * line_strength);
+}
+)");
+    heat_material_.instantiate();
+    heat_material_->set_shader(shader);
+    heat_material_->set_shader_parameter("line_strength", heatmap_contours_ ? 0.55 : 0.0);
     update_skin_material();
 
     wire_material_.instantiate();
@@ -1105,6 +1349,7 @@ void SkinSheet::rebuild(bool p_keep_cuts) {
 
 void SkinSheet::topology_changed() {
     mesh_ = sheet_->mesh();
+    stroke_triangles_.clear();  // new triangles: sample them again
     edges_ = skinsim::unique_edges(mesh_);
     push_params();  // a cut creates a new Simulation; it copies params, but be explicit
     update_render_mesh();
@@ -1156,17 +1401,15 @@ void SkinSheet::update_render_mesh() {
     // Heatmap: one colour per vertex; the GPU blends them smoothly across
     // each triangle. Values come from the solver's vertex-averaged field.
     if (heatmap_ != HEATMAP_OFF) {
-        const skinsim::Field field = heatmap_ == HEATMAP_MAX_PRINCIPAL   ? skinsim::Field::MaxPrincipalStress
-                                     : heatmap_ == HEATMAP_MIN_PRINCIPAL ? skinsim::Field::MinPrincipalStress
-                                     : heatmap_ == HEATMAP_VON_MISES     ? skinsim::Field::VonMisesStress
-                                     : heatmap_ == HEATMAP_EXCESS_SKIN   ? skinsim::Field::ExcessSkin
-                                                                         : skinsim::Field::AreaChange;
-        const Eigen::VectorXd values = s->vertex_field(field);
-        PackedColorArray colors;
-        colors.resize(n_verts);
-        Color* cw = colors.ptrw();
-        for (int i = 0; i < n_verts; ++i) cw[i] = heat_color(values[i]);
-        arrays[Mesh::ARRAY_COLOR] = colors;
+        const Eigen::VectorXd values = s->vertex_field(heat_field(), heatmap_relative_);
+        update_auto_range(values);
+        // The value's position on the colour scale goes into the UVs; the
+        // shader turns it into a colour (and contour lines) per pixel.
+        PackedVector2Array uvs;
+        uvs.resize(n_verts);
+        Vector2* uw = uvs.ptrw();
+        for (int i = 0; i < n_verts; ++i) uw[i] = Vector2(static_cast<real_t>(heat_t(values[i])), 0);
+        arrays[Mesh::ARRAY_TEX_UV] = uvs;
     } else {
         // Plain skin; undermined areas a duskier, darker shade so the
         // painted region is visible.
@@ -1182,7 +1425,9 @@ void SkinSheet::update_render_mesh() {
 
     render_mesh_->clear_surfaces();
     render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
-    render_mesh_->surface_set_material(0, skin_material_);
+    render_mesh_->surface_set_material(0, heatmap_ != HEATMAP_OFF && heat_material_.is_valid()
+                                              ? Ref<Material>(heat_material_)
+                                              : Ref<Material>(skin_material_));
 
     // --- Surface 1: wireframe ------------------------------------------------
     if (show_wireframe_) {

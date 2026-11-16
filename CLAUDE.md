@@ -96,9 +96,18 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   UI built in code under game/ui/ (style.gd tokens + Theme, app_shell, context_panel per tool,
   tissue_drawer, param_row). Inter font (OFL) + Lucide icons (ISC). Mark (pen) tool: markings
   in rest coordinates (SkinSheet.to_rest / rest_to_world).
+  UI2: narrow layout (< 820 logical px: bottom tool bar + pull-up context sheet), UI scale
+  from the screen's pixel density (content_scale_size = window / scale), two-finger pan/pinch
+  with gesture arbitration (main.gd _touch_down), wheel / right-drag / Home on desktop.
+- Flap catalogue: 11 designs in solver/flaps.cpp (FlapType numbers are stored: never
+  renumber), teaching text in game/ui/flap_catalog.gd. Island flaps (V-Y, keystone) are not
+  undermined in the middle (pedicle). Z-plasty is marker-only (flaps would cross in 2D).
+- Tension map: stress relative to resting skin (Simulation::resting_stress), auto scale
+  (92nd percentile, 1-2-5 steps, hysteresis), contour shader (UV.x = scale position),
+  principal-direction strokes (SkinSheet.get_tension_lines), value under the pointer.
 
 ## Planned features
-- More flap designs (Burow's triangles, bilateral advancement, bilobed).
+- Z-plasty in the simulation; scenarios (UI4); tissue drawer polish (UI3).
 - Cheese-wiring (suture tearing through tissue): deliberately left out of M9.
 - Friction between the lips; calibration against measured skin properties.
 

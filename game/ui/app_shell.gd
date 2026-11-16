@@ -1,7 +1,9 @@
 class_name AppShell
 extends Control
-## The whole user interface around the skin, built in code:
+## The whole user interface around the skin, built in code. Two layouts,
+## switched live as the window changes (a phone turning, a browser resized):
 ##
+## Wide (a computer, a tablet on its side):
 ##   +------+----------------------------------------+-----------+
 ##   | tool | top bar: title  status  View  Tissue ? |  context  |
 ##   | rail |                                        |  panel    |
@@ -10,28 +12,44 @@ extends Control
 ##   | undo |          [ hint / messages ]           |           |
 ##   +------+----------------------------------------+-----------+
 ##
+## Narrow (a phone upright): the skin fills the screen; the tools are a bar
+## along the bottom, and the context panel is a sheet above it that is
+## pulled up (tap or drag its handle): a peek of the tool's name, half the
+## screen, or nearly all of it.
+##   +-------------------------------+
+##   | top bar                       |
+##   |           the skin            |
+##   |      [ hint / messages ]      |
+##   |===== context sheet (peek) ====|
+##   | tools (scroll sideways) | undo|
+##   +-------------------------------+
+##
 ## The shell itself lets clicks through (mouse_filter IGNORE): only its
 ## cards and buttons catch them, so touching the skin reaches main.gd.
 
 signal tool_selected(tool: int)
 signal undo_requested
 signal reset_requested
+signal fit_requested
 ## Something was cleared from the menu or a panel: "cuts", "sutures",
 ## "undermining", "lesions" or "markings" (main.gd trims its undo history).
 signal cleared(what: String)
 
 const MAPS := [
 	["Plain skin", "No colour map: just the skin and the wound."],
-	["Tension (max principal)", "Red = stretched, blue = squeezed, in the direction where it is largest."],
-	["Overall stress (von Mises)", "How much stress the skin carries, regardless of direction."],
+	["Tension", "Largest principal stress. Red = pulled, blue = squeezed (in the direction where that is largest). Strokes show which way the skin is pulled."],
+	["Overall stress", "Von Mises stress: how much stress the skin carries, whatever its direction."],
 	["Area change", "Red = skin stretched to a larger area, blue = compressed to a smaller one."],
-	["Squeezing (min principal)", "Blue where the skin is squeezed in some direction: where real skin puckers."],
+	["Squeezing", "Smallest principal stress: blue where the skin is squeezed in some direction, where real skin puckers. Strokes show which way."],
 	["Excess skin (dog-ears)", "How much extra skin is bunched into wrinkles: where dog-ears form."],
 ]
 const SHORTCUTS := [
 	["G C S U", "Grab, Cut, Suture, Undermine"],
 	["L E F M", "Lesion, Excise, Flap, Mark"],
 	["Shift + drag", "Cut with any tool"],
+	["Wheel", "Zoom (around the pointer)"],
+	["Right / middle drag", "Move the view"],
+	["Home", "Fit the skin in the window"],
 	["Z", "Undo"],
 	["- / +", "Loosen / tighten the selected suture"],
 	["Del", "Cut the selected suture out"],
@@ -42,22 +60,44 @@ const SHORTCUTS := [
 	["Esc", "Close panels, deselect"],
 	["?", "This list"],
 ]
+## Below this width (logical pixels) the phone layout is used.
+const NARROW_WIDTH := 820.0
+const BAR_HEIGHT := 64.0
+## Bottom sheet heights: peek (tool name only), half, full (fractions of the
+## space above the tool bar; peek in pixels).
+const SHEET_PEEK := 96.0
+const SHEET_HALF := 0.45
+const SHEET_FULL := 0.86
 
 var sheet: SkinSheet
 var context: ContextPanel
 var drawer: TissueDrawer
+## Phone layout in use.
+var narrow := false
+## View option (drawn by the overlay): tension direction strokes.
+var show_tension_lines := true
 
 var _rail: PanelContainer
+var _rail_box: BoxContainer
+var _tool_scroll: ScrollContainer
+var _tool_box: BoxContainer
 var _tool_buttons: Array[Button] = []
+var _rail_spacer: Control
 var _undo: Button
 var _top: HBoxContainer
+var _titles: VBoxContainer
 var _subtitle: Label
 var _status_dot: Label
 var _view_button: Button
+var _tissue_button: Button
+var _help_button: Button
 var _view_card: PanelContainer
 var _map_buttons: Array[Button] = []
 var _map_caption: Label
 var _view_rows: Array[ParamRow] = []
+var _view_content: VBoxContainer
+var _laid_out := false
+var _range_row: ParamRow
 var _stats_switch: CheckButton
 var _menu: MenuButton
 var _help_card: PanelContainer
@@ -67,6 +107,12 @@ var _hint_card: PanelContainer
 var _hint_label: Label
 var _toasts: VBoxContainer
 var _drawer_open := false
+var _sheet_state := 0          # bottom sheet: 0 peek, 1 half, 2 full
+var _sheet_height := SHEET_PEEK
+var _sheet_drag := false       # dragging the handle
+var _sheet_drag_from := 0.0
+var _sheet_height_from := 0.0
+var _sheet_dragged := false
 
 
 func setup(p_sheet: SkinSheet) -> void:
@@ -81,6 +127,7 @@ func setup(p_sheet: SkinSheet) -> void:
 	context.setup(sheet)
 	context.release_grabs_requested.connect(func(): sheet.release_all_grabs())
 	context.clear_requested.connect(clear)
+	context.handle.gui_input.connect(_on_handle_input)
 	drawer = TissueDrawer.new()
 	add_child(drawer)
 	drawer.setup(sheet)
@@ -98,16 +145,26 @@ func setup(p_sheet: SkinSheet) -> void:
 	_layout()
 
 
-# --- tool rail ------------------------------------------------------------
+# --- tool rail / bottom bar --------------------------------------------------
 
 func _build_rail() -> void:
 	_rail = PanelContainer.new()
 	_rail.theme_type_variation = "Rail"
 	_rail.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_rail)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 4)
-	_rail.add_child(v)
+	_rail_box = BoxContainer.new()
+	_rail_box.vertical = true
+	_rail_box.add_theme_constant_override("separation", 4)
+	_rail.add_child(_rail_box)
+	# The tools scroll if they do not fit (sideways on a phone).
+	_tool_scroll = ScrollContainer.new()
+	_tool_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_tool_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_rail_box.add_child(_tool_scroll)
+	_tool_box = BoxContainer.new()
+	_tool_box.vertical = true
+	_tool_box.add_theme_constant_override("separation", 4)
+	_tool_scroll.add_child(_tool_box)
 	var group := ButtonGroup.new()
 	for i in ContextPanel.TOOLS.size():
 		var t: Dictionary = ContextPanel.TOOLS[i]
@@ -115,14 +172,14 @@ func _build_rail() -> void:
 		b.toggle_mode = true
 		b.button_group = group
 		b.pressed.connect(func(): tool_selected.emit(i))
-		v.add_child(b)
+		_tool_box.add_child(b)
 		_tool_buttons.append(b)
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	v.add_child(spacer)
+	_rail_spacer = Control.new()
+	_rail_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_rail_box.add_child(_rail_spacer)
 	_undo = _rail_button("undo", "Undo", "Undo [Z]")
 	_undo.pressed.connect(func(): undo_requested.emit())
-	v.add_child(_undo)
+	_rail_box.add_child(_undo)
 	_tool_buttons[0].set_pressed_no_signal(true)
 
 
@@ -149,13 +206,13 @@ func _build_top_bar() -> void:
 	_top.add_theme_constant_override("separation", 6)
 	_top.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_top)
-	var titles := VBoxContainer.new()
-	titles.add_theme_constant_override("separation", 0)
-	titles.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	titles.add_child(Style.label("skin-sim", "Title"))
+	_titles = VBoxContainer.new()
+	_titles.add_theme_constant_override("separation", 0)
+	_titles.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_titles.add_child(Style.label("skin-sim", "Title"))
 	_subtitle = Style.label("", "Caption")
-	titles.add_child(_subtitle)
-	_top.add_child(titles)
+	_titles.add_child(_subtitle)
+	_top.add_child(_titles)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -164,16 +221,23 @@ func _build_top_bar() -> void:
 	_status_dot.tooltip_text = "Settling: the skin is still moving towards equilibrium. At rest: it is in equilibrium."
 	_status_dot.mouse_filter = Control.MOUSE_FILTER_PASS
 	_top.add_child(_status_dot)
+	var fit := Style.icon_button("fit", "", "Fit the skin in the window [Home]", "")
+	fit.pressed.connect(func(): fit_requested.emit())
+	_top.add_child(fit)
 	_view_button = Style.icon_button("heatmap", "View", "Colour map and display [H]", "")
 	_view_button.toggle_mode = true
-	_view_button.toggled.connect(func(on: bool): _view_card.visible = on)
+	_view_button.toggled.connect(func(on: bool):
+		_view_card.visible = on
+		if on:
+			_view_card.move_to_front()  # above hints and messages
+			_help_card.visible = false)
 	_top.add_child(_view_button)
-	var tissue := Style.icon_button("tissue", "Tissue", "Body site and skin properties", "")
-	tissue.pressed.connect(func(): set_drawer_open(not _drawer_open))
-	_top.add_child(tissue)
-	var help := Style.icon_button("help", "", "Keyboard shortcuts [?]", "")
-	help.pressed.connect(func(): _help_card.visible = not _help_card.visible)
-	_top.add_child(help)
+	_tissue_button = Style.icon_button("tissue", "Tissue", "Body site and skin properties", "")
+	_tissue_button.pressed.connect(func(): set_drawer_open(not _drawer_open))
+	_top.add_child(_tissue_button)
+	_help_button = Style.icon_button("help", "", "Help and shortcuts [?]", "")
+	_help_button.pressed.connect(toggle_help)
+	_top.add_child(_help_button)
 	_menu = MenuButton.new()
 	_menu.icon = Style.icon("menu")
 	_menu.expand_icon = true
@@ -242,9 +306,13 @@ func _build_view_card() -> void:
 	_view_card.mouse_filter = Control.MOUSE_FILTER_STOP
 	_view_card.visible = false
 	add_child(_view_card)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_view_card.add_child(scroll)
 	var v := VBoxContainer.new()
-	v.custom_minimum_size.x = 280
-	_view_card.add_child(v)
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(v)
+	_view_content = v
 	v.add_child(Style.label("COLOUR MAP", "SectionTitle"))
 	var group := ButtonGroup.new()
 	for i in MAPS.size():
@@ -261,25 +329,47 @@ func _build_view_card() -> void:
 		_map_buttons.append(b)
 	_map_caption = Style.label("", "Caption", true)
 	v.add_child(_map_caption)
+	v.add_child(Style.label("STRESS MAPS", "SectionTitle"))
 	for spec in [
-		{"prop": "heatmap_range_kpa", "label": "Colour scale", "min": 1.0, "max": 2000.0, "step": 1.0,
-			"exp": true, "fmt": "%.0f kPa", "tip": "Stress at the end of the colour scale. Keep it fixed to compare closures."},
-		{"prop": "show_wireframe", "label": "Show the mesh", "type": "bool",
-			"tip": "Draw the triangles the skin is computed on. [W]"},
+		{"prop": "heatmap_relative", "label": "Only what the surgery added", "type": "bool",
+			"tip": "Subtract the tension living skin always has (its prestress). Untouched skin then shows neutral, and the colours show only what cutting, pulling and suturing changed."},
+		{"prop": "heatmap_auto_range", "label": "Automatic scale", "type": "bool",
+			"tip": "Fit the colour scale to the stresses on the skin now (a round number just above most of them), so a few extreme spots do not wash everything else out. Off: a fixed scale, to compare one closure with another."},
+		{"prop": "heatmap_range_kpa", "label": "Fixed scale", "min": 1.0, "max": 2000.0, "step": 1.0,
+			"exp": true, "fmt": "%.0f kPa", "tip": "Stress at the end of the colour scale, when the automatic scale is off."},
+		{"prop": "heatmap_contours", "label": "Contour lines", "type": "bool",
+			"tip": "Lines of equal stress, every tenth of the scale (ticks on the legend), like the contours of a map: close together where the stress changes fast. They carry on beyond the scale."},
 	]:
 		var r := ParamRow.make(sheet, spec)
 		v.add_child(r)
 		_view_rows.append(r)
-	var stats_row := HBoxContainer.new()
-	var l := Style.label("Solver details")
-	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	stats_row.add_child(l)
-	_stats_switch = CheckButton.new()
-	_stats_switch.focus_mode = Control.FOCUS_NONE
-	_stats_switch.toggled.connect(func(on: bool): _stats_card.visible = on)
-	stats_row.add_child(_stats_switch)
-	v.add_child(stats_row)
+		if spec.prop == "heatmap_range_kpa":
+			_range_row = r
+	var lines := _switch_row(v, "Tension direction strokes", show_tension_lines,
+		func(on: bool): show_tension_lines = on)
+	lines.tooltip_text = "Short strokes along the direction the skin is pulled (squeezed, on the Squeezing map)."
+	v.add_child(Style.label("DISPLAY", "SectionTitle"))
+	var wire := ParamRow.make(sheet, {"prop": "show_wireframe", "label": "Show the mesh", "type": "bool",
+		"tip": "Draw the triangles the skin is computed on. [W]"})
+	v.add_child(wire)
+	_view_rows.append(wire)
+	_stats_switch = _switch_row(v, "Solver details", false, func(on: bool): _stats_card.visible = on)
 	set_heatmap(sheet.heatmap)
+
+
+## A label and a switch on one row. Returns the switch.
+func _switch_row(parent: Container, text: String, on: bool, toggled: Callable) -> CheckButton:
+	var row := HBoxContainer.new()
+	var l := Style.label(text)
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(l)
+	var sw := CheckButton.new()
+	sw.focus_mode = Control.FOCUS_NONE
+	sw.button_pressed = on
+	sw.toggled.connect(toggled)
+	row.add_child(sw)
+	parent.add_child(row)
+	return sw
 
 
 func set_heatmap(i: int) -> void:
@@ -287,7 +377,7 @@ func set_heatmap(i: int) -> void:
 	for k in _map_buttons.size():
 		_map_buttons[k].set_pressed_no_signal(k == i)
 	_map_caption.text = MAPS[i][1]
-	_view_button.text = "View" if i == 0 else MAPS[i][0].get_slice(" (", 0)
+	_view_button.text = "" if narrow else ("View" if i == 0 else MAPS[i][0].get_slice(" (", 0))
 
 
 func refresh() -> void:
@@ -309,13 +399,16 @@ func _build_help() -> void:
 	var v := VBoxContainer.new()
 	_help_card.add_child(v)
 	var head := HBoxContainer.new()
-	var t := Style.label("Keyboard shortcuts", "Title")
+	var t := Style.label("Help", "Title")
 	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(t)
 	var close := Style.icon_button("close", "", "Close [Esc]")
 	close.pressed.connect(func(): _help_card.visible = false)
 	head.add_child(close)
 	v.add_child(head)
+	v.add_child(Style.label("TOUCH", "SectionTitle"))
+	v.add_child(Style.label("One finger uses the tool. Two fingers move the view and pinch to zoom.", "Caption", true))
+	v.add_child(Style.label("KEYBOARD AND MOUSE", "SectionTitle"))
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 18)
@@ -323,9 +416,9 @@ func _build_help() -> void:
 	for s in SHORTCUTS:
 		var k := Style.label(s[0], "Value")
 		grid.add_child(k)
-		grid.add_child(Style.label(s[1]))
+		var d := Style.label(s[1], "Caption")
+		grid.add_child(d)
 	v.add_child(grid)
-	v.add_child(Style.label("On a touch screen: one finger uses the tool.", "Caption", true))
 
 
 func _build_stats() -> void:
@@ -357,7 +450,6 @@ func _build_hint() -> void:
 ## The one-line instruction for what to do now.
 func set_hint(text: String) -> void:
 	_hint_label.text = text
-	_hint_card.visible = text != ""
 
 
 ## A short message about what just happened; fades after a few seconds.
@@ -371,9 +463,14 @@ func toast(text: String, kind := "info") -> void:
 	card.add_theme_stylebox_override("panel", Style.box(Color(Style.SURFACE, 0.96), 18, color, 14, 8))
 	card.size_flags_horizontal = Control.SIZE_SHRINK_CENTER  # as wide as its text
 	var l := Style.label(text, "")
+	if narrow:
+		# On a phone: wrap within the screen instead of running off it.
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.custom_minimum_size.x = get_viewport_rect().size.x - 64.0
+		l.add_theme_font_size_override("font_size", 13)
 	card.add_child(l)
 	_toasts.add_child(card)
-	while _toasts.get_child_count() > 3:
+	while _toasts.get_child_count() > (1 if narrow else 3):
 		var old := _toasts.get_child(0)
 		_toasts.remove_child(old)
 		old.queue_free()
@@ -384,12 +481,9 @@ func toast(text: String, kind := "info") -> void:
 
 
 func set_status(converged: bool, stalled: bool) -> void:
-	if converged and not stalled:
-		_status_dot.text = "● At rest"
-		_status_dot.add_theme_color_override("font_color", Style.OK)
-	else:
-		_status_dot.text = "● Settling"
-		_status_dot.add_theme_color_override("font_color", Style.WARN)
+	var at_rest := converged and not stalled
+	_status_dot.text = "●" if narrow else ("● At rest" if at_rest else "● Settling")
+	_status_dot.add_theme_color_override("font_color", Style.OK if at_rest else Style.WARN)
 
 
 func set_stats(text: String) -> void:
@@ -405,6 +499,8 @@ func show_tool(tool: int) -> void:
 	for i in _tool_buttons.size():
 		_tool_buttons[i].set_pressed_no_signal(i == tool)
 	context.show_tool(tool)
+	if narrow:
+		_tool_scroll.ensure_control_visible(_tool_buttons[tool])
 
 
 func cycle_heatmap() -> void:
@@ -413,6 +509,9 @@ func cycle_heatmap() -> void:
 
 func toggle_help() -> void:
 	_help_card.visible = not _help_card.visible
+	if _help_card.visible:
+		_help_card.move_to_front()
+		_view_button.button_pressed = false
 
 
 func set_drawer_open(open: bool) -> void:
@@ -420,10 +519,13 @@ func set_drawer_open(open: bool) -> void:
 	drawer.visible = open
 	context.visible = not open
 	if open:
+		drawer.move_to_front()
 		drawer.refresh()
+	_layout()
 
 
-## Open a panel by name (command line, for screenshots): "tissue", "view", "help".
+## Open a panel by name (command line, for screenshots): "tissue", "view",
+## "help", "sheet" (phone: the context sheet half open), "sheet-full".
 func open_panel(what: String) -> void:
 	match what:
 		"tissue":
@@ -432,6 +534,10 @@ func open_panel(what: String) -> void:
 			_view_button.button_pressed = true
 		"help":
 			_help_card.visible = true
+		"sheet":
+			set_sheet_state(1)
+		"sheet-full":
+			set_sheet_state(2)
 
 
 ## Esc: close whatever is open. True if something was closed.
@@ -445,6 +551,9 @@ func close_overlays() -> bool:
 		closed = true
 	if _drawer_open:
 		set_drawer_open(false)
+		closed = true
+	if narrow and _sheet_state > 0:
+		set_sheet_state(0)
 		closed = true
 	return closed
 
@@ -464,17 +573,114 @@ func _over_top_button(p: Vector2) -> bool:
 	return false
 
 
-## The part of the window where the skin is visible (not under the rail or
-## the panel), for framing the camera and placing the legend.
+## The part of the window where the skin is visible (not under the rail,
+## the panel, the bottom bar or the sheet), for framing the camera and
+## placing the legend.
 func free_rect() -> Rect2:
 	var vp := get_viewport_rect().size
+	if narrow:
+		var top := 8.0 + Style.TOUCH + 4.0
+		var bottom := vp.y - BAR_HEIGHT - _sheet_height - 8.0
+		return Rect2(0.0, top, vp.x, maxf(bottom - top, 80.0))
 	var left := float(Style.RAIL_WIDTH)
 	var right := vp.x - Style.PANEL_WIDTH - 24.0
 	return Rect2(left, 0.0, maxf(right - left, 100.0), vp.y)
 
 
+# --- bottom sheet (phone) ----------------------------------------------------
+
+## 0 = peek (the tool's name), 1 = half the screen, 2 = nearly all of it.
+func set_sheet_state(state: int) -> void:
+	_sheet_state = clampi(state, 0, 2)
+	_sheet_height = _sheet_target(_sheet_state)
+	_layout()
+
+
+func _sheet_target(state: int) -> float:
+	var room := get_viewport_rect().size.y - BAR_HEIGHT - 8.0 - Style.TOUCH - 16.0
+	match state:
+		1:
+			return maxf(SHEET_PEEK, room * SHEET_HALF)
+		2:
+			return maxf(SHEET_PEEK, room * SHEET_FULL)
+	return SHEET_PEEK
+
+
+## The handle: a tap steps peek -> half -> full -> peek; a drag resizes and,
+## on release, snaps to the nearest of the three.
+func _on_handle_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_sheet_drag = true
+			_sheet_dragged = false
+			_sheet_drag_from = event.global_position.y
+			_sheet_height_from = _sheet_height
+		elif _sheet_drag:
+			_sheet_drag = false
+			if not _sheet_dragged:
+				set_sheet_state((_sheet_state + 1) % 3)
+				return
+			var best := 0
+			for s in 3:
+				if absf(_sheet_target(s) - _sheet_height) < absf(_sheet_target(best) - _sheet_height):
+					best = s
+			set_sheet_state(best)
+	elif event is InputEventMouseMotion and _sheet_drag:
+		var dy: float = _sheet_drag_from - event.global_position.y
+		if absf(dy) > 6.0:
+			_sheet_dragged = true
+		if _sheet_dragged:
+			_sheet_height = clampf(_sheet_height_from + dy, SHEET_PEEK, _sheet_target(2))
+			_layout()
+
+
+# --- layout ------------------------------------------------------------------
+
 func _layout() -> void:
 	var vp := get_viewport_rect().size
+	var was_narrow := narrow
+	narrow = vp.x < NARROW_WIDTH
+	if narrow != was_narrow or not _laid_out:
+		_laid_out = true
+		_switch_layout()
+	if narrow:
+		_layout_narrow(vp)
+	else:
+		_layout_wide(vp)
+	_help_card.reset_size()
+	_help_card.size.x = minf(_help_card.size.x, vp.x - 24.0)
+	var fr := free_rect()
+	_help_card.position = Vector2(clampf(fr.get_center().x - _help_card.size.x * 0.5, 12.0, vp.x),
+		clampf(fr.get_center().y - _help_card.size.y * 0.5, 8.0 + Style.TOUCH + 8.0, vp.y))
+	_stats_card.position = Vector2(fr.position.x + 16.0, 12.0 + Style.TOUCH + 8.0)
+
+
+## Wide <-> narrow: everything that changes shape, not just position.
+func _switch_layout() -> void:
+	_rail_box.vertical = not narrow
+	_tool_box.vertical = not narrow
+	_rail_spacer.visible = false  # the tools' scroll area takes the room
+	_tool_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER if narrow \
+		else ScrollContainer.SCROLL_MODE_DISABLED
+	_tool_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if narrow \
+		else ScrollContainer.SCROLL_MODE_SHOW_NEVER
+	var buttons: Array[Button] = _tool_buttons.duplicate()
+	buttons.append(_undo)
+	for b in buttons:
+		b.custom_minimum_size = Vector2(58, 52) if narrow else Vector2(Style.RAIL_WIDTH - 12, 54)
+		b.add_theme_font_size_override("font_size", 10 if narrow else 11)
+	_rail.add_theme_stylebox_override("panel", Style.box(Style.SURFACE, 0, Color(0, 0, 0, 0), 4, 4) if narrow \
+		else Style.box(Style.SURFACE, 0, Color(0, 0, 0, 0), 6, 10))
+	# Compact top bar: icons only, no subtitle.
+	_titles.visible = not narrow
+	_tissue_button.text = "" if narrow else "Tissue"
+	context.handle.visible = narrow
+	_sheet_state = 0
+	_sheet_height = SHEET_PEEK
+	set_heatmap(sheet.heatmap)
+
+
+func _layout_wide(vp: Vector2) -> void:
 	_rail.position = Vector2.ZERO
 	_rail.size = Vector2(Style.RAIL_WIDTH, vp.y)
 	for card in [context, drawer]:
@@ -483,25 +689,65 @@ func _layout() -> void:
 	var fr := free_rect()
 	_top.position = Vector2(fr.position.x + 16.0, 12.0)
 	_top.size = Vector2(fr.size.x - 20.0, Style.TOUCH)
-	_view_card.reset_size()
+	_fit_view_card(300.0, vp.y - Style.TOUCH - 40.0)
 	_view_card.position = Vector2(fr.end.x - _view_card.size.x - 4.0, 12.0 + Style.TOUCH + 8.0)
-	_help_card.reset_size()
-	_help_card.position = fr.get_center() - _help_card.size * 0.5
-	_stats_card.position = Vector2(fr.position.x + 16.0, 12.0 + Style.TOUCH + 8.0)
+
+
+func _layout_narrow(vp: Vector2) -> void:
+	_rail.position = Vector2(0.0, vp.y - BAR_HEIGHT)
+	_rail.size = Vector2(vp.x, BAR_HEIGHT)
+	_sheet_height = clampf(_sheet_height, SHEET_PEEK, _sheet_target(2))
+	context.position = Vector2(6.0, vp.y - BAR_HEIGHT - _sheet_height - 4.0)
+	context.size = Vector2(vp.x - 12.0, _sheet_height)
+	context.handle.icon = Style.icon("chevron_down" if _sheet_state == 2 else "chevron_up")
+	# The tissue drawer covers the screen above the tool bar.
+	drawer.position = Vector2(6.0, 6.0)
+	drawer.size = Vector2(vp.x - 12.0, vp.y - BAR_HEIGHT - 12.0)
+	_top.position = Vector2(8.0, 8.0)
+	_top.size = Vector2(vp.x - 16.0, Style.TOUCH)
+	_fit_view_card(minf(300.0, vp.x - 16.0), vp.y - BAR_HEIGHT - Style.TOUCH - 32.0)
+	_view_card.position = Vector2(vp.x - _view_card.size.x - 8.0, 8.0 + Style.TOUCH + 8.0)
 
 
 func _process(_delta: float) -> void:
 	# Hint pill and toasts: bottom centre of the skin area, sized to content.
 	var fr := free_rect()
 	var vp := get_viewport_rect().size
+	_range_row.visible = not sheet.heatmap_auto_range
+	# On a phone an open card or drawer covers the skin: hints and messages
+	# about the skin would only clutter it.
+	var covered := narrow and (_drawer_open or _view_card.visible or _help_card.visible)
+	_hint_card.visible = _hint_label.text != "" and not covered
+	_toasts.visible = not covered
+	if narrow:
+		_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_hint_label.custom_minimum_size.x = minf(vp.x - 48.0, 520.0)
+		_hint_label.add_theme_font_size_override("font_size", 12)
+	else:
+		_hint_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		_hint_label.custom_minimum_size.x = 0.0
+		_hint_label.remove_theme_font_size_override("font_size")
 	_hint_card.reset_size()
-	_hint_card.position = Vector2(fr.get_center().x - _hint_card.size.x * 0.5, vp.y - _hint_card.size.y - 16.0)
+	var hint_bottom := fr.end.y - 8.0 if narrow else vp.y - 16.0
+	_hint_card.position = Vector2(fr.get_center().x - _hint_card.size.x * 0.5, hint_bottom - _hint_card.size.y)
 	_toasts.reset_size()
 	_toasts.position = Vector2(fr.get_center().x - _toasts.size.x * 0.5,
 		_hint_card.position.y - _toasts.size.y - 8.0)
 	if _help_card.visible:
 		_help_card.reset_size()
-		_help_card.position = fr.get_center() - _help_card.size * 0.5
+		_help_card.size.x = minf(_help_card.size.x, vp.x - 24.0)
+		_help_card.position.x = clampf(fr.get_center().x - _help_card.size.x * 0.5, 12.0, vp.x)
 	if _view_card.visible:
-		_view_card.reset_size()  # as tall as its content
-		_view_card.position.x = fr.end.x - _view_card.size.x - 4.0
+		if narrow:
+			_fit_view_card(minf(300.0, vp.x - 16.0), vp.y - BAR_HEIGHT - Style.TOUCH - 32.0)
+			_view_card.position.x = vp.x - _view_card.size.x - 8.0
+		else:
+			_fit_view_card(300.0, vp.y - Style.TOUCH - 40.0)
+			_view_card.position.x = fr.end.x - _view_card.size.x - 4.0
+
+
+## The view card: as tall as its content, but within the screen (it
+## scrolls beyond that).
+func _fit_view_card(width: float, max_height: float) -> void:
+	var want := _view_content.get_combined_minimum_size().y + 2.0 * Style.PAD + 4.0
+	_view_card.size = Vector2(width, minf(want, max_height))

@@ -73,9 +73,10 @@ public:
 
     // --- local flaps ---
     // Carry out a flap design (rest coordinates, see flaps.hpp) in one step:
-    // cut the defect outline and the flap's incisions, remove the skin in
-    // the defect, and undermine the flap, the defect and `undermine_margin`
-    // mm of skin around them. One undo step (undo_flap).
+    // cut the defect outline, any Burow's triangles and the flaps' incisions,
+    // remove the skin in the defect and the triangles, and undermine the
+    // flaps, the defect and `undermine_margin` mm of skin around them (not
+    // the middle of island flaps: their pedicle). One undo step (undo_flap).
     // Returns 1 if done, 0 if nothing could be cut (e.g. off the sheet), -1
     // if the defect's skin did not come free (nothing is changed then).
     int make_flap(const FlapDesign& design, double undermine_margin);
@@ -85,7 +86,8 @@ public:
     // Tie the design's key sutures (thread: USP size, see thread_strength).
     // Returns the ids of those tied (an end no longer on skin is skipped).
     std::vector<int> tie_key_sutures(int i, double tightness, int thread);
-    // Mean largest principal stress along the flap's base (pedicle), MPa:
+    // Mean largest principal stress along the first flap's base (pedicle), MPa
+    // (0 for island flaps, which have none):
     // how hard the closure pulls on the skin the flap hangs from.
     double flap_base_stress(int i) const;
 
@@ -148,6 +150,7 @@ private:
     struct Flap {
         FlapDesign design;
         int undermine_stroke = -1;  // index in undermine_strokes_, -1 = none
+        int excised = 0;            // pieces it removed (defect, Burow's triangles)
     };
     std::vector<Flap> flaps_;
 };

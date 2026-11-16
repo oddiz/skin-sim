@@ -28,9 +28,14 @@ var suture_line_ok := true   # both ends on skin
 var selected_suture := -1
 ## Fusiform excision being designed (screen points, closed; empty otherwise).
 var excise_outline := PackedVector2Array()
-## Flap being designed (screen points): defect, flap, base (PackedVector2Array),
-## incisions, key_sutures (Arrays of them), text. Empty when not designing.
+## Flap being designed (screen points): defect (PackedVector2Array); flaps,
+## bases, burow, incisions, key_sutures (Arrays of them); text. Empty when
+## not designing.
 var flap_preview: Dictionary = {}
+## Stress maps: short strokes along the direction of the tension.
+var show_tension_lines := true
+## Where to read the colour map's value (mouse or finger; x < 0: nowhere).
+var probe_pos := Vector2(-1, -1)
 ## Undermining brush outline (x < 0: hidden).
 var brush_pos := Vector2(-1, -1)
 var brush_radius_px := 0.0
@@ -72,6 +77,8 @@ func add_snap(a: Vector3, b: Vector3, text: String) -> void:
 func _draw() -> void:
 	if sheet == null or camera == null:
 		return
+	if show_tension_lines:
+		_draw_tension_lines()
 	if cut_path.size() >= 2:
 		# Dark halo underneath so the line shows on skin and background alike.
 		draw_polyline(cut_path, Color(0, 0, 0, 0.6), 5.0, true)
@@ -86,6 +93,7 @@ func _draw() -> void:
 	_draw_sutures(font)
 	_draw_legend(font)
 	_draw_rstl(font)
+	_draw_probe(font)
 	if brush_pos.x >= 0.0:
 		draw_arc(brush_pos, brush_radius_px, 0.0, TAU, 48, Color(0.35, 0.15, 0.45, 0.9), 2.0, true)
 		draw_arc(brush_pos, 0.6 * brush_radius_px, 0.0, TAU, 48, Color(0.35, 0.15, 0.45, 0.5), 1.0, true)
@@ -197,65 +205,121 @@ func _draw_snaps(font: Font) -> void:
 		_pill(font, pos, s.text, 13, red)
 
 
-## The flap design under the finger: the flap shaded, the defect (purple,
-## removed), the incisions (red), the uncut base (green, what the flap stays
-## attached by) and dotted arrows for the key sutures.
+## The flap design under the finger: the flaps shaded, the defect (purple,
+## removed) and any Burow's triangles, the incisions (red), the uncut bases
+## (green, what the flaps stay attached by) and dotted lines for the key
+## sutures.
 func _draw_flap_preview(font: Font) -> void:
 	if flap_preview.is_empty():
 		return
-	var flap: PackedVector2Array = flap_preview.flap
-	if flap.size() >= 4:
-		# The outline repeats its first point; the polygon fill wants each once.
-		var poly := flap.slice(0, flap.size() - 1)
-		if Geometry2D.triangulate_polygon(poly).size() > 0:
-			draw_colored_polygon(poly, Color(0.3, 0.6, 1.0, 0.25))
+	for flap in flap_preview.flaps:
+		_fill(flap, Color(0.3, 0.6, 1.0, 0.25))
 	var defect: PackedVector2Array = flap_preview.defect
-	if defect.size() >= 2:
-		var dpoly := defect.slice(0, defect.size() - 1)
-		if Geometry2D.triangulate_polygon(dpoly).size() > 0:
-			draw_colored_polygon(dpoly, Color(0.55, 0.2, 0.85, 0.25))
-		draw_polyline(defect, Color(0, 0, 0, 0.6), 4.0, true)
-		draw_polyline(defect, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
+	var removed: Array = [defect]
+	removed.append_array(flap_preview.burow)
+	for d in removed:
+		if d.size() >= 2:
+			_fill(d, Color(0.55, 0.2, 0.85, 0.25))
+			draw_polyline(d, Color(0, 0, 0, 0.6), 4.0, true)
+			draw_polyline(d, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
 	for inc in flap_preview.incisions:
 		if inc.size() >= 2:
 			draw_polyline(inc, Color(0, 0, 0, 0.6), 4.0, true)
 			draw_polyline(inc, COLOR_SCALPEL, 2.0, true)
-	var base: PackedVector2Array = flap_preview.base
-	if base.size() >= 2:
-		draw_dashed_line(base[0], base[base.size() - 1], Color(0.2, 0.85, 0.3, 0.95), 2.0, 6.0)
+	for base in flap_preview.bases:
+		for k in range(base.size() - 1):
+			draw_dashed_line(base[k], base[k + 1], Color(0.2, 0.85, 0.3, 0.95), 2.0, 6.0)
 	for k in flap_preview.key_sutures:
 		if k.size() == 2:
 			draw_dashed_line(k[0], k[1], Color(0.2, 0.35, 1.0, 0.9), 1.5, 4.0)
 			draw_circle(k[0], 3.0, Color(0.2, 0.35, 1.0))
 			draw_circle(k[1], 3.0, Color(0.2, 0.35, 1.0))
-	if defect.size() > 0:
-		var pos := defect[0] + Vector2(10, -12)
-		var text: String = flap_preview.text
-		_pill(font, pos, text, 13, Color(0.95, 0.95, 0.95))
+	var anchor := defect[0] if defect.size() > 0 else Vector2.ZERO
+	if defect.is_empty() and not flap_preview.incisions.is_empty() and flap_preview.incisions[0].size() > 0:
+		anchor = flap_preview.incisions[0][0]
+	_pill(font, anchor + Vector2(10, -12), flap_preview.text, 13, Color(0.95, 0.95, 0.95))
 
 
-## Vertical colour bar, bottom-left, with its scale and the current extreme.
+## Fill a closed outline (its last point repeats the first) if it is a
+## proper polygon.
+func _fill(outline: PackedVector2Array, color: Color) -> void:
+	if outline.size() < 4:
+		return
+	var poly := outline.slice(0, outline.size() - 1)
+	if Geometry2D.triangulate_polygon(poly).size() > 0:
+		draw_colored_polygon(poly, color)
+
+
+## Stress maps: a stroke along the principal direction every few mm, longer
+## and darker where the stress is higher. Around a flap they show the lines
+## of tension: where the closure pulls, and which way.
+func _draw_tension_lines() -> void:
+	if sheet.heatmap not in [1, 2, 4]:
+		return
+	var px_per_mm := get_viewport_rect().size.y / camera.size
+	# About 22 px apart on screen, whatever the zoom (but not finer than 1.5 mm).
+	var spacing := maxf(22.0 / px_per_mm, 1.5)
+	var d: Dictionary = sheet.get_tension_lines(snappedf(spacing, 0.5))
+	if d.is_empty():
+		return
+	var seg: PackedVector3Array = d.segments
+	var strength: PackedFloat32Array = d.strength
+	for i in strength.size():
+		var a := camera.unproject_position(seg[2 * i])
+		var b := camera.unproject_position(seg[2 * i + 1])
+		var t := clampf(strength[i], 0.0, 1.0)
+		draw_line(a, b, Color(0.05, 0.04, 0.08, 0.45 + 0.45 * t), 1.2 + 2.0 * t, true)
+
+
+## The colour map's value under the mouse or finger, in a small pill.
+func _draw_probe(font: Font) -> void:
+	if probe_pos.x < 0.0 or sheet.heatmap == 0 or ui.is_over_ui(probe_pos):
+		return
+	var origin := camera.project_ray_origin(probe_pos)
+	var hit = Plane(Vector3.UP, 0.0).intersects_ray(origin, camera.project_ray_normal(probe_pos))
+	if hit == null:
+		return
+	var r: Dictionary = sheet.sample_heatmap(hit)
+	if not r.ok:
+		return
+	_pill(font, probe_pos + Vector2(16, 28), r.text, 12, Style.TEXT)
+
+
+## The colour map's legend: a compact horizontal bar in a card at the
+## bottom-left of the skin area, low values on the left. Ticks mark the
+## contour lines drawn on the skin.
 func _draw_legend(font: Font) -> void:
 	var legend: Dictionary = sheet.get_heatmap_legend()
 	if legend.is_empty():
 		return
-	# A compact horizontal colour bar in a card, bottom-left of the skin area:
-	# low values on the left, high on the right.
 	var colors: PackedColorArray = legend.colors
-	var w := 200.0
+	var fr := ui.free_rect()
+	var w := clampf(fr.size.x * 0.45, 170.0, 240.0)
 	var h := 10.0
-	var card := Rect2(Vector2(ui.free_rect().position.x + 16.0, get_viewport_rect().size.y - 100.0),
-		Vector2(w + 28.0, 84.0))
+	# Bottom-left of the skin area; on a phone, top-left (the bottom is busy
+	# with hints and the tool sheet).
+	var y := fr.position.y + 4.0 if ui.narrow else fr.end.y - 104.0
+	var card := Rect2(Vector2(fr.position.x + 12.0, y), Vector2(w + 28.0, 92.0))
 	draw_style_box(Style.box(Color(Style.SURFACE, 0.94), Style.RADIUS_CARD, Style.BORDER), card)
 	var origin := card.position + Vector2(14, 36)
 	var n := colors.size()
 	for i in n:
 		draw_rect(Rect2(origin + Vector2(w * i / n, 0), Vector2(w / n + 1.0, h)), colors[i])
+	var ticks: int = legend.get("ticks", 0)
+	for k in range(1, ticks):
+		var x := origin.x + w * k / ticks
+		draw_line(Vector2(x, origin.y), Vector2(x, origin.y + h), Color(0, 0, 0, 0.45), 1.0)
 	var dim := Style.TEXT_DIM
-	draw_string(font, card.position + Vector2(14, 24), legend.title, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Style.TEXT)
+	var title: String = legend.title
+	if legend.get("auto", false):
+		title += "  ·  auto scale"
+	draw_string(font, card.position + Vector2(14, 24), title, HORIZONTAL_ALIGNMENT_LEFT, w, 13, Style.TEXT)
 	draw_string(font, origin + Vector2(0, h + 16), legend.low, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, dim)
 	draw_string(font, origin + Vector2(0, h + 16), legend.high, HORIZONTAL_ALIGNMENT_RIGHT, w, 11, dim)
-	draw_string(font, origin + Vector2(0, h + 31), legend.extreme, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, dim)
+	var note: String = legend.extreme
+	if show_tension_lines and sheet.heatmap in [1, 2, 4]:
+		note += "  ·  strokes: " + ("squeeze" if sheet.heatmap == 4 else "pull")
+	draw_string(font, origin + Vector2(0, h + 32), note, HORIZONTAL_ALIGNMENT_LEFT, w, 11, dim)
 
 
 ## Small compass, top-right of the 3D view: the RSTL (fibre) direction.
@@ -263,17 +327,20 @@ func _draw_rstl(font: Font) -> void:
 	if sheet.fibre_stiffness_kpa <= 0.0 and sheet.prestretch_along_pct <= 0.0 \
 			and sheet.prestretch_across_pct <= 0.0:
 		return
-	# Bottom-right corner of the skin area (clear of the top bar and panel).
+	# Bottom-right corner of the skin area (clear of the top bar and panel);
+	# on a phone, smaller and top-right (the bottom is busy).
 	var fr := ui.free_rect()
-	var centre := Vector2(fr.end.x - 56.0, fr.end.y - 120.0)
+	var k := 0.75 if ui.narrow else 1.0
+	var centre := Vector2(fr.end.x - 32.0, fr.position.y + 36.0) if ui.narrow \
+		else Vector2(fr.end.x - 52.0, fr.end.y - 64.0)
 	# Screen y points down while the sheet's y points up: flip the angle.
 	var a := deg_to_rad(sheet.fibre_angle_deg)
-	var d := Vector2(cos(a), -sin(a)) * 28.0
-	draw_circle(centre, 40.0, Color(0, 0, 0, 0.45))
+	var d := Vector2(cos(a), -sin(a)) * 28.0 * k
+	draw_circle(centre, 40.0 * k, Color(0, 0, 0, 0.45))
 	for off in [-10.0, 0.0, 10.0]:
-		var n: Vector2 = Vector2(-d.y, d.x).normalized() * off
+		var n: Vector2 = Vector2(-d.y, d.x).normalized() * off * k
 		draw_line(centre - d + n, centre + d + n, Color(0.95, 0.85, 0.7, 0.9), 2.0, true)
-	draw_string(font, centre + Vector2(-16, 34), "RSTL", HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
+	draw_string(font, centre + Vector2(-16, 34) * k, "RSTL", HORIZONTAL_ALIGNMENT_LEFT, -1, int(12 * k),
 		Color(0.95, 0.85, 0.7))
 
 
