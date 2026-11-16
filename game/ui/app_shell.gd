@@ -31,6 +31,7 @@ signal tool_selected(tool: int)
 signal undo_requested
 signal reset_requested
 signal fit_requested
+signal look_changed(index: int)
 ## Something was cleared from the menu or a panel: "cuts", "sutures",
 ## "undermining", "lesions" or "markings" (main.gd trims its undo history).
 signal cleared(what: String)
@@ -96,6 +97,8 @@ var _map_buttons: Array[Button] = []
 var _map_caption: Label
 var _view_rows: Array[ParamRow] = []
 var _view_content: VBoxContainer
+var _look_buttons: Array[Button] = []
+var _look_caption: Label
 var _laid_out := false
 var _range_row: ParamRow
 var _stats_switch: CheckButton
@@ -313,6 +316,25 @@ func _build_view_card() -> void:
 	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(v)
 	_view_content = v
+	v.add_child(Style.label("LOOK", "SectionTitle"))
+	var looks := HBoxContainer.new()
+	looks.add_theme_constant_override("separation", 4)
+	var look_group := ButtonGroup.new()
+	for i in Look.NAMES.size():
+		var lb := Button.new()
+		lb.text = Look.NAMES[i]
+		lb.theme_type_variation = "SegmentButton"
+		lb.toggle_mode = true
+		lb.button_group = look_group
+		lb.focus_mode = Control.FOCUS_NONE
+		lb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lb.custom_minimum_size.y = 36
+		lb.pressed.connect(func(): look_changed.emit(i))
+		looks.add_child(lb)
+		_look_buttons.append(lb)
+	v.add_child(looks)
+	_look_caption = Style.label("", "Caption", true)
+	v.add_child(_look_caption)
 	v.add_child(Style.label("COLOUR MAP", "SectionTitle"))
 	var group := ButtonGroup.new()
 	for i in MAPS.size():
@@ -378,6 +400,13 @@ func set_heatmap(i: int) -> void:
 		_map_buttons[k].set_pressed_no_signal(k == i)
 	_map_caption.text = MAPS[i][1]
 	_view_button.text = "" if narrow else ("View" if i == 0 else MAPS[i][0].get_slice(" (", 0))
+
+
+## Show which look is on (the switch does not apply it: main.gd does).
+func show_look(i: int) -> void:
+	for k in _look_buttons.size():
+		_look_buttons[k].set_pressed_no_signal(k == i)
+	_look_caption.text = Look.BLURBS[i]
 
 
 func refresh() -> void:

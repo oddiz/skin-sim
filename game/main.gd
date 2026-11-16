@@ -50,6 +50,9 @@ extends Node3D
 ##                             pixel density, e.g. 3 on a phone)
 ##   --open <panel>            open tissue | view | help | sheet | sheet-full
 ##   --tool <n>                pick a tool (0 grab .. 7 mark)
+##   --look <n>                visual style (0 classic, 1 illustration)
+##   --plain                   demos leave the colour map off
+##   --zoom <x>                screenshots: zoom in x times on the middle
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
 ##   --demo-cut                cut a 30 mm vertical incision, then pull its
 ##                             right lip 8 mm right so it gapes (for checks)
@@ -79,6 +82,10 @@ enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK }
 @onready var camera: Camera3D = $Camera3D
 @onready var ui: AppShell = $HUD/AppShell
 @onready var overlay: GrabOverlay = $HUD/GrabOverlay
+@onready var sun: DirectionalLight3D = $Sun
+@onready var world_env: WorldEnvironment = $WorldEnvironment
+## The visual style (game/looks/look.gd).
+var look: Look
 ## The current tool's settings (part of ui; kept as a short name).
 var panel: ContextPanel
 
@@ -154,6 +161,7 @@ func _ready() -> void:
 	ui.tool_selected.connect(_set_tool)
 	ui.undo_requested.connect(_undo)
 	ui.fit_requested.connect(_frame_sheet)
+	ui.look_changed.connect(apply_look)
 	ui.cleared.connect(_on_cleared)
 	panel.pen_color_changed.connect(func(i: int): _pen_color = i)
 	panel.tightness_changed.connect(func(t: float):
@@ -179,6 +187,8 @@ func _ready() -> void:
 	_frame_sheet()
 
 	var args := OS.get_cmdline_user_args()
+	var lk := args.find("--look")
+	apply_look(int(args[lk + 1]) if lk != -1 and lk + 1 < args.size() else 1)
 	if args.has("--demo-pull"):
 		_demo_pull()
 	if args.has("--demo-cut"):
@@ -209,6 +219,19 @@ func _ready() -> void:
 	var i := args.find("--screenshot")
 	if i != -1 and i + 1 < args.size():
 		_save_screenshot_and_quit(args[i + 1])
+
+
+## Demos turn a colour map on at the end; --plain keeps the plain skin
+## (for screenshots of the looks).
+func _demo_map(i: int) -> void:
+	sheet.heatmap = 0 if OS.get_cmdline_user_args().has("--plain") else i
+
+
+## Switch the visual style (0 Classic, 1 Illustration, ...).
+func apply_look(i: int) -> void:
+	look = Look.make(i)
+	look.apply(sheet, sun, world_env.environment, overlay)
+	ui.show_look(look.index)
 
 
 func _set_tool(t: int) -> void:
@@ -868,7 +891,7 @@ func _demo_suture() -> void:
 	_set_tool(Tool.GRAB)
 	_touch(0, Vector2(8, 0), true)
 	_drag(0, Vector2(15, 0))
-	sheet.heatmap = 2
+	_demo_map(2)
 	ui.refresh()
 
 
@@ -892,7 +915,7 @@ func _demo_flap(type: int) -> void:
 	for _frame in 30:
 		await get_tree().process_frame
 	_tie_key_sutures()
-	sheet.heatmap = 1
+	_demo_map(1)
 	ui.refresh()
 
 
@@ -957,6 +980,10 @@ func _frame_sheet() -> void:
 
 
 func _save_screenshot_and_quit(path: String) -> void:
+	var args := OS.get_cmdline_user_args()
+	var z := args.find("--zoom")  # closer look at the middle of the skin
+	if z != -1 and z + 1 < args.size():
+		_zoom_about(get_viewport().get_visible_rect().size * 0.5, 1.0 / float(args[z + 1]))
 	# Let the solver run for a moment (about 2 s at 60 fps), then capture.
 	for _frame in 120:
 		await RenderingServer.frame_post_draw
@@ -1009,7 +1036,7 @@ func _demo_m6() -> void:
 		_drag(0, Vector2(8, -18 + 2 * k))
 	_touch(0, Vector2(8, 18), false)
 	await get_tree().process_frame
-	sheet.heatmap = 1
+	_demo_map(1)
 	ui.refresh()
 
 
@@ -1233,7 +1260,7 @@ func _demo_excise() -> void:
 		_touch(0, Vector2(x, -hw - 3.0), false)
 		await get_tree().process_frame
 	_set_tool(Tool.GRAB)
-	sheet.heatmap = 4
+	_demo_map(4)
 	ui.refresh()
 
 
@@ -1263,7 +1290,7 @@ func _demo_wrinkle() -> void:
 		_touch(0, Vector2(x, -hw - 3.0), false)
 		await get_tree().process_frame
 	_set_tool(Tool.GRAB)
-	sheet.heatmap = 5
+	_demo_map(5)
 	ui.refresh()
 
 

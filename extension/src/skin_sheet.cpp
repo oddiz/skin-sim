@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <queue>
 
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -211,6 +213,17 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_iterations_per_frame"), &SkinSheet::get_iterations_per_frame);
     ClassDB::bind_method(D_METHOD("set_show_wireframe", "show"), &SkinSheet::set_show_wireframe);
     ClassDB::bind_method(D_METHOD("get_show_wireframe"), &SkinSheet::get_show_wireframe);
+    ClassDB::bind_method(D_METHOD("set_skin_material", "material"), &SkinSheet::set_skin_material);
+    ClassDB::bind_method(D_METHOD("get_skin_material"), &SkinSheet::get_skin_material);
+    ClassDB::bind_method(D_METHOD("set_wall_material", "material"), &SkinSheet::set_wall_material);
+    ClassDB::bind_method(D_METHOD("get_wall_material"), &SkinSheet::get_wall_material);
+    ClassDB::bind_method(D_METHOD("set_bed_material", "material"), &SkinSheet::set_bed_material);
+    ClassDB::bind_method(D_METHOD("get_bed_material"), &SkinSheet::get_bed_material);
+    ClassDB::bind_method(D_METHOD("set_relief_mm", "mm"), &SkinSheet::set_relief_mm);
+    ClassDB::bind_method(D_METHOD("get_relief_mm"), &SkinSheet::get_relief_mm);
+    ClassDB::bind_method(D_METHOD("set_wall_width_mm", "mm"), &SkinSheet::set_wall_width_mm);
+    ClassDB::bind_method(D_METHOD("get_wall_width_mm"), &SkinSheet::get_wall_width_mm);
+    ClassDB::bind_method(D_METHOD("get_wound_info"), &SkinSheet::get_wound_info);
     ClassDB::bind_method(D_METHOD("set_skin_color", "color"), &SkinSheet::set_skin_color);
     ClassDB::bind_method(D_METHOD("get_skin_color"), &SkinSheet::get_skin_color);
 
@@ -352,6 +365,16 @@ void SkinSheet::_bind_methods() {
     ADD_GROUP("Display", "");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "show_wireframe"), "set_show_wireframe", "get_show_wireframe");
     ADD_PROPERTY(PropertyInfo(Variant::COLOR, "skin_color"), "set_skin_color", "get_skin_color");
+    ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "skin_material", PROPERTY_HINT_RESOURCE_TYPE, "Material"),
+                 "set_skin_material", "get_skin_material");
+    ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "wall_material", PROPERTY_HINT_RESOURCE_TYPE, "Material"),
+                 "set_wall_material", "get_wall_material");
+    ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "bed_material", PROPERTY_HINT_RESOURCE_TYPE, "Material"),
+                 "set_bed_material", "get_bed_material");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "relief_mm", PROPERTY_HINT_RANGE, "0,5,0.1,suffix:mm"),
+                 "set_relief_mm", "get_relief_mm");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "wall_width_mm", PROPERTY_HINT_RANGE, "0,3,0.05,suffix:mm"),
+                 "set_wall_width_mm", "get_wall_width_mm");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "heatmap", PROPERTY_HINT_ENUM,
                               "Off,Max principal stress,Von Mises stress,Area change,Min principal stress,"
                               "Excess skin (wrinkles)"),
@@ -877,6 +900,85 @@ void SkinSheet::set_show_wireframe(bool p_show) {
     if (is_inside_tree()) update_render_mesh();
 }
 
+void SkinSheet::set_skin_material(const Ref<Material>& p_material) {
+    custom_skin_material_ = p_material;
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::set_wall_material(const Ref<Material>& p_material) {
+    custom_wall_material_ = p_material;
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::set_bed_material(const Ref<Material>& p_material) {
+    custom_bed_material_ = p_material;
+    if (wound_bed_mesh_.is_valid())
+        wound_bed_mesh_->set_material(p_material.is_valid() ? p_material : Ref<Material>(bed_material_));
+}
+
+void SkinSheet::set_relief_mm(double p_mm) {
+    relief_mm_ = std::clamp(std::isfinite(p_mm) ? p_mm : 0.0, 0.0, 5.0);
+    if (is_inside_tree()) update_render_mesh();
+}
+
+void SkinSheet::set_wall_width_mm(double p_mm) {
+    wall_width_mm_ = std::clamp(std::isfinite(p_mm) ? p_mm : 0.0, 0.0, 3.0);
+    if (is_inside_tree()) update_render_mesh();
+}
+
+Dictionary SkinSheet::get_wound_info() const {
+    Dictionary d;
+    d["since_cut_s"] = static_cast<double>(Time::get_singleton()->get_ticks_msec()) / 1000.0 - topology_time_s_;
+    d["has_cuts"] = !mesh_.cut_edges.empty();
+    return d;
+}
+
+// Distance from every vertex to the nearest incision lip, along mesh edges
+// in the rest shape (Dijkstra from all lip vertices at once), and for each
+// lip edge the triangle it borders. Only the topology matters, so this runs
+// once per cut, not per frame.
+void SkinSheet::update_lip_data() {
+    constexpr double kCap = 30.0;  // mm: far enough for any shading
+    const int n = mesh_.vertex_count();
+    lip_distance_.assign(n, kCap);
+    cut_edge_third_.assign(mesh_.cut_edges.size(), -1);
+    if (mesh_.cut_edges.empty()) return;
+    std::vector<std::vector<std::pair<int, double>>> adj(n);
+    for (const skinsim::Edge& e : edges_) {
+        const double len = (mesh_.rest_positions.col(e[0]) - mesh_.rest_positions.col(e[1])).norm();
+        adj[e[0]].push_back({e[1], len});
+        adj[e[1]].push_back({e[0], len});
+    }
+    using Item = std::pair<double, int>;
+    std::priority_queue<Item, std::vector<Item>, std::greater<Item>> queue;
+    for (const skinsim::Edge& e : mesh_.cut_edges)
+        for (int v : e) {
+            lip_distance_[v] = 0.0;
+            queue.push({0.0, v});
+        }
+    while (!queue.empty()) {
+        const auto [d, v] = queue.top();
+        queue.pop();
+        if (d > lip_distance_[v]) continue;
+        for (const auto& [w, len] : adj[v])
+            if (d + len < lip_distance_[w]) {
+                lip_distance_[w] = d + len;
+                queue.push({d + len, w});
+            }
+    }
+    // Which triangle borders each lip edge (its third vertex says which side is skin).
+    std::map<std::pair<int, int>, int> third;
+    for (const skinsim::Triangle& t : mesh_.triangles)
+        for (int k = 0; k < 3; ++k) {
+            const int a = t[k], b = t[(k + 1) % 3];
+            third[{std::min(a, b), std::max(a, b)}] = t[(k + 2) % 3];
+        }
+    for (size_t i = 0; i < mesh_.cut_edges.size(); ++i) {
+        const auto it = third.find({mesh_.cut_edges[i][0], mesh_.cut_edges[i][1]});
+        if (it != third.end()) cut_edge_third_[i] = it->second;
+    }
+}
+
 void SkinSheet::set_skin_color(const Color& p_color) {
     skin_color_ = p_color;
     update_skin_material();
@@ -1311,6 +1413,7 @@ void fragment() {
     lip_material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
     lip_material_->set_albedo(Color(1, 1, 1));
     lip_material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);  // colour per lip node
+    lip_material_->set_cull_mode(BaseMaterial3D::CULL_DISABLED);  // cut walls face either way
 
     // Internal child: hidden from the Scene dock and never saved into the .tscn,
     // so saving the scene doesn't write the whole generated mesh into it.
@@ -1321,10 +1424,11 @@ void fragment() {
     // Wound bed: a flat dark-red layer just under the skin. Covered by the
     // skin everywhere, except where an incision has opened. PlaneMesh lies
     // in the XZ plane facing +Y, like the sheet.
-    Ref<StandardMaterial3D> bed_material;
-    bed_material.instantiate();
-    bed_material->set_albedo(Color(0.42, 0.08, 0.08));
-    bed_material->set_roughness(0.6);
+    bed_material_.instantiate();
+    bed_material_->set_albedo(Color(0.42, 0.08, 0.08));
+    bed_material_->set_roughness(0.6);
+    const Ref<Material> bed_material =
+        custom_bed_material_.is_valid() ? custom_bed_material_ : Ref<Material>(bed_material_);
     wound_bed_mesh_.instantiate();
     wound_bed_mesh_->set_material(bed_material);
     wound_bed_ = memnew(MeshInstance3D);
@@ -1352,6 +1456,8 @@ void SkinSheet::topology_changed() {
     stroke_triangles_.clear();  // new triangles: sample them again
     edges_ = skinsim::unique_edges(mesh_);
     push_params();  // a cut creates a new Simulation; it copies params, but be explicit
+    update_lip_data();
+    topology_time_s_ = static_cast<double>(Time::get_singleton()->get_ticks_msec()) / 1000.0;
     update_render_mesh();
     emit_signal("cuts_changed");
 }
@@ -1368,6 +1474,38 @@ void SkinSheet::update_render_mesh() {
     const int n_tris = mesh_.triangle_count();
 
     // --- Surface 0: the skin itself --------------------------------------
+    const bool heat = heatmap_ != HEATMAP_OFF;
+    const bool custom = custom_skin_material_.is_valid() && !heat;
+    if (lip_distance_.size() != static_cast<size_t>(n_verts)) update_lip_data();
+
+    // Relief for shading: puckered skin (excess skin: dog-ears, wrinkles)
+    // rises, and the lips round off into the wound. Drawn through the
+    // normals only (the sheet stays flat, so nothing pokes through anything).
+    Eigen::VectorXd excess;
+    if (!heat || custom) excess = s->vertex_field(skinsim::Field::ExcessSkin);
+    Eigen::VectorXd height = Eigen::VectorXd::Zero(n_verts);
+    if (excess.size() == n_verts)
+        for (int i = 0; i < n_verts; ++i)
+            height[i] = relief_mm_ * std::clamp(excess[i] / kExcessRange, 0.0, 1.5) -
+                        0.35 * relief_mm_ * std::exp(-lip_distance_[i] / 0.6);
+    // Slope of that height per triangle, area-weighted onto the vertices.
+    Eigen::Matrix2Xd slope = Eigen::Matrix2Xd::Zero(2, n_verts);
+    Eigen::VectorXd slope_w = Eigen::VectorXd::Zero(n_verts);
+    if (!heat && relief_mm_ > 0.0)
+        for (const skinsim::Triangle& t : mesh_.triangles) {
+            const Eigen::Vector2d p0 = x.col(t[0]), e1 = x.col(t[1]) - p0, e2 = x.col(t[2]) - p0;
+            const double det = e1.x() * e2.y() - e1.y() * e2.x();
+            if (std::abs(det) < 1e-12) continue;
+            const double dh1 = height[t[1]] - height[t[0]], dh2 = height[t[2]] - height[t[0]];
+            // Solve [e1 e2]^T g = (dh1, dh2) for the gradient g.
+            const Eigen::Vector2d g((dh1 * e2.y() - dh2 * e1.y()) / det, (dh2 * e1.x() - dh1 * e2.x()) / det);
+            const double area = 0.5 * std::abs(det);
+            for (int v : t) {
+                slope.col(v) += area * g;
+                slope_w[v] += area;
+            }
+        }
+
     PackedVector3Array vertices;
     PackedVector3Array normals;
     vertices.resize(n_verts);
@@ -1377,7 +1515,10 @@ void SkinSheet::update_render_mesh() {
     Vector3* nw = normals.ptrw();
     for (int i = 0; i < n_verts; ++i) {
         vw[i] = to_godot(x.col(i));
-        nw[i] = Vector3(0, 1, 0);  // the sheet stays flat: every normal points up
+        // Height h(x, y) has normal (-hx, -hy, 1); in Godot's axes (x, up, -y)
+        // that is (-hx, 1, hy).
+        const Eigen::Vector2d g = slope_w[i] > 0.0 ? Eigen::Vector2d(slope.col(i) / slope_w[i]) : Eigen::Vector2d::Zero();
+        nw[i] = Vector3(static_cast<real_t>(-g.x()), 1, static_cast<real_t>(g.y())).normalized();
     }
 
     PackedInt32Array indices;
@@ -1398,36 +1539,67 @@ void SkinSheet::update_render_mesh() {
     arrays[Mesh::ARRAY_NORMAL] = normals;
     arrays[Mesh::ARRAY_INDEX] = indices;
 
-    // Heatmap: one colour per vertex; the GPU blends them smoothly across
-    // each triangle. Values come from the solver's vertex-averaged field.
-    if (heatmap_ != HEATMAP_OFF) {
+    const Eigen::VectorXd& und = s->undermining();
+    if (heat) {
+        // Heatmap: the value's position on the colour scale goes into the
+        // UVs; the shader turns it into a colour (and contour lines) per pixel.
         const Eigen::VectorXd values = s->vertex_field(heat_field(), heatmap_relative_);
         update_auto_range(values);
-        // The value's position on the colour scale goes into the UVs; the
-        // shader turns it into a colour (and contour lines) per pixel.
         PackedVector2Array uvs;
         uvs.resize(n_verts);
         Vector2* uw = uvs.ptrw();
         for (int i = 0; i < n_verts; ++i) uw[i] = Vector2(static_cast<real_t>(heat_t(values[i])), 0);
         arrays[Mesh::ARRAY_TEX_UV] = uvs;
+    } else if (custom) {
+        // Data for the look's shader (see set_skin_material).
+        const Eigen::VectorXd area = s->vertex_field(skinsim::Field::AreaChange);
+        const std::vector<skinsim::PrincipalStress> p = s->triangle_principal(false);
+        // Compression direction per vertex. A direction and its opposite are
+        // the same, so average the doubled angle (cos 2a, sin 2a).
+        Eigen::Matrix2Xd dir = Eigen::Matrix2Xd::Zero(2, n_verts);
+        for (int t = 0; t < n_tris; ++t) {
+            const Eigen::Vector2d d1 = p[t].dir1;  // tension; compression is at right angles
+            const Eigen::Vector2d c2(d1.y() * d1.y() - d1.x() * d1.x(), -2.0 * d1.x() * d1.y());
+            for (int v : mesh_.triangles[t]) dir.col(v) += c2;
+        }
+        PackedVector2Array uvs, uv2s;
+        PackedColorArray colors;
+        uvs.resize(n_verts);
+        uv2s.resize(n_verts);
+        colors.resize(n_verts);
+        Vector2* uw = uvs.ptrw();
+        Vector2* u2 = uv2s.ptrw();
+        Color* cw = colors.ptrw();
+        for (int i = 0; i < n_verts; ++i) {
+            const Eigen::Vector2d r = mesh_.rest_positions.col(i);
+            uw[i] = Vector2(static_cast<real_t>(r.x()), static_cast<real_t>(r.y()));
+            u2[i] = Vector2(static_cast<real_t>(area[i]), static_cast<real_t>(lip_distance_[i]));
+            Eigen::Vector2d d = dir.col(i);
+            if (d.norm() > 1e-12) d.normalize();
+            cw[i] = Color(static_cast<real_t>(i < und.size() ? und[i] : 0.0),
+                          static_cast<real_t>(std::clamp(excess[i] / kExcessRange, 0.0, 1.0)),
+                          static_cast<real_t>(0.5 + 0.5 * d.x()), static_cast<real_t>(0.5 + 0.5 * d.y()));
+        }
+        arrays[Mesh::ARRAY_TEX_UV] = uvs;
+        arrays[Mesh::ARRAY_TEX_UV2] = uv2s;
+        arrays[Mesh::ARRAY_COLOR] = colors;
     } else {
         // Plain skin; undermined areas a duskier, darker shade so the
         // painted region is visible.
-        const Eigen::VectorXd& u = s->undermining();
         const Color undermined = Color(0.58, 0.40, 0.44);
         PackedColorArray colors;
         colors.resize(n_verts);
         Color* cw = colors.ptrw();
         for (int i = 0; i < n_verts; ++i)
-            cw[i] = skin_color_.lerp(undermined, static_cast<real_t>(0.75 * (i < u.size() ? u[i] : 0.0)));
+            cw[i] = skin_color_.lerp(undermined, static_cast<real_t>(0.75 * (i < und.size() ? und[i] : 0.0)));
         arrays[Mesh::ARRAY_COLOR] = colors;
     }
 
     render_mesh_->clear_surfaces();
     render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
-    render_mesh_->surface_set_material(0, heatmap_ != HEATMAP_OFF && heat_material_.is_valid()
-                                              ? Ref<Material>(heat_material_)
-                                              : Ref<Material>(skin_material_));
+    render_mesh_->surface_set_material(0, heat && heat_material_.is_valid() ? Ref<Material>(heat_material_)
+                                          : custom                          ? custom_skin_material_
+                                                                            : Ref<Material>(skin_material_));
 
     // --- Surface 1: wireframe ------------------------------------------------
     if (show_wireframe_) {
@@ -1452,36 +1624,93 @@ void SkinSheet::update_render_mesh() {
         render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1, wire_material_);
     }
 
-    // --- Incision lips: always drawn, dark red; blue where pressed ----------
-    // against the opposite lip (lip contact), the deeper blue the higher the
-    // pressure.
+    // --- Cut walls: the cut face of each lip, seen from above ---------------
+    // Straight down, a cut wall would be invisible from the top-down camera.
+    // Drawn sloping into the wound instead, it shows as a band as wide as
+    // wall_width_mm: the layers of the skin (epidermis, dermis, fat), as a
+    // surgeon sees them in a gaping wound. Where the lips meet, the band
+    // slides under the other lip and is hidden. Colour: dark red, blue where
+    // pressed against the opposite lip (lip contact), the deeper blue the
+    // higher the pressure; alpha = that pressure for custom shaders.
     if (!mesh_.cut_edges.empty()) {
         const Eigen::VectorXd pressure = s->contact_info().node_pressure;  // MPa per vertex
         const Color free_lip(0.45, 0.02, 0.04), pressed_lip(0.1, 0.35, 1.0);
-        auto lip_color = [&](int v) {
-            // Full blue from ~300 kPa; the square root makes light contact visible too.
-            const double s = std::sqrt(std::clamp(pressure[v] / 0.3, 0.0, 1.0));
-            return free_lip.lerp(pressed_lip, static_cast<float>(s));
-        };
-        PackedVector3Array lip_vertices;
-        PackedColorArray lip_colors;
-        lip_vertices.resize(2 * static_cast<int64_t>(mesh_.cut_edges.size()));
-        lip_colors.resize(lip_vertices.size());
-        Vector3* lv = lip_vertices.ptrw();
-        Color* lc = lip_colors.ptrw();
-        for (size_t e = 0; e < mesh_.cut_edges.size(); ++e) {
-            for (int k = 0; k < 2; ++k) {
-                const int v = mesh_.cut_edges[e][k];
-                lv[2 * e + k] = to_godot(x.col(v), kLipLift);
-                lc[2 * e + k] = lip_color(v);
-            }
+        const size_t n_cut = mesh_.cut_edges.size();
+        // Outward direction of each lip edge (away from its own skin), and
+        // smoothed per vertex so neighbouring quads join up.
+        std::vector<Eigen::Vector2d> edge_out(n_cut, Eigen::Vector2d::Zero());
+        std::map<int, Eigen::Vector2d> vertex_out;
+        for (size_t e = 0; e < n_cut; ++e) {
+            const int a = mesh_.cut_edges[e][0], b = mesh_.cut_edges[e][1];
+            const Eigen::Vector2d d = x.col(b) - x.col(a);
+            if (d.norm() < 1e-9) continue;
+            Eigen::Vector2d o(d.y(), -d.x());
+            o.normalize();
+            const int t = e < cut_edge_third_.size() ? cut_edge_third_[e] : -1;
+            if (t >= 0 && o.dot(x.col(t) - x.col(a)) > 0.0) o = -o;
+            edge_out[e] = o;
+            vertex_out[a] += o;
+            vertex_out[b] += o;
         }
-        Array lip_arrays;
-        lip_arrays.resize(Mesh::ARRAY_MAX);
-        lip_arrays[Mesh::ARRAY_VERTEX] = lip_vertices;
-        lip_arrays[Mesh::ARRAY_COLOR] = lip_colors;
-        render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_LINES, lip_arrays);
-        render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1, lip_material_);
+        const real_t depth = kWoundBedDepth * 0.8f;
+        const double w = wall_width_mm_;
+        PackedVector3Array wv, wn;
+        PackedVector2Array wuv;
+        PackedColorArray wc;
+        PackedInt32Array wi;
+        wv.resize(4 * n_cut);
+        wn.resize(4 * n_cut);
+        wuv.resize(4 * n_cut);
+        wc.resize(4 * n_cut);
+        wi.resize(6 * n_cut);
+        for (size_t e = 0; e < n_cut; ++e) {
+            const int ends[2] = {mesh_.cut_edges[e][0], mesh_.cut_edges[e][1]};
+            const Eigen::Vector2d& o = edge_out[e];
+            // Normal of a slope going down by `depth` over `w`: tilted towards the wound.
+            const Vector3 n = Vector3(static_cast<real_t>(o.x() * depth), static_cast<real_t>(w),
+                                      static_cast<real_t>(-o.y() * depth)).normalized();
+            for (int k = 0; k < 2; ++k) {
+                const int v = ends[k];
+                Eigen::Vector2d vo = vertex_out[v];
+                vo = vo.norm() > 0.3 ? Eigen::Vector2d(vo.normalized()) : o;  // (tip of a cut: both lips)
+                const double s_along = mesh_.rest_positions(0, v) * 0.71 + mesh_.rest_positions(1, v) * 0.71;
+                const double press = std::sqrt(std::clamp((v < pressure.size() ? pressure[v] : 0.0) / 0.3, 0.0, 1.0));
+                Color col = free_lip.lerp(pressed_lip, static_cast<float>(press));
+                col.a = static_cast<float>(press);
+                const int top = static_cast<int>(4 * e) + 2 * k, bottom = top + 1;
+                wv.set(top, to_godot(x.col(v), -0.02f));
+                wv.set(bottom, to_godot(Eigen::Vector2d(x.col(v) + w * vo), -depth));
+                wuv.set(top, Vector2(static_cast<real_t>(s_along), 0));
+                wuv.set(bottom, Vector2(static_cast<real_t>(s_along), 1));
+                wn.set(top, n);
+                wn.set(bottom, n);
+                wc.set(top, col);
+                wc.set(bottom, col);
+            }
+            const int b0 = static_cast<int>(4 * e);
+            // Two triangles facing the camera: seen from above (solver x, y)
+            // a counter-clockwise triangle needs its last two indices swapped,
+            // as for the skin. (Faces turned away would be lit from behind.)
+            const Vector3 p0 = wv[b0], p1 = wv[b0 + 1], p3 = wv[b0 + 3];
+            // Godot (x, z) = solver (x, -y): counter-clockwise in solver terms
+            // is clockwise in (x, z).
+            const real_t cross = (p1.x - p0.x) * (p3.z - p0.z) - (p1.z - p0.z) * (p3.x - p0.x);
+            const bool ccw = cross < 0;
+            const int quad[6] = {b0, ccw ? b0 + 3 : b0 + 1, ccw ? b0 + 1 : b0 + 3,
+                                 b0, ccw ? b0 + 2 : b0 + 3, ccw ? b0 + 3 : b0 + 2};
+            for (int k = 0; k < 6; ++k) wi.set(6 * e + k, quad[k]);
+        }
+        Array wall_arrays;
+        wall_arrays.resize(Mesh::ARRAY_MAX);
+        wall_arrays[Mesh::ARRAY_VERTEX] = wv;
+        wall_arrays[Mesh::ARRAY_NORMAL] = wn;
+        wall_arrays[Mesh::ARRAY_TEX_UV] = wuv;
+        wall_arrays[Mesh::ARRAY_COLOR] = wc;
+        wall_arrays[Mesh::ARRAY_INDEX] = wi;
+        render_mesh_->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, wall_arrays);
+        render_mesh_->surface_set_material(render_mesh_->get_surface_count() - 1,
+                                           custom_wall_material_.is_valid() ? custom_wall_material_
+                                                                            : Ref<Material>(lip_material_));
     }
 }
 

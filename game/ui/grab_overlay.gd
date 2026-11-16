@@ -34,6 +34,9 @@ var excise_outline := PackedVector2Array()
 var flap_preview: Dictionary = {}
 ## Stress maps: short strokes along the direction of the tension.
 var show_tension_lines := true
+## The look's way of drawing (Look.overlay_style): thread_width, outline
+## (dark edge under the thread), knot (a knot on the thread). Empty: plain.
+var style := {}
 ## Where to read the colour map's value (mouse or finger; x < 0: nowhere).
 var probe_pos := Vector2(-1, -1)
 ## Undermining brush outline (x < 0: hidden).
@@ -146,9 +149,19 @@ func _draw_sutures(font: Font) -> void:
 		if overloaded and fmod(Time.get_ticks_msec() / 250.0, 2.0) < 1.0:
 			color = Color(1, 1, 1)
 		# The thread between the two needle holes; a white halo when selected.
+		var tw: float = style.get("thread_width", 2.5)
 		if su.id == selected_suture:
-			draw_line(a, b, Color(1, 1, 1, 0.9), 7.0, true)
-		draw_line(a, b, Color(0.05, 0.05, 0.15), 2.5, true)
+			draw_line(a, b, Color(1, 1, 1, 0.9), tw + 4.5, true)
+		if style.get("outline", false):
+			# A thread coloured by its load, on a dark edge so it reads on skin.
+			draw_line(a, b, Color(0.08, 0.04, 0.04, 0.75), tw + 2.0, true)
+			draw_line(a, b, color, tw, true)
+		else:
+			draw_line(a, b, Color(0.05, 0.05, 0.15), tw, true)
+		if style.get("knot", false):
+			var k := a.lerp(b, 0.3)
+			draw_circle(k, tw * 1.3, Color(0.08, 0.04, 0.04, 0.85))
+			draw_circle(k, tw * 0.8, color)
 		draw_circle(a, 3.5 if overloaded else 3.0, color)
 		draw_circle(b, 3.5 if overloaded else 3.0, color)
 		# Text only where it helps (see label_mode): with many sutures, labels

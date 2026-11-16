@@ -127,6 +127,31 @@ public:
     bool get_show_wireframe() const { return show_wireframe_; }
     void set_skin_color(const Color& p_color);
     Color get_skin_color() const { return skin_color_; }
+
+    // --- Looks (game/looks/): materials for the skin, the cut walls and the
+    // wound bed. Null = the built-in plain ones. With a custom skin
+    // material the skin's vertex data is for its shader:
+    //   UV    = rest (tissue) position, mm: detail drawn on it moves with the skin
+    //   UV2   = (area change J, distance to the nearest incision lip in mm)
+    //   COLOR = (undermined 0..1, excess skin / 0.3, compression direction
+    //            as (cos 2a, sin 2a) mapped to 0..1)
+    // Cut walls: UV = (position along the lip, mm; depth 0 at the skin .. 1),
+    // COLOR = plain lip colour, alpha = lip contact pressure (0..1).
+    void set_skin_material(const Ref<Material>& p_material);
+    Ref<Material> get_skin_material() const { return custom_skin_material_; }
+    void set_wall_material(const Ref<Material>& p_material);
+    Ref<Material> get_wall_material() const { return custom_wall_material_; }
+    void set_bed_material(const Ref<Material>& p_material);
+    Ref<Material> get_bed_material() const { return custom_bed_material_; }
+    // Shading relief, mm: how high puckered skin (dog-ears, excess skin)
+    // is drawn, and how rounded the lips are. Normals only: the sheet stays flat.
+    void set_relief_mm(double p_mm);
+    double get_relief_mm() const { return relief_mm_; }
+    // Width of the cut face seen from above (the wall sloping into the wound), mm.
+    void set_wall_width_mm(double p_mm);
+    double get_wall_width_mm() const { return wall_width_mm_; }
+    // since_cut_s: seconds since the incisions last changed (for bleeding).
+    Dictionary get_wound_info() const;
     // Heatmap: 0 = off, 1 = max principal stress, 2 = von Mises stress,
     // 3 = area change. The range sets the colour scale for the stresses (kPa);
     // area change always spans 1/1.5 .. 1.5x.
@@ -381,6 +406,17 @@ private:
     Ref<ImageTexture> heat_ramp_;
     Ref<StandardMaterial3D> wire_material_;
     Ref<StandardMaterial3D> lip_material_;
+    Ref<StandardMaterial3D> bed_material_;
+    Ref<Material> custom_skin_material_, custom_wall_material_, custom_bed_material_;
+    double relief_mm_ = 1.5;
+    double wall_width_mm_ = 0.8;
+    // Per vertex: distance to the nearest incision lip over the mesh, rest
+    // mm (capped). Recomputed after each cut.
+    std::vector<double> lip_distance_;
+    // Per cut edge: the third vertex of its triangle (which side is skin).
+    std::vector<int> cut_edge_third_;
+    double topology_time_s_ = -1e9;
+    void update_lip_data();
     Ref<PlaneMesh> wound_bed_mesh_;
     MeshInstance3D* mesh_instance_ = nullptr;  // our internal children; Godot frees them
     MeshInstance3D* wound_bed_ = nullptr;      // dark layer under the sheet, seen through open wounds

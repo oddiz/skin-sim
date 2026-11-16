@@ -288,6 +288,31 @@ Sources for the designs: StatPearls (local flaps, rhombic flaps); Zitelli's
 bilobed geometry (pivot one radius away, 45-50 degree lobes); Webster et al.
 1978 and Dufourmentel 1962 via review articles; Behan 2003 (keystone).
 
+## Looks (graphics)
+
+View → **Look** switches the visual style live; nothing in the mechanics
+changes. `--look N` picks one from the command line.
+
+- **Classic**: the plain working view (flat colours).
+- **Illustration** (default): stylised realism, like a surgical atlas. Soft
+  wrapped light; faint mottling fixed to the tissue (it moves with the skin);
+  skin pales where it is stretched and flushes where it is squeezed
+  (blanching); puckered skin (dog-ears) is shaded as a bulge and hatched
+  across its wrinkles; every incision has a fine ink line, and the cut face
+  shows the layers (epidermis, dermis, yellow fat lobules) above the red
+  wound bed.
+- Realistic and Game looks are planned next (G2, G3).
+
+How it works: SkinSheet gives each vertex extra data for the shaders (its
+rest position, the excess skin and the direction the skin is squeezed, the
+area change, the distance to the nearest incision), and a shading relief
+(normals tilted where skin puckers and at the rounded lips). The cut face is
+drawn as a narrow band sloping into the wound, since a vertical wall is
+invisible from straight above. The shaders are in `game/looks/`
+(`skin_illustration.gdshader`, `walls.gdshader`, `bed.gdshader`) and can be
+edited without touching C++. Every look uses Godot's Compatibility renderer
+(as the browser does), so the desktop shows what a phone shows.
+
 ## Reading the tension map
 
 The **Tension** map colours the largest principal stress; **Squeezing** the

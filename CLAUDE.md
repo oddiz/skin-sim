@@ -105,6 +105,11 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 - Tension map: stress relative to resting skin (Simulation::resting_stress), auto scale
   (92nd percentile, 1-2-5 steps, hysteresis), contour shader (UV.x = scale position),
   principal-direction strokes (SkinSheet.get_tension_lines), value under the pointer.
+- Graphics (plan G1-G4: Classic / Illustration / Realistic / Game looks, switchable in View):
+  game/looks/look.gd + .gdshader files; SkinSheet skin/wall/bed_material slots and per-vertex
+  shader data (UV rest mm, UV2 (J, lip distance), COLOR (undermined, excess, squeeze dir));
+  cut walls = sloped bands; relief normals. Renderer: gl_compatibility everywhere (web parity).
+  Screenshots: --look N --plain --zoom X.
 
 ## Planned features
 - Z-plasty in the simulation; scenarios (UI4); tissue drawer polish (UI3).
