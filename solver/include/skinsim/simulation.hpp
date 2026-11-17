@@ -22,6 +22,7 @@
 // Equilibrium = minimum of E. step() moves towards it with Newton's method.
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <vector>
 
@@ -245,6 +246,22 @@ public:
     // (e.g. inside an excised defect).
     bool current_position_at_rest(const Eigen::Vector2d& X, Eigen::Vector2d& out) const;
 
+    // --- markings (see marks.cpp) ---
+    // A line drawn on the skin at rest (a pen marking, a lesion outline) as
+    // the tissue under it is now. Sampled every max_step mm, so it bends with
+    // the skin instead of cutting corners, and broken where it crosses an
+    // incision (each piece ends on its own lip, nothing is drawn across an
+    // open wound) or leaves the skin (an excised hole, past the border).
+    // Pieces with fewer than 2 points are left out. For a closed shape, repeat
+    // the first point at the end.
+    std::vector<std::vector<Eigen::Vector2d>> map_rest_polyline(const std::vector<Eigen::Vector2d>& rest,
+                                                                 double max_step = 0.5) const;
+    // The same, as material points: they only depend on the mesh, so they are
+    // computed once per polyline and mesh (cached here) and stay valid while
+    // the skin moves.
+    const std::vector<std::vector<MaterialPoint>>& rest_polyline_points(const std::vector<Eigen::Vector2d>& rest,
+                                                                         double max_step) const;
+
     // --- output ---
     // One value per mesh triangle (0 for degenerate triangles, which the
     // solver skips). Stress is the Cauchy ("true") stress in the deformed skin.
@@ -384,6 +401,15 @@ private:
     std::vector<std::vector<int>> neighbours_;  // vertex -> vertices sharing an edge
     std::vector<std::vector<int>> vertex_elements_;  // vertex -> indices into elements_
     TriangleLocator rest_locator_;                   // point -> triangle, rest shape
+    // Markings mapped to material points, keyed by a hash of the polyline
+    // (the polyline itself is kept to rule out collisions). A new mesh means
+    // a new Simulation, so the cache never outlives its mesh.
+    struct PolylineCacheEntry {
+        std::vector<Eigen::Vector2d> rest;
+        double max_step = 0.0;
+        std::vector<std::vector<MaterialPoint>> pieces;
+    };
+    mutable std::map<std::uint64_t, PolylineCacheEntry> polyline_cache_;
     std::vector<int> boundary_nodes_;           // outer border only (incision lips are free)
     std::vector<char> fixed_;    // per dof: 1 = pinned (char, not bool: see .cpp)
     Eigen::VectorXd undermining_;  // per node, 0..1

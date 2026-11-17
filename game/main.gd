@@ -1284,11 +1284,18 @@ func _demo_flap(type: int) -> void:
 	_touch(0, Vector2(0, 0), false)
 	await get_tree().process_frame
 	_set_tool(Tool.FLAP)
-	_touch(0, Vector2(0, 0), true)
-	_drag(0, Vector2(12, 0))
-	await get_tree().process_frame
-	_touch(0, Vector2(12, 0), false)
-	await get_tree().process_frame
+	# --flap-plan: draw the design with the marker first, then cut along it
+	# (the markings then lie exactly on the incisions).
+	var passes := 2 if OS.get_cmdline_user_args().has("--flap-plan") else 1
+	for p in passes:
+		panel.flap_plan_only = passes == 2 and p == 0
+		_touch(0, Vector2(0, 0), true)
+		await get_tree().process_frame
+		_drag(0, Vector2(12, 0))
+		await get_tree().process_frame
+		_touch(0, Vector2(12, 0), false)
+		await get_tree().process_frame
+	panel.flap_plan_only = false
 	# Let the defect open (prestress) before pulling the flap in.
 	for _frame in 30:
 		await get_tree().process_frame
@@ -1302,14 +1309,36 @@ func _demo_flap(type: int) -> void:
 func _demo_mark() -> void:
 	await get_tree().process_frame
 	_set_tool(Tool.MARK)
+	# One event per frame, like a real finger (Godot merges drags that
+	# arrive in the same frame).
 	_touch(0, Vector2(-20, -10), true)
 	for k in range(1, 41):
-		_drag(0, Vector2(-20 + k, -10 + 10.0 * sin(k / 6.0)))
-	_touch(0, Vector2(20, -10), false)
+		await get_tree().process_frame
+		_drag(0, Vector2(-20 + k, -10 + 6.0 * sin(k / 6.0)))
+	await get_tree().process_frame
+	_touch(0, Vector2(20, -10 + 6.0 * sin(40 / 6.0)), false)
+	await get_tree().process_frame
+	print("demo-mark: %d marks after the pen stroke" % marks.size())
+	# A long straight line (2 points only) and a ring: then cut through all
+	# three and pull the wound open. The marks must stop at the lips, not
+	# bridge the wound, and the straight line must bend with the skin.
+	marks.append({"rest": PackedVector2Array([Vector2(-30, 6), Vector2(30, 6)]), "color": 1})
+	var ring := PackedVector2Array()
+	for k in 33:
+		ring.append(Vector2(8, 0) + 6.0 * Vector2.from_angle(TAU * k / 32.0))
+	marks.append({"rest": ring, "color": 2})
+	_set_tool(Tool.CUT)
+	_touch(0, Vector2(4, -18), true)
+	for k in range(1, 37):
+		await get_tree().process_frame
+		_drag(0, Vector2(4, -18 + k))
+	await get_tree().process_frame
+	_touch(0, Vector2(4, 18), false)
 	await get_tree().process_frame
 	_set_tool(Tool.GRAB)
-	_touch(0, Vector2(0, -15), true)
-	_drag(0, Vector2(0, -25))
+	_touch(0, Vector2(10, -2), true)
+	await get_tree().process_frame
+	_drag(0, Vector2(20, -6))
 
 
 ## Close an incision with three fine 6-0 sutures, then pull one side hard:
@@ -1373,7 +1402,11 @@ func _save_screenshot_and_quit(path: String) -> void:
 	var args := OS.get_cmdline_user_args()
 	var z := args.find("--zoom")  # closer look at the middle of the skin
 	if z != -1 and z + 1 < args.size():
-		_zoom_about(get_viewport().get_visible_rect().size * 0.5, 1.0 / float(args[z + 1]))
+		var about := get_viewport().get_visible_rect().size * 0.5
+		var za := args.find("--zoom-at")  # --zoom-at X Y: about this skin point (mm)
+		if za != -1 and za + 2 < args.size():
+			about = _sheet_to_screen(Vector2(float(args[za + 1]), float(args[za + 2])))
+		_zoom_about(about, 1.0 / float(args[z + 1]))
 	# Let the solver run for a moment (about 2 s at 60 fps), then capture.
 	# --bench: let the skin come to rest first (--bench-frames N, default
 	# 600), then average the last 60 frames.
@@ -1588,11 +1621,14 @@ func _extend_mark(screen_pos: Vector2) -> void:
 
 func _commit_mark(end: Vector2) -> void:
 	_mark_touch = -1
-	overlay.pen_path = PackedVector2Array()
 	if end.distance_to(_mark_start) < TAP_PX:
+		overlay.pen_path = PackedVector2Array()
 		_erase_mark_at(end)
 		return
 	_extend_mark(end)
+	# Only now: _extend_mark sets the preview again. (Cleared before it, a
+	# ghost of every stroke stayed frozen on screen, not following the skin.)
+	overlay.pen_path = PackedVector2Array()
 	if _mark_rest.size() >= 2:
 		marks.append({"rest": _mark_rest, "color": _pen_color})
 		_history.append({"kind": "mark"})

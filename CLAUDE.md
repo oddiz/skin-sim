@@ -95,7 +95,10 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 - UI revision (plan: UI1 foundation, UI2 phone + navigation, UI3 tissue drawer, UI4 guidance):
   UI built in code under game/ui/ (style.gd tokens + Theme, app_shell, context_panel per tool,
   tissue_drawer, param_row). Inter font (OFL) + Lucide icons (ISC). Mark (pen) tool: markings
-  in rest coordinates (SkinSheet.to_rest / rest_to_world).
+  in rest coordinates (SkinSheet.to_rest / rest_to_world). Simulation::map_rest_polyline
+  (solver/src/marks.cpp) samples them every 0.5 mm and splits them at incision lips (cached
+  as material points per mesh); lesion outlines use it too. The overlay caches the projected
+  markings until the render version or the view changes.
   UI2: narrow layout (< 820 logical px: bottom tool bar + pull-up context sheet), UI scale
   from the screen's pixel density (content_scale_size = window / scale), two-finger pan/pinch
   with gesture arbitration (main.gd _touch_down), wheel / right-drag / Home on desktop.

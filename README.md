@@ -144,7 +144,7 @@ skin again.
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
 | Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release (or draws it with the marker: "Plan with the marker") |
 | "Tie key sutures" (Flap section) | Tie the last flap's key sutures: they pull it into place |
-| Drag (Mark tool, M) | Draw on the skin with a surgical marker to plan cuts and flaps (no effect on the skin). Lines are kept in tissue coordinates, so they stretch and move with the skin. Tap a line to erase it |
+| Drag (Mark tool, M) | Draw on the skin with a surgical marker to plan cuts and flaps (no effect on the skin). Lines are kept in tissue coordinates, so they stretch and move with the skin; where an incision crosses a line it ends on each lip, and nothing is drawn across an open wound or an excised hole. Tap a line to erase it |
 | Z | Undo the last incision, suture, undermining stroke, lesion, excision, flap or marking |
 | Esc / ? | Close panels and deselect / keyboard shortcuts |
 | H | Next colour map: plain / tension (max principal) / von Mises / area change / squeezing (min principal) / excess skin |

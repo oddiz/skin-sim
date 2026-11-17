@@ -21,6 +21,9 @@ namespace {
 // unit) doesn't flicker between drawing lines and surface at the same depth
 // ("z-fighting").
 constexpr real_t kWireLift = 0.05f;  // mm
+// Markings and lesion outlines are sampled this densely (mm) along the skin,
+// so they bend with it (see solver/src/marks.cpp).
+constexpr double kMarkStepMm = 0.5;
 // Incision lips are drawn a little higher still, so they sit on top of the wireframe.
 constexpr real_t kLipLift = 0.1f;  // mm
 // The wound bed (the tissue under the skin, seen when a wound opens) lies
@@ -557,21 +560,30 @@ Vector2 SkinSheet::to_rest(const Vector3& p_world_point) const {
 }
 
 Array SkinSheet::rest_to_world(const PackedVector2Array& p_rest_points) const {
+    // Densely sampled and split at incision lips by the solver (marks.cpp):
+    // the line follows the skin and is never drawn across a wound.
     Array pieces;
     const skinsim::Simulation* s = sim();
     if (!s) return pieces;
-    PackedVector3Array piece;
-    for (int i = 0; i < p_rest_points.size(); ++i) {
-        Eigen::Vector2d now;
-        const Vector2 X = p_rest_points[i];
-        if (s->current_position_at_rest(Eigen::Vector2d(X.x, X.y), now)) {
-            piece.push_back(to_global(to_godot(now, 0.05f)));  // a hair above the skin
-        } else if (piece.size() > 0) {
+    skinsim::Polyline rest;
+    auto map = [&]() {
+        for (const skinsim::Polyline& p : s->map_rest_polyline(rest, kMarkStepMm)) {
+            PackedVector3Array piece;
+            piece.resize(static_cast<int64_t>(p.size()));
+            for (size_t k = 0; k < p.size(); ++k)
+                piece.set(static_cast<int64_t>(k), to_global(to_godot(p[k], 0.05f)));  // a hair above the skin
             pieces.push_back(piece);
-            piece = PackedVector3Array();
         }
+        rest.clear();
+    };
+    for (int i = 0; i < p_rest_points.size(); ++i) {
+        const Vector2 X = p_rest_points[i];
+        if (std::isfinite(X.x) && std::isfinite(X.y))
+            rest.emplace_back(X.x, X.y);
+        else
+            map();  // a NaN point is a gap in the line
     }
-    if (piece.size() > 0) pieces.push_back(piece);
+    map();
     return pieces;
 }
 
@@ -739,20 +751,19 @@ Array SkinSheet::compute_lesion_info() const {
         const skinsim::Sheet::Lesion& l = lesions[i];
         // The outline at rest, carried to where that tissue is now. Parts
         // that have been excised have no skin to sit on: they are left out.
-        Array pieces;
-        PackedVector3Array piece;
+        // map_rest_polyline also splits it where an incision crosses it.
+        skinsim::Polyline circle;
         constexpr int kPoints = 48;
         for (int k = 0; k <= kPoints; ++k) {
             const double a = 2.0 * 3.14159265358979323846 * k / kPoints;
-            Eigen::Vector2d now;
-            if (s->current_position_at_rest(l.centre + l.radius * Eigen::Vector2d(std::cos(a), std::sin(a)), now)) {
-                piece.push_back(to_global(to_godot(now)));
-            } else if (piece.size() > 0) {
-                pieces.push_back(piece);
-                piece = PackedVector3Array();
-            }
+            circle.push_back(l.centre + l.radius * Eigen::Vector2d(std::cos(a), std::sin(a)));
         }
-        if (piece.size() > 0) pieces.push_back(piece);
+        Array pieces;
+        for (const skinsim::Polyline& p : s->map_rest_polyline(circle, kMarkStepMm)) {
+            PackedVector3Array piece;
+            for (const Eigen::Vector2d& now : p) piece.push_back(to_global(to_godot(now)));
+            pieces.push_back(piece);
+        }
         const skinsim::Sheet::LesionStatus st = sheet_->lesion_status(i);
         Dictionary d;
         d["outline"] = pieces;

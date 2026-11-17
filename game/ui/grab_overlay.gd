@@ -498,16 +498,39 @@ func _pill(font: Font, pos: Vector2, text: String, size: int, color: Color) -> v
 ## Pen markings: each line is kept in rest coordinates and drawn where that
 ## tissue is now, so it stretches with the skin; parts over a wound or an
 ## excised area are not drawn. Then the stroke being drawn.
+## The markings on screen are cached: mapping them (dense, ~2 points per mm)
+## and projecting every point each frame would cost a phone real time. They
+## only change when the skin moves, the view moves or a marking is edited.
+var _marks_key: Array = []
+var _marks_screen: Array = []  # [{"color": Color, "pieces": [PackedVector2Array]}]
+
+
+func _marks_on_screen() -> Array:
+	var key: Array = [sheet.get_render_version(), camera.position, camera.size,
+		get_viewport_rect().size, main.marks.size(), main.marks.hash()]
+	if key == _marks_key:
+		return _marks_screen
+	_marks_key = key
+	_marks_screen = []
+	for m in main.marks:
+		var pieces: Array = []
+		for piece in sheet.rest_to_world(m.rest):
+			if piece.size() < 2:
+				continue
+			var pts := PackedVector2Array()
+			pts.resize(piece.size())
+			for k in piece.size():
+				pts[k] = camera.unproject_position(piece[k])
+			pieces.append(pts)
+		_marks_screen.append({"color": ContextPanel.PEN_COLORS[m.color], "pieces": pieces})
+	return _marks_screen
+
+
 func _draw_marks() -> void:
 	if main != null:
-		for m in main.marks:
-			var c: Color = ContextPanel.PEN_COLORS[m.color]
-			for piece in sheet.rest_to_world(m.rest):
-				if piece.size() < 2:
-					continue
-				var pts := PackedVector2Array()
-				for p in piece:
-					pts.append(camera.unproject_position(p))
+		for m in _marks_on_screen():
+			var c: Color = m.color
+			for pts in m.pieces:
 				if style.get("neon", false):
 					draw_polyline(pts, Color(c.lightened(0.3), 0.18), 10.0, true)
 					draw_polyline(pts, Color(c.lightened(0.3), 0.35), 5.5, true)
