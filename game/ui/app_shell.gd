@@ -190,6 +190,7 @@ func _build_rail() -> void:
 		b.toggle_mode = true
 		b.button_group = group
 		b.pressed.connect(func(): tool_selected.emit(i))
+		b.gui_input.connect(_tool_drag_input.bind(b))
 		_tool_box.add_child(b)
 		_tool_buttons.append(b)
 	_rail_spacer = Control.new()
@@ -199,6 +200,88 @@ func _build_rail() -> void:
 	_undo.pressed.connect(func(): undo_requested.emit())
 	_rail_box.add_child(_undo)
 	_tool_buttons[0].set_pressed_no_signal(true)
+
+
+## Swipe to scroll the tools, starting on a button.
+## The buttons take the touch, so the ScrollContainer behind them never sees a
+## drag that starts on one: on a phone, where the bar is nearly all buttons,
+## it hardly scrolled. Each button forwards its drags here instead. Past a
+## small dead zone the press is cancelled (so a swipe never switches tools)
+## and the bar follows the finger; on release it coasts and slows down.
+const TOOL_DRAG_DEADZONE := 10.0   # px before a press becomes a swipe
+const TOOL_FLING_FRICTION := 6.0   # 1/s: how fast the coasting slows
+var _tool_press_at := Vector2.ZERO
+var _tool_scroll_at := Vector2.ZERO
+var _tool_pressing := false
+var _tool_swiping := false
+var _tool_velocity := 0.0          # px/s along the bar, while coasting
+var _tool_last_move := 0
+
+
+func _tools_horizontal() -> bool:
+	return _tool_scroll.horizontal_scroll_mode != ScrollContainer.SCROLL_MODE_DISABLED
+
+
+func _tool_drag_input(event: InputEvent, b: Button) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_tool_pressing = true
+			_tool_swiping = false
+			_tool_velocity = 0.0
+			_tool_press_at = event.global_position
+			_tool_scroll_at = Vector2(_tool_scroll.scroll_horizontal, _tool_scroll.scroll_vertical)
+			_tool_last_move = Time.get_ticks_msec()
+		else:
+			_tool_pressing = false
+			# A finger that stopped before lifting should not coast.
+			if Time.get_ticks_msec() - _tool_last_move > 80:
+				_tool_velocity = 0.0
+			_tool_swiping = false
+	elif event is InputEventMouseMotion and _tool_pressing:
+		var d: Vector2 = event.global_position - _tool_press_at
+		var along := d.x if _tools_horizontal() else d.y
+		if not _tool_swiping and absf(along) > TOOL_DRAG_DEADZONE:
+			_tool_swiping = true
+			# Cancel the button's press: disabling resets it, so the release
+			# will not select the tool under the finger.
+			b.disabled = true
+			b.disabled = false
+		if _tool_swiping:
+			_set_tool_scroll(_tool_scroll_at - d)
+			var now := Time.get_ticks_msec()
+			var step := maxf((now - _tool_last_move) / 1000.0, 1.0 / 240.0)
+			var rel: Vector2 = event.relative
+			var v := -(rel.x if _tools_horizontal() else rel.y) / step
+			_tool_velocity = lerpf(_tool_velocity, v, 0.5)
+			_tool_last_move = now
+
+
+func _set_tool_scroll(at: Vector2) -> void:
+	if _tools_horizontal():
+		_tool_scroll.scroll_horizontal = int(at.x)
+	else:
+		_tool_scroll.scroll_vertical = int(at.y)
+
+
+## Coasting after a fling (called from _process).
+func _coast_tools(delta: float) -> void:
+	if _tool_pressing:
+		return
+	if absf(_tool_velocity) < 20.0:
+		_tool_velocity = 0.0
+		return
+	var move := _tool_velocity * delta
+	if _tools_horizontal():
+		var before := _tool_scroll.scroll_horizontal
+		_tool_scroll.scroll_horizontal = before + int(round(move))
+		if _tool_scroll.scroll_horizontal == before:
+			_tool_velocity = 0.0  # hit the end
+	else:
+		var before := _tool_scroll.scroll_vertical
+		_tool_scroll.scroll_vertical = before + int(round(move))
+		if _tool_scroll.scroll_vertical == before:
+			_tool_velocity = 0.0
+	_tool_velocity *= exp(-TOOL_FLING_FRICTION * delta)
 
 
 func _rail_button(icon_name: String, text: String, tip: String) -> Button:
@@ -819,8 +902,9 @@ func _layout_narrow(vp: Vector2) -> void:
 	_view_card.position = Vector2(vp.x - _view_card.size.x - 8.0, 8.0 + Style.TOUCH + 8.0)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	Prof.begin("shell")
+	_coast_tools(delta)
 	_layout_overlays()
 	Prof.end("shell")
 

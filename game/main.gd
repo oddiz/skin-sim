@@ -263,6 +263,8 @@ func _ready() -> void:
 		_demo_hook()
 	if args.has("--demo-nav"):
 		_demo_nav()
+	if args.has("--demo-swipe"):
+		_demo_swipe()
 	var o := args.find("--open")  # for screenshots: --open tissue | view | help
 	if o != -1 and o + 1 < args.size():
 		ui.open_panel(args[o + 1])
@@ -1110,6 +1112,60 @@ func _sci(x: float) -> String:
 	return "%.1fe%d" % [x / pow(10.0, exponent), exponent]
 
 
+## Swipe the tool bar starting on a button, then tap a button: the swipe must
+## scroll without switching tools, the tap must switch. Run at a phone size
+## (--resolution 390x844) so the bar is the sideways one.
+func _demo_swipe() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var scroll: ScrollContainer = ui._tool_scroll
+	var scale := get_window().content_scale_factor if get_window().content_scale_factor > 0 else 1.0
+	var to_window := func(p: Vector2) -> Vector2:  # UI coords -> window pixels
+		return get_viewport().get_final_transform() * p
+	var b: Control = ui._tool_buttons[1]
+	var start: Vector2 = to_window.call(b.get_global_rect().get_center())
+	var tool_before := tool
+	_mouse_button(start, true)
+	for k in 4:
+		await get_tree().process_frame
+		_mouse_motion(start + Vector2(-15.0 * (k + 1), 0), Vector2(-15, 0))
+	await get_tree().process_frame
+	_mouse_button(start + Vector2(-60, 0), false)
+	await get_tree().process_frame
+	var after_swipe := scroll.scroll_horizontal
+	for k in 30:
+		await get_tree().process_frame
+	print("swipe: scroll %d -> %d after coasting; tool %d -> %d (want unchanged)" \
+		% [after_swipe, scroll.scroll_horizontal, tool_before, tool])
+	# Tap the last tool (now in view).
+	var last: Control = ui._tool_buttons[ui._tool_buttons.size() - 1]
+	var tap: Vector2 = to_window.call(last.get_global_rect().get_center())
+	_mouse_button(tap, true)
+	await get_tree().process_frame
+	_mouse_button(tap, false)
+	await get_tree().process_frame
+	print("tap: tool %d (want %d), scale %.2f" % [tool, ui._tool_buttons.size() - 1, scale])
+
+
+func _mouse_button(at: Vector2, pressed: bool) -> void:
+	var e := InputEventMouseButton.new()
+	e.button_index = MOUSE_BUTTON_LEFT
+	e.pressed = pressed
+	e.button_mask = MOUSE_BUTTON_MASK_LEFT if pressed else 0
+	e.position = at
+	e.global_position = at
+	Input.parse_input_event(e)
+
+
+func _mouse_motion(at: Vector2, rel: Vector2) -> void:
+	var e := InputEventMouseMotion.new()
+	e.button_mask = MOUSE_BUTTON_MASK_LEFT
+	e.position = at
+	e.global_position = at
+	e.relative = rel
+	Input.parse_input_event(e)
+
+
 ## Inject the touch events a real screen (or emulated mouse) would produce,
 ## so demos exercise the full input path, including screen->sheet conversion.
 func _touch(index: int, sheet_mm: Vector2, pressed: bool) -> void:
@@ -1290,7 +1346,7 @@ func _demo_fx() -> void:
 	fx.snap(c + Vector3(-6, 0, -4), c + Vector3(6, 0, -4))
 	fx.tie_pulse(c + Vector3(-12, 0, 8))
 	fx.big_pulse(c + Vector3(12, 0, 8))
-	for k in 12:
+	for k in 4:
 		fx.cut_spark(c + Vector3(-4 + k * 0.6, 0, 12), 0.05)
 
 
