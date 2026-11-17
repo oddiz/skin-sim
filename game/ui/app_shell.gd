@@ -79,6 +79,8 @@ var narrow := false
 var show_tension_lines := true
 ## Blood from open incisions (looks that draw it).
 var bleeding := true
+## Load-coloured dots at the sutures' needle holes.
+var show_suture_dots := false
 
 var _rail: PanelContainer
 var _rail_box: BoxContainer
@@ -379,6 +381,9 @@ func _build_view_card() -> void:
 		"tip": "Draw the triangles the skin is computed on. [W]"})
 	v.add_child(wire)
 	_view_rows.append(wire)
+	var dots := _switch_row(v, "Suture load dots", show_suture_dots,
+		func(on: bool): show_suture_dots = on)
+	dots.tooltip_text = "A dot at each needle hole coloured by the thread's load (green, yellow at 50%, red at its breaking strength)."
 	_stats_switch = _switch_row(v, "Solver details", false, func(on: bool): _stats_card.visible = on)
 	set_heatmap(sheet.heatmap)
 

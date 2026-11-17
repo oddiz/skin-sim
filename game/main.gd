@@ -771,6 +771,7 @@ func _process(delta: float) -> void:
 	panel.show_lesions(lesions)
 	panel.show_flaps(sheet.get_flap_info())
 	overlay.show_tension_lines = ui.show_tension_lines
+	overlay.show_suture_dots = ui.show_suture_dots
 	ui.set_status(s.converged, s.stalled)
 	ui.set_undo_enabled(not _history.is_empty())
 	ui.set_hint(_hint(selected, lesions))

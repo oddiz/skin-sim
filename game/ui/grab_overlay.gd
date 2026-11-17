@@ -34,6 +34,8 @@ var excise_outline := PackedVector2Array()
 var flap_preview: Dictionary = {}
 ## Stress maps: short strokes along the direction of the tension.
 var show_tension_lines := true
+## Load dots at each suture's needle holes (View panel; off by default).
+var show_suture_dots := false
 ## The look's way of drawing (Look.overlay_style): thread_width,
 ## thread_color (a real thread; load as rings at the needle holes), ink_bleed,
 ## outline
@@ -167,7 +169,8 @@ func _draw_sutures(font: Font) -> void:
 			draw_circle(k - Vector2(0.4, 0.6) * tw * 0.5, tw * 0.45, Color(1, 1, 1, 0.35))
 			for h in [a, b]:
 				draw_circle(h, 2.2, Color(0.25, 0.04, 0.04, 0.9))
-				draw_arc(h, 4.5 if overloaded else 4.0, 0.0, TAU, 20, Color(color, 0.85), 1.5, true)
+				if show_suture_dots:
+					draw_arc(h, 4.5 if overloaded else 4.0, 0.0, TAU, 20, Color(color, 0.85), 1.5, true)
 		else:
 			if style.get("outline", false):
 				# A thread coloured by its load, on a dark edge so it reads on skin.
@@ -179,8 +182,9 @@ func _draw_sutures(font: Font) -> void:
 				var k := a.lerp(b, 0.3)
 				draw_circle(k, tw * 1.3, Color(0.08, 0.04, 0.04, 0.85))
 				draw_circle(k, tw * 0.8, color)
-			draw_circle(a, 3.5 if overloaded else 3.0, color)
-			draw_circle(b, 3.5 if overloaded else 3.0, color)
+			if show_suture_dots:
+				draw_circle(a, 3.5 if overloaded else 3.0, color)
+				draw_circle(b, 3.5 if overloaded else 3.0, color)
 		# Text only where it helps (see label_mode): with many sutures, labels
 		# on every one cover the wound.
 		var show := label_mode == 1
