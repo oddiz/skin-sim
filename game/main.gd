@@ -183,6 +183,7 @@ func _ready() -> void:
 	ui.setup(sheet)
 	panel = ui.context
 	ui.reset_requested.connect(sheet.reset_simulation)
+	ui.start_over_requested.connect(start_over)
 	ui.tool_selected.connect(_set_tool)
 	ui.undo_requested.connect(_undo)
 	ui.fit_requested.connect(_frame_sheet)
@@ -409,7 +410,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				sheet.show_wireframe = not sheet.show_wireframe
 				ui.refresh()
 			KEY_R:
-				sheet.reset_simulation()
+				if event.ctrl_pressed or event.meta_pressed:
+					start_over()
+				else:
+					sheet.reset_simulation()
 			KEY_G:
 				_set_tool(Tool.GRAB)
 			KEY_C:
@@ -772,6 +776,35 @@ func _place_suture_buttons(su: Dictionary) -> void:
 	anchor.x = clampf(anchor.x, fr.position.x + 4.0, fr.end.x - size.x - 4.0)
 	anchor.y = clampf(anchor.y, 4.0, vp.y - size.y - 4.0)
 	_suture_buttons.position = anchor
+
+
+## Back to the original skin, as when the app starts: everything done to it
+## goes (incisions and excisions, flaps, sutures, undermining, lesions,
+## markings, hooks, bleeding), the skin comes to rest, the view fits it.
+## The tissue settings, look and view options stay.
+func start_over() -> void:
+	_cancel_all_touches()
+	release_all_grabs()
+	sheet.clear_sutures()
+	sheet.clear_cuts()
+	sheet.clear_undermining()
+	sheet.clear_lesions()
+	marks.clear()
+	overlay.snaps.clear()
+	_history.clear()
+	_select_suture(-1)
+	_blood = 0.0
+	sheet.reset_simulation()
+	_frame_sheet()
+	_status = "Fresh skin: everything cleared."
+
+
+func _cancel_all_touches() -> void:
+	for index in _touches.keys():
+		_cancel_action(index)
+	_touches.clear()
+	_ignored.clear()
+	_navigating = false
 
 
 ## A press in the Grab tool: pick up the skin hook under the finger, or
@@ -1271,6 +1304,12 @@ func _save_screenshot_and_quit(path: String) -> void:
 		if _frame >= 60 and args.has("--bench"):
 			_bench_gpu += RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
 			_bench_cpu += RenderingServer.viewport_get_measured_render_time_cpu(get_viewport().get_viewport_rid())
+		if _frame == 100 and args.has("--then-start-over"):  # check: Start over clears everything
+			start_over()
+			await get_tree().process_frame
+			print("after start over: cuts %d, sutures %d, lesions %d, grabs %d, hooks %d, marks %d, history %d" % [
+				sheet.get_cut_count(), sheet.get_suture_count(), sheet.get_lesion_info().size(),
+				sheet.get_grab_info().size(), _hooks.size(), marks.size(), _history.size()])
 		if _frame == 108 and args.has("--demo-fx"):
 			_demo_fx()
 	if args.has("--bench"):

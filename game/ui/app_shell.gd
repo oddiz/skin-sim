@@ -30,6 +30,8 @@ extends Control
 signal tool_selected(tool: int)
 signal undo_requested
 signal reset_requested
+## Back to the original skin: no incisions, sutures, lesions, markings or hooks.
+signal start_over_requested
 signal fit_requested
 signal look_changed(index: int)
 signal effects_changed(on: bool)
@@ -60,6 +62,7 @@ const SHORTCUTS := [
 	["H", "Next colour map"],
 	["W", "Wireframe on / off"],
 	["R", "Reset the skin (incisions and sutures stay)"],
+	["Ctrl+R", "Start over: fresh skin, everything cleared (also the ↺ button)"],
 	["Esc", "Close panels, deselect"],
 	["?", "This list"],
 ]
@@ -114,6 +117,8 @@ var _laid_out := false
 var _range_row: ParamRow
 var _stats_switch: CheckButton
 var _menu: MenuButton
+var _start_over: Button
+var _start_over_armed_until := 0.0   # s: a second tap before this starts over
 var _help_card: PanelContainer
 var _stats_card: PanelContainer
 var _stats_label: Label
@@ -234,6 +239,10 @@ func _build_top_bar() -> void:
 	_status_dot.tooltip_text = "Settling: the skin is still moving towards equilibrium. At rest: it is in equilibrium."
 	_status_dot.mouse_filter = Control.MOUSE_FILTER_PASS
 	_top.add_child(_status_dot)
+	# Start over: two taps (it cannot be undone), the first one says what it does.
+	_start_over = Style.icon_button("reset", "", "Start over: fresh skin, no surgery [Ctrl+R]", "")
+	_start_over.pressed.connect(_on_start_over_pressed)
+	_top.add_child(_start_over)
 	var fit := Style.icon_button("fit", "", "Fit the skin in the window [Home]", "")
 	fit.pressed.connect(func(): fit_requested.emit())
 	_top.add_child(fit)
@@ -262,6 +271,8 @@ func _build_top_bar() -> void:
 	for s in ["normal", "hover", "pressed"]:
 		_menu.add_theme_stylebox_override(s, Style.box(Style.RAISED if s == "normal" else Style.HOVER))
 	var popup := _menu.get_popup()
+	popup.add_item("Start over (fresh skin)  Ctrl+R", 7)
+	popup.add_separator()
 	popup.add_item("Reset skin  (R)", 0)
 	popup.add_item("Release forceps", 1)
 	popup.add_separator()
@@ -290,6 +301,23 @@ func _on_menu(id: int) -> void:
 			clear("lesions")
 		6:
 			clear("markings")
+		7:
+			start_over_requested.emit()
+
+
+func _on_start_over_pressed() -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	if now < _start_over_armed_until:
+		_start_over_armed_until = 0.0
+		_start_over.modulate = Color.WHITE
+		start_over_requested.emit()
+		return
+	_start_over_armed_until = now + 3.0
+	_start_over.modulate = Color(1.0, 0.55, 0.45)
+	toast("Tap again to start over: every incision, suture, lesion, marking and hook goes. Tissue settings and the view stay.", "warn")
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if Time.get_ticks_msec() / 1000.0 >= _start_over_armed_until:
+			_start_over.modulate = Color.WHITE)
 
 
 func clear(what: String) -> void:
