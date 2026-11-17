@@ -103,7 +103,10 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 
 ## Controls
 
-The screen: tools on the left rail; the current tool's settings and results
+The screen: tools on the left rail, in two modes switched at its top (or P):
+**Operate** (grab, cut, suture, undermine, excise, flap) and **Plan** (lesion,
+pen, line, rectangle, circle, ruler, angle, erase). In Plan one finger on the
+skin only draws: the skin can't be pulled by accident; the current tool's settings and results
 in the panel on the right; **Fit**, **View** (colour map, mesh, solver
 details), **Tissue** (body-site presets and skin properties, raw model
 parameters under "Advanced") and **⋯** (reset, clear) along the top. The line
@@ -139,12 +142,16 @@ skin again.
 | Del (or X, or "Cut") | Cut the selected suture out; Z ties it again |
 | T | Cycle the suture labels: smart / all / none |
 | Drag (Undermine tool, U) | Paint where the skin is freed from the tissue below (shaded darker) |
-| Tap (Lesion tool, L) | Mark a lesion (diameter in the panel) |
+| Tap (Lesion tool, L) | Plan: mark a lesion (diameter in the panel) |
 | Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
 | Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release (or draws it with the marker: "Plan with the marker") |
 | "Tie key sutures" (Flap section) | Tie the last flap's key sutures: they pull it into place |
-| Drag (Mark tool, M) | Draw on the skin with a surgical marker to plan cuts and flaps (no effect on the skin). Lines are kept in tissue coordinates, so they stretch and move with the skin; where an incision crosses a line it ends on each lip, and nothing is drawn across an open wound or an excised hole. Tap a line to erase it |
+| Drag (Pen, M) | Plan: draw on the skin with a surgical marker (no effect on the skin). Markings are kept in tissue coordinates, so they stretch and move with the skin; where an incision crosses one it ends on each lip, and nothing is drawn across an open wound or an excised hole |
+| Drag (Line I, Rectangle B, Circle O) | Plan: a straight line; a rectangle corner to corner; a circle from its centre. Panel: colour, solid / dashed / dotted, Snap (lines click to 15° steps) |
+| Drag (Ruler, D) | Plan: measure a distance, with mm ticks. The label keeps the length as drawn and adds what it measures now once the skin has moved ("30.0 mm → 31.5 now") |
+| Drag, then drag again (Angle, A) | Plan: the first arm out of the corner, then the second arm (start anywhere). Labelled with the angle as drawn and now ("60° → 65° now"); Esc cancels a half-made angle |
+| Tap or rub (Erase) | Plan: erase the markings touched (undo brings them back) |
 | Z | Undo the last incision, suture, undermining stroke, lesion, excision, flap or marking |
 | Esc / ? | Close panels and deselect / keyboard shortcuts |
 | H | Next colour map: plain / tension (max principal) / von Mises / area change / squeezing (min principal) / excess skin |

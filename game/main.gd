@@ -7,7 +7,11 @@ extends Node3D
 ## arrives as touch index 0, so the same code works on desktop and iPhone,
 ## and several fingers can grab the skin at once on a touch screen.
 ##
-## Six tools:
+## Two modes, switched at the head of the tool bar (or P): Operate and Plan.
+## Each tool belongs to one (ContextPanel.TOOLS "plan"); picking a tool picks
+## its mode. In Plan, one finger on the skin only draws: nothing pulls it.
+##
+## Operate tools:
 ##   GRAB    touches grab and pull the skin (forceps).
 ##   CUT     a touch draws an incision (scalpel); it is made on release.
 ##   SUTURE  press where the needle goes in, drag, release where it comes out:
@@ -18,7 +22,6 @@ extends Node3D
 ##           A thread pulled beyond its knot-pull strength snaps.
 ##   UNDERMINE paint the areas where the skin is freed from the underlying
 ##           tissue (brush size in the panel); they are shaded darker.
-##   LESION  tap to mark a lesion (diameter in the panel).
 ##   EXCISE  drag from one tip of a fusiform (elliptical) excision to the
 ##           other: it is cut and removed on release (shape in the panel).
 ##           Or tap inside any outline already cut free (e.g. a rhomboid
@@ -29,10 +32,17 @@ extends Node3D
 ##           cut, the defect removed and the area undermined ("Plan with the
 ##           marker": drawn with the pen instead). "Tie key sutures" then
 ##           pulls the flap into place.
-##   MARK    draw on the skin with a surgical marker (planning only). The
-##           lines are kept in rest (tissue) coordinates, so they stretch and
-##           move with the skin. Tap a line to erase it.
-## On desktop, Shift + drag cuts whatever the tool.
+## On desktop, Shift + drag cuts whatever the Operate tool.
+##
+## Plan tools (markings: kept in rest (tissue) coordinates, so they stretch
+## and move with the skin; colour, solid / dashed / dotted and snap in the panel):
+##   LESION  tap to mark a lesion (diameter in the panel).
+##   MARK    the pen: draw freehand.
+##   LINE    drag a straight line; RECT corner to corner; CIRCLE centre out.
+##   RULER   drag to measure: labelled with the length as drawn and now.
+##   ANGLE   drag the first arm from the corner, then drag the second arm:
+##           labelled with the angle as drawn and now.
+##   ERASE   tap or rub across markings to erase them (undoable).
 ##
 ## Navigation: two fingers pan and pinch-zoom the view. A second finger that
 ## lands soon after the first (or before the first has moved) turns both
@@ -49,7 +59,10 @@ extends Node3D
 ##   --ui-scale <x>            size of the interface (default: the screen's
 ##                             pixel density, e.g. 3 on a phone)
 ##   --open <panel>            open tissue | view | help | sheet | sheet-full
-##   --tool <n>                pick a tool (0 grab .. 7 mark)
+##   --tool <n>                pick a tool (0 grab .. 13 erase: main.Tool)
+##   --mode plan               start in the Plan mode
+##   --demo-plan               draw one of each planning shape, cut through
+##                             them and pull the wound open (for checks)
 ##   --look <n>                visual style (0 classic, 1 illustration, 2 realistic = default, 3 game)
 ##   --plain                   demos leave the colour map off
 ##   --zoom <x>                screenshots: zoom in x times on the middle
@@ -76,7 +89,9 @@ extends Node3D
 ##                             excised and closed: dog-ears at both ends;
 ##                             excess skin heatmap (for checks)
 
-enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK }
+enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK, LINE, RECT, CIRCLE, RULER, ANGLE, ERASE }
+## The Plan tools that draw a shape by dragging.
+const SHAPE_TOOLS := [Tool.LINE, Tool.RECT, Tool.CIRCLE, Tool.RULER, Tool.ANGLE]
 
 @onready var sheet: SkinSheet = $SkinSheet
 @onready var camera: Camera3D = $Camera3D
@@ -139,8 +154,19 @@ var _status := "":
 		if ui != null and ui.context != null:
 			ui.toast(v, "danger" if v.contains("snapped") else ("warn" if v.begins_with("No") \
 				or v.begins_with("Nothing") else "info"))
-## Pen markings: {"rest": PackedVector2Array (tissue coordinates), "color": int}.
+## Markings: {"kind": "pen" | "line" | "rect" | "circle" | "ruler" | "angle",
+## "rest": PackedVector2Array (the line to draw, tissue coordinates; a ruler
+## is its 2 ends, an angle [arm end, corner, arm end]), "color": int
+## (ContextPanel.PEN_COLORS), "style": 0 solid, 1 dashed, 2 dotted}.
 var marks: Array[Dictionary] = []
+var _line_style := 0
+var _snap := true                         # lines, rulers, angles click to 15 degree steps
+var _shape_touch := -1                    # touch index drawing a shape, -1 = none
+var _shape_start := Vector2.ZERO          # its start, rest coordinates
+var _shape_end := Vector2.ZERO            # its end so far (last point over skin)
+var _angle_pending := {}                  # {"v": corner, "a": first arm's end}: waiting for the second arm
+var _erase_touch := -1                    # touch index rubbing out markings
+var _last_tool := {true: Tool.MARK, false: Tool.GRAB}  # per mode (true = Plan), to return to
 var _mark_touch := -1                     # touch index drawing with the pen, -1 = none
 var _mark_rest := PackedVector2Array()    # the stroke so far, rest coordinates
 var _mark_screen := PackedVector2Array()  # and on screen, while drawing
@@ -199,6 +225,9 @@ func _ready() -> void:
 		ui.show_skin_type(clampi(int(OS.get_cmdline_user_args()[st + 1]) - 1, 0, 5))
 	ui.cleared.connect(_on_cleared)
 	panel.pen_color_changed.connect(func(i: int): _pen_color = i)
+	panel.line_style_changed.connect(func(i: int): _line_style = i)
+	panel.snap_changed.connect(func(on: bool): _snap = on)
+	ui.mode_selected.connect(set_planning)
 	panel.tightness_changed.connect(func(t: float):
 		if _selected_suture >= 0:
 			sheet.set_suture_tightness(_selected_suture, t))
@@ -265,6 +294,11 @@ func _ready() -> void:
 		_demo_nav()
 	if args.has("--demo-swipe"):
 		_demo_swipe()
+	var md := args.find("--mode")
+	if md != -1 and md + 1 < args.size():
+		set_planning(args[md + 1] == "plan")
+	if args.has("--demo-plan"):
+		_demo_plan()
 	var o := args.find("--open")  # for screenshots: --open tissue | view | help
 	if o != -1 and o + 1 < args.size():
 		ui.open_panel(args[o + 1])
@@ -328,8 +362,24 @@ func apply_look(i: int) -> void:
 
 
 func _set_tool(t: int) -> void:
+	if t != tool:
+		_cancel_plan_drawing()
 	tool = t as Tool
+	_last_tool[is_planning()] = tool
 	ui.show_tool(tool)
+
+
+## In the Plan mode (its tools only draw on the skin)?
+func is_planning() -> bool:
+	return ContextPanel.TOOLS[tool].plan
+
+
+## Plan | Operate: back to the tool last used in that mode.
+func set_planning(plan: bool) -> void:
+	if plan != is_planning():
+		_set_tool(_last_tool[plan])
+	else:
+		ui.show_tool(tool)  # keep the switch showing the mode
 
 
 ## Something was cleared (menu or panel): drop its steps from the undo history.
@@ -346,6 +396,7 @@ func _on_cleared(what: String) -> void:
 		_select_suture(-1)
 	if what == "markings":
 		marks.clear()
+		_cancel_plan_drawing()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -383,6 +434,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_preview_flap(event.position)
 		elif event.index == _mark_touch:
 			_extend_mark(event.position)
+		elif event.index == _shape_touch:
+			_update_shape(event.position)
+		elif event.index == _erase_touch:
+			_erase_mark_at(event.position)
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
@@ -438,8 +493,22 @@ func _unhandled_input(event: InputEvent) -> void:
 				ui.cycle_heatmap()
 			KEY_M:
 				_set_tool(Tool.MARK)
+			KEY_P:
+				set_planning(not is_planning())
+			KEY_I:
+				_set_tool(Tool.LINE)
+			KEY_B:
+				_set_tool(Tool.RECT)
+			KEY_O:
+				_set_tool(Tool.CIRCLE)
+			KEY_D:
+				_set_tool(Tool.RULER)
+			KEY_A:
+				_set_tool(Tool.ANGLE)
 			KEY_ESCAPE:
-				if not ui.close_overlays():
+				if not _angle_pending.is_empty():
+					_cancel_plan_drawing()
+				elif not ui.close_overlays():
 					_select_suture(-1)
 			KEY_SLASH, KEY_QUESTION:
 				ui.toggle_help()
@@ -527,6 +596,11 @@ func _cancel_action(index: int) -> void:
 	elif index == _mark_touch:
 		_mark_touch = -1
 		overlay.pen_path = PackedVector2Array()
+	elif index == _shape_touch:
+		_shape_touch = -1
+		_show_pending_angle()  # back to the first arm, or nothing
+	elif index == _erase_touch:
+		_erase_touch = -1
 	elif index == _lesion_touch:
 		_lesion_touch = -1
 	else:
@@ -595,7 +669,7 @@ func _apply_ui_scale() -> void:
 
 
 func _on_press(index: int, pos: Vector2) -> void:
-	var cutting := tool == Tool.CUT or Input.is_key_pressed(KEY_SHIFT)
+	var cutting := tool == Tool.CUT or (Input.is_key_pressed(KEY_SHIFT) and not is_planning())
 	if cutting:
 		if _cut_touch == -1:
 			_cut_touch = index
@@ -626,7 +700,14 @@ func _on_press(index: int, pos: Vector2) -> void:
 			_mark_rest = PackedVector2Array()
 			_mark_screen = PackedVector2Array()
 			_extend_mark(pos)
-	else:
+	elif tool in SHAPE_TOOLS:
+		if _shape_touch == -1:
+			_start_shape(index, pos)
+	elif tool == Tool.ERASE:
+		if _erase_touch == -1:
+			_erase_touch = index
+			_erase_mark_at(pos)
+	elif not is_planning():
 		_start_grab(index, pos)
 
 
@@ -642,6 +723,10 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_flap(pos)
 	elif index == _mark_touch:
 		_commit_mark(pos)
+	elif index == _shape_touch:
+		_commit_shape(pos)
+	elif index == _erase_touch:
+		_erase_touch = -1
 	elif index == _lesion_touch:
 		_lesion_touch = -1
 		if sheet.add_lesion(_screen_to_sheet_plane(pos)):
@@ -796,6 +881,7 @@ func start_over() -> void:
 	sheet.clear_undermining()
 	sheet.clear_lesions()
 	marks.clear()
+	_cancel_plan_drawing()
 	overlay.snaps.clear()
 	_history.clear()
 	_select_suture(-1)
@@ -1093,14 +1179,28 @@ func _hint(selected: Dictionary, lesions: Array) -> String:
 			if sheet.flap_type == 10:
 				return "Z-plasty: drag along the scar (the central limb)."
 			if lesions.is_empty():
-				return "Mark a lesion first (Lesion tool), then drag outward from it."
+				return "Mark a lesion first (Plan → Lesion), then drag outward from it."
 			if sheet.get_flap_count() > 0:
 				return "Flap raised: 'Tie key sutures' pulls it in, then close the gaps with the Suture tool."
 			if sheet.flap_type == 4:
 				return "A-T: drag from the lesion towards the line the T's bar should lie in."
 			return "Drag from the lesion outward, towards where the flap should come from."
 		Tool.MARK:
-			return "Draw on the skin to plan. Tap a line to erase it."
+			return "Draw freehand on the skin. The markings move with it."
+		Tool.LINE:
+			return "Drag to draw a straight line."
+		Tool.RECT:
+			return "Drag from one corner to the opposite one."
+		Tool.CIRCLE:
+			return "Drag from the centre outward."
+		Tool.RULER:
+			return "Drag to measure. The label keeps the length as drawn, and shows it now when the skin moves."
+		Tool.ANGLE:
+			if not _angle_pending.is_empty():
+				return "Now drag the second arm (start anywhere). Esc cancels."
+			return "Drag the first arm out from the corner."
+		Tool.ERASE:
+			return "Tap a marking, or rub across several, to erase them."
 	return ""
 
 
@@ -1110,6 +1210,58 @@ func _sci(x: float) -> String:
 		return "0"
 	var exponent := floori(log(absf(x)) / log(10.0))
 	return "%.1fe%d" % [x / pow(10.0, exponent), exponent]
+
+
+## Plan mode: one of each shape (dotted line, dashed rectangle, circle, ruler,
+## 60 degree angle), then an incision through them, pulled open: the
+## markings must stop at the lips, and the ruler and angle show "now".
+func _demo_plan() -> void:
+	for _f in 5:  # let a screenshot's --zoom apply first
+		await get_tree().process_frame
+	set_planning(true)
+	_line_style = 2
+	_set_tool(Tool.LINE)
+	await _gesture([Vector2(-24, 10), Vector2(0, 11), Vector2(30, 11.5)])  # snaps level
+	_line_style = 1
+	_set_tool(Tool.RECT)
+	await _gesture([Vector2(-26, -14), Vector2(-12, -4)])
+	_line_style = 0
+	_set_tool(Tool.CIRCLE)
+	await _gesture([Vector2(14, -6), Vector2(20, -6)])
+	_set_tool(Tool.RULER)
+	await _gesture([Vector2(-4, 18), Vector2(26, 18)])
+	_set_tool(Tool.ANGLE)
+	await _gesture([Vector2(-2, -20), Vector2(18, -20)])
+	await _gesture([Vector2(5, 0), Vector2(4.2, -9.8)])  # about 60 degrees: snaps
+	print("demo-plan: %d markings: %s" % [marks.size(), ", ".join(marks.map(func(m): return m.kind))])
+	# Rub out the rectangle, then undo.
+	_set_tool(Tool.ERASE)
+	await _gesture([Vector2(-28, -9), Vector2(-20, -9)])
+	var after_erase := marks.size()
+	_undo()
+	print("demo-plan: erase rubbed out %d, undo brought back %d" % [5 - after_erase, marks.size() - after_erase])
+	set_planning(false)
+	_set_tool(Tool.CUT)
+	await _gesture([Vector2(8, -24), Vector2(8, 0), Vector2(8, 24)])
+	_set_tool(Tool.GRAB)
+	_touch(0, Vector2(13, 2), true)
+	await get_tree().process_frame
+	_drag(0, Vector2(21, 2))
+
+
+## One finger: down at the first point, through the others, up at the last
+## (one event per frame, like a real finger), in sheet mm.
+func _gesture(points: Array) -> void:
+	_touch(0, points[0], true)
+	await get_tree().process_frame
+	for k in range(1, points.size()):
+		var a: Vector2 = points[k - 1]
+		var b: Vector2 = points[k]
+		for j in range(1, 9):
+			_drag(0, a.lerp(b, j / 8.0))
+			await get_tree().process_frame
+	_touch(0, points[points.size() - 1], false)
+	await get_tree().process_frame
 
 
 ## Swipe the tool bar starting on a button, then tap a button: the swipe must
@@ -1138,13 +1290,17 @@ func _demo_swipe() -> void:
 	print("swipe: scroll %d -> %d after coasting; tool %d -> %d (want unchanged)" \
 		% [after_swipe, scroll.scroll_horizontal, tool_before, tool])
 	# Tap the last tool (now in view).
-	var last: Control = ui._tool_buttons[ui._tool_buttons.size() - 1]
+	var want := -1  # the last tool shown in this mode
+	for i in ui._tool_buttons.size():
+		if ui._tool_buttons[i].visible:
+			want = i
+	var last: Control = ui._tool_buttons[want]
 	var tap: Vector2 = to_window.call(last.get_global_rect().get_center())
 	_mouse_button(tap, true)
 	await get_tree().process_frame
 	_mouse_button(tap, false)
 	await get_tree().process_frame
-	print("tap: tool %d (want %d), scale %.2f" % [tool, ui._tool_buttons.size() - 1, scale])
+	print("tap: tool %d (want %d), scale %.2f" % [tool, want, scale])
 
 
 func _mouse_button(at: Vector2, pressed: bool) -> void:
@@ -1580,10 +1736,10 @@ func _plan_flap(a: Vector3, b: Vector3) -> void:
 		return
 	var n := 0
 	for line in d.cuts:
-		marks.append({"rest": line, "color": 0})
+		marks.append({"kind": "pen", "rest": line, "color": 0, "style": 0})
 		n += 1
 	for k in d.key_sutures:
-		marks.append({"rest": k, "color": 1})
+		marks.append({"kind": "line", "rest": k, "color": 1, "style": 1})  # dashed: not a cut
 		n += 1
 	_history.append({"kind": "mark_group", "count": n})
 	_status = "Flap planned on the skin: violet = cut, blue = key sutures. Cut along it, then excise the defect."
@@ -1623,24 +1779,26 @@ func _commit_mark(end: Vector2) -> void:
 	_mark_touch = -1
 	if end.distance_to(_mark_start) < TAP_PX:
 		overlay.pen_path = PackedVector2Array()
-		_erase_mark_at(end)
-		return
+		return  # a tap draws nothing (erase with the Erase tool)
 	_extend_mark(end)
 	# Only now: _extend_mark sets the preview again. (Cleared before it, a
 	# ghost of every stroke stayed frozen on screen, not following the skin.)
 	overlay.pen_path = PackedVector2Array()
 	if _mark_rest.size() >= 2:
-		marks.append({"rest": _mark_rest, "color": _pen_color})
-		_history.append({"kind": "mark"})
+		_add_mark({"kind": "pen", "rest": _mark_rest, "color": _pen_color, "style": _line_style})
 
 
-## A tap with the pen: erase the marking under the finger (undoable).
+func _add_mark(m: Dictionary) -> void:
+	marks.append(m)
+	_history.append({"kind": "mark"})
+
+
+## Erase tool: erase the marking under the finger (undoable). Called for the
+## press and for every move, so rubbing across several erases them all.
 func _erase_mark_at(screen_pos: Vector2) -> void:
-	for i in range(marks.size() - 1, -1, -1):
-		for piece in sheet.rest_to_world(marks[i].rest):
-			var pts := PackedVector2Array()
-			for p in piece:
-				pts.append(camera.unproject_position(p))
+	var shown: Array = overlay.marks_on_screen()  # same order as marks
+	for i in range(mini(marks.size(), shown.size()) - 1, -1, -1):
+		for pts in shown[i].pieces:
 			for k in range(pts.size() - 1):
 				var q := Geometry2D.get_closest_point_to_segment(screen_pos, pts[k], pts[k + 1])
 				if q.distance_to(screen_pos) < PICK_PX:
@@ -1648,6 +1806,142 @@ func _erase_mark_at(screen_pos: Vector2) -> void:
 					marks.remove_at(i)
 					_status = "Marking erased."
 					return
+
+
+# --- Plan: shapes (line, rectangle, circle, ruler, angle) -------------------
+# Built in rest (tissue) coordinates from the drag's two ends, so a 10 mm
+# square is 10 mm of skin as it is at rest, wherever the skin has been
+# pulled. While dragging, the shape is previewed exactly as it will be drawn.
+
+const SNAP_STEP_DEG := 15.0
+const SNAP_WITHIN_DEG := 3.0
+const CIRCLE_SEGMENTS := 64
+const MIN_SHAPE_MM := 0.5  # smaller is a tap: nothing is drawn
+
+
+func _start_shape(index: int, pos: Vector2) -> void:
+	if tool == Tool.ANGLE and not _angle_pending.is_empty():
+		# The second arm comes out of the corner, wherever the finger starts:
+		# no need to hit the corner exactly.
+		_shape_touch = index
+		_shape_start = _angle_pending.v
+		_shape_end = _angle_pending.a
+		_update_shape(pos)
+		return
+	var X: Vector2 = sheet.to_rest(_screen_to_sheet_plane(pos))
+	if is_nan(X.x):
+		_status = "Start on the skin."
+		return
+	_shape_touch = index
+	_shape_start = X
+	_shape_end = X
+	_update_shape(pos)
+
+
+func _update_shape(pos: Vector2) -> void:
+	var E: Vector2 = sheet.to_rest(_screen_to_sheet_plane(pos))
+	if not is_nan(E.x):
+		_shape_end = E  # off the skin: keep the last end over skin
+	overlay.plan_preview = _shape_mark()
+
+
+## The shape from _shape_start to _shape_end, as a marking.
+func _shape_mark() -> Dictionary:
+	var S := _shape_start
+	var E := _shape_end
+	var m := {"color": _pen_color, "style": _line_style}
+	match tool:
+		Tool.LINE, Tool.RULER:
+			if _snap:
+				E = _snapped(S, E, 0.0)
+			m.kind = "line" if tool == Tool.LINE else "ruler"
+			m.rest = PackedVector2Array([S, E])
+			if tool == Tool.LINE:
+				m.preview_label = "%.1f mm" % S.distance_to(E)
+		Tool.RECT:
+			m.kind = "rect"
+			m.rest = PackedVector2Array([S, Vector2(E.x, S.y), E, Vector2(S.x, E.y), S])
+			m.preview_label = "%.1f × %.1f mm" % [absf(E.x - S.x), absf(E.y - S.y)]
+		Tool.CIRCLE:
+			m.kind = "circle"
+			var r := S.distance_to(E)
+			var ring := PackedVector2Array()
+			for k in CIRCLE_SEGMENTS + 1:
+				ring.append(S + r * Vector2.from_angle(TAU * k / CIRCLE_SEGMENTS))
+			m.rest = ring
+			m.preview_label = "⌀ %.1f mm" % (2.0 * r)
+		Tool.ANGLE:
+			if _angle_pending.is_empty():  # the first arm, out of the corner S
+				if _snap:
+					E = _snapped(S, E, 0.0)
+				m.kind = "line"
+				m.rest = PackedVector2Array([S, E])
+			else:  # the second arm: the angle between the arms snaps
+				var v: Vector2 = _angle_pending.v
+				var a: Vector2 = _angle_pending.a
+				if _snap:
+					E = _snapped(v, E, rad_to_deg((a - v).angle()))
+				m.kind = "angle"
+				m.rest = PackedVector2Array([a, v, E])
+	return m
+
+
+## E moved round S onto the nearest 15 degree step (counted from base_deg),
+## if it is within 3 degrees of one; the length is kept.
+func _snapped(S: Vector2, E: Vector2, base_deg: float) -> Vector2:
+	var d := E - S
+	if d.length() < 1e-6:
+		return E
+	var rel := wrapf(rad_to_deg(d.angle()) - base_deg, -180.0, 180.0)
+	var step := roundf(rel / SNAP_STEP_DEG) * SNAP_STEP_DEG
+	if absf(rel - step) > SNAP_WITHIN_DEG:
+		return E
+	return S + d.length() * Vector2.from_angle(deg_to_rad(step + base_deg))
+
+
+func _commit_shape(pos: Vector2) -> void:
+	_update_shape(pos)
+	_shape_touch = -1
+	var m: Dictionary = overlay.plan_preview
+	overlay.plan_preview = {}
+	if m.is_empty():
+		return
+	var r: PackedVector2Array = m.rest
+	var extent := Rect2(r[0], Vector2.ZERO)
+	for p in r:
+		extent = extent.expand(p)
+	if tool == Tool.ANGLE and not _angle_pending.is_empty():
+		var v: Vector2 = _angle_pending.v
+		if r[2].distance_to(v) < MIN_SHAPE_MM:
+			_show_pending_angle()  # a tap: still waiting for the second arm
+			return
+		_angle_pending = {}
+	elif extent.size.length() < MIN_SHAPE_MM:
+		return  # a tap
+	elif tool == Tool.ANGLE:
+		# First arm done: wait for the second.
+		_angle_pending = {"v": r[0], "a": r[1]}
+		_show_pending_angle()
+		return
+	m.erase("preview_label")
+	_add_mark(m)
+
+
+## While an angle waits for its second arm, its first arm stays on show.
+func _show_pending_angle() -> void:
+	if _angle_pending.is_empty():
+		overlay.plan_preview = {}
+	else:
+		overlay.plan_preview = {"kind": "line", "color": _pen_color, "style": _line_style,
+			"rest": PackedVector2Array([_angle_pending.v, _angle_pending.a])}
+
+
+## Drop a shape being drawn and a half-made angle (tool or mode change, Esc).
+func _cancel_plan_drawing() -> void:
+	_shape_touch = -1
+	_angle_pending = {}
+	if overlay != null:
+		overlay.plan_preview = {}
 
 
 ## Release of the excision gesture: a drag cuts and removes a fusiform

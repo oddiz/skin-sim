@@ -28,6 +28,8 @@ extends Control
 ## cards and buttons catch them, so touching the skin reaches main.gd.
 
 signal tool_selected(tool: int)
+## Plan | Operate switch (true = Plan).
+signal mode_selected(plan: bool)
 signal undo_requested
 signal reset_requested
 ## Back to the original skin: no incisions, sutures, lesions, markings or hooks.
@@ -49,9 +51,10 @@ const MAPS := [
 	["Excess skin (dog-ears)", "How much extra skin is bunched into wrinkles: where dog-ears form."],
 ]
 const SHORTCUTS := [
-	["G C S U", "Grab, Cut, Suture, Undermine"],
-	["L E F M", "Lesion, Excise, Flap, Mark"],
-	["Shift + drag", "Cut with any tool"],
+	["P", "Plan / Operate"],
+	["G C S U E F", "Grab, Cut, Suture, Undermine, Excise, Flap"],
+	["L M I B O D A", "Lesion, Pen, Line, Rectangle, Circle, Ruler, Angle"],
+	["Shift + drag", "Cut with any Operate tool"],
 	["Wheel", "Zoom (around the pointer)"],
 	["Right / middle drag", "Move the view"],
 	["Home", "Fit the skin in the window"],
@@ -95,6 +98,8 @@ var _skin_buttons: Array[Button] = []
 var _rail: PanelContainer
 var _rail_box: BoxContainer
 var _tool_scroll: ScrollContainer
+var _mode_box: VBoxContainer
+var _mode_buttons: Array[Button] = []  # [Plan, Operate]
 var _tool_box: BoxContainer
 var _tool_buttons: Array[Button] = []
 var _rail_spacer: Control
@@ -174,6 +179,26 @@ func _build_rail() -> void:
 	_rail_box.vertical = true
 	_rail_box.add_theme_constant_override("separation", 4)
 	_rail.add_child(_rail_box)
+	# Plan | Operate: which set of tools the bar shows. At the head of the
+	# bar (top of the rail; left end on a phone, where it doesn't scroll away).
+	_mode_box = VBoxContainer.new()
+	_mode_box.add_theme_constant_override("separation", 2)
+	_rail_box.add_child(_mode_box)
+	var modes := ButtonGroup.new()
+	for plan in [true, false]:
+		var m := Button.new()
+		m.text = "Plan" if plan else "Operate"
+		m.tooltip_text = "Planning: mark, measure and draw on the skin; the skin can't be pulled [P]" if plan \
+			else "Operating: grab, cut, suture, undermine, excise, raise flaps [P]"
+		m.theme_type_variation = "SegmentButton"
+		m.toggle_mode = true
+		m.button_group = modes
+		m.focus_mode = Control.FOCUS_NONE
+		m.add_theme_font_size_override("font_size", 11)
+		m.pressed.connect(func(): mode_selected.emit(plan))
+		_mode_box.add_child(m)
+		_mode_buttons.append(m)
+	_mode_buttons[1].set_pressed_no_signal(true)
 	# The tools scroll if they do not fit (sideways on a phone).
 	_tool_scroll = ScrollContainer.new()
 	_tool_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -193,6 +218,7 @@ func _build_rail() -> void:
 		b.gui_input.connect(_tool_drag_input.bind(b))
 		_tool_box.add_child(b)
 		_tool_buttons.append(b)
+		b.visible = not t.plan  # the app starts in Operate
 	_rail_spacer = Control.new()
 	_rail_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_rail_box.add_child(_rail_spacer)
@@ -689,11 +715,21 @@ func set_undo_enabled(on: bool) -> void:
 
 
 func show_tool(tool: int) -> void:
+	# The bar shows the tools of the tool's mode (Plan or Operate).
+	var plan: bool = ContextPanel.TOOLS[tool].plan
+	var mode_changed := _mode_buttons[0].button_pressed != plan
+	_mode_buttons[0].set_pressed_no_signal(plan)
+	_mode_buttons[1].set_pressed_no_signal(not plan)
 	for i in _tool_buttons.size():
+		_tool_buttons[i].visible = ContextPanel.TOOLS[i].plan == plan
 		_tool_buttons[i].set_pressed_no_signal(i == tool)
 	context.show_tool(tool)
+	if mode_changed:
+		_tool_scroll.scroll_horizontal = 0
+		_tool_scroll.scroll_vertical = 0
+		_tool_velocity = 0.0
 	if narrow:
-		_tool_scroll.ensure_control_visible(_tool_buttons[tool])
+		_tool_scroll.ensure_control_visible.call_deferred(_tool_buttons[tool])
 
 
 func cycle_heatmap() -> void:
@@ -862,6 +898,9 @@ func _switch_layout() -> void:
 	for b in buttons:
 		b.custom_minimum_size = Vector2(58, 52) if narrow else Vector2(Style.RAIL_WIDTH - 12, 54)
 		b.add_theme_font_size_override("font_size", 10 if narrow else 11)
+	for m in _mode_buttons:
+		m.custom_minimum_size = Vector2(62, 25) if narrow else Vector2(Style.RAIL_WIDTH - 12, 30)
+		m.add_theme_font_size_override("font_size", 10 if narrow else 11)
 	_rail.add_theme_stylebox_override("panel", Style.box(Style.SURFACE, 0, Color(0, 0, 0, 0), 4, 4) if narrow \
 		else Style.box(Style.SURFACE, 0, Color(0, 0, 0, 0), 6, 10))
 	# Compact top bar: icons only, no subtitle.

@@ -19,26 +19,44 @@ signal hold_all_changed(on: bool)
 ## A "Clear ..." button: what = "cuts", "sutures", "undermining", "lesions", "markings".
 signal clear_requested(what: String)
 signal pen_color_changed(index: int)
+signal line_style_changed(index: int)
+signal snap_changed(on: bool)
 
-## Matches main.gd's Tool enum.
+## Matches main.gd's Tool enum (the numbers are used by --tool: only add at
+## the end). "plan" tools are in the Plan mode's bar, the others in Operate.
 const TOOLS := [
-	{"name": "Grab", "icon": "grab", "key": "G",
+	{"name": "Grab", "icon": "grab", "key": "G", "plan": false,
 		"how": "Drag the skin with forceps. The pull is spread over a small patch, like forceps jaws."},
-	{"name": "Cut", "icon": "cut", "key": "C",
+	{"name": "Cut", "icon": "cut", "key": "C", "plan": false,
 		"how": "Draw an incision; it is made when you lift. Start near an existing cut to join it."},
-	{"name": "Suture", "icon": "suture", "key": "S",
+	{"name": "Suture", "icon": "suture", "key": "S", "plan": false,
 		"how": "Press where the needle goes in, drag, lift where it comes out. Tap a suture to select it."},
-	{"name": "Undermine", "icon": "undermine", "key": "U",
+	{"name": "Undermine", "icon": "undermine", "key": "U", "plan": false,
 		"how": "Paint where the skin is freed from the tissue below; it then moves more easily."},
-	{"name": "Lesion", "icon": "lesion", "key": "L",
-		"how": "Tap to mark a lesion. Excise it with the Excise or Flap tool."},
-	{"name": "Excise", "icon": "excise", "key": "E",
+	{"name": "Lesion", "icon": "lesion", "key": "L", "plan": true,
+		"how": "Tap to mark a lesion. Excise it with the Excise or Flap tool (Operate)."},
+	{"name": "Excise", "icon": "excise", "key": "E", "plan": false,
 		"how": "Drag from one tip of a fusiform excision to the other. Or tap inside an outline you cut, to remove it."},
-	{"name": "Flap", "icon": "flap", "key": "F",
+	{"name": "Flap", "icon": "flap", "key": "F", "plan": false,
 		"how": "Drag from a lesion outward, towards where the flap should come from. Release to cut and raise it."},
-	{"name": "Mark", "icon": "mark", "key": "M",
-		"how": "Draw on the skin with a surgical marker to plan cuts and flaps. Lines move with the skin. Tap a line to erase it."},
+	{"name": "Pen", "icon": "mark", "key": "M", "plan": true,
+		"how": "Draw freehand on the skin with a surgical marker. Markings belong to the skin: they move and stretch with it."},
+	{"name": "Line", "icon": "line", "key": "I", "plan": true,
+		"how": "Drag to draw a straight line. With Snap, it clicks to 15° steps."},
+	{"name": "Rectangle", "icon": "rect", "key": "B", "plan": true,
+		"how": "Drag from one corner to the opposite one."},
+	{"name": "Circle", "icon": "circle", "key": "O", "plan": true,
+		"how": "Drag from the centre outward."},
+	{"name": "Ruler", "icon": "ruler", "key": "D", "plan": true,
+		"how": "Drag to measure a distance. The label shows the length as drawn, and what it measures now once the skin has moved."},
+	{"name": "Angle", "icon": "angle", "key": "A", "plan": true,
+		"how": "Drag the first arm out from the corner, then drag again for the second arm. The label shows the angle as drawn, and now."},
+	{"name": "Erase", "icon": "eraser", "key": "", "plan": true,
+		"how": "Tap a marking, or rub across several, to erase them. Undo brings them back."},
 ]
+## The drawing tools of the Plan mode (they share colour, line style, snap).
+const DRAW_TOOLS := [7, 8, 9, 10, 11, 12]
+const LINE_STYLES := ["Solid", "Dashed", "Dotted"]
 ## USP thread sizes offered (5 = 5-0).
 const THREADS := [6, 5, 4, 3]
 const TIGHTNESS_STEP := 0.05
@@ -75,7 +93,12 @@ var _flap_card: PanelContainer
 var _flap_text := {}  # "moves", "uses", "design", "watch" -> Label
 ## Flap tool: draw the design with the marker instead of cutting it.
 var flap_plan_only := false
-var _pen_buttons: Array[Button] = []
+var _pen_buttons: Array[Button] = []    # every drawing page's colour buttons, in turn
+var _style_buttons: Array[Button] = []  # ...line style buttons
+var _snap_switches: Array[CheckButton] = []
+var _color_shown := 0
+var _style_shown := 0
+var _snap_shown := true
 
 
 func setup(p_sheet: SkinSheet) -> void:
@@ -123,7 +146,9 @@ func setup(p_sheet: SkinSheet) -> void:
 	_build_lesion(_pages[4])
 	_build_excise(_pages[5])
 	_build_flap(_pages[6])
-	_build_mark(_pages[7])
+	for t in DRAW_TOOLS:
+		_build_draw(_pages[t])
+	_build_erase(_pages[13])
 	show_thread(sheet.suture_thread)
 	show_tool(0)
 
@@ -463,22 +488,69 @@ func show_flap_type(type: int) -> void:
 	_flap_rows["flap_margin"].visible = type != 10  # the Z-plasty removes no skin
 
 
-func _build_mark(page: VBoxContainer) -> void:
+## Colour, line style and snap: the same settings on every drawing tool's
+## page (each page has its own buttons; show_plan_settings keeps them in step).
+func _build_draw(page: VBoxContainer) -> void:
 	_section(page, "Marker")
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 4)
-	_pen_buttons = _segment_row(PEN_NAMES, func(i: int): pen_color_changed.emit(i))
-	for i in _pen_buttons.size():
-		_pen_buttons[i].icon = Style.icon("mark")
-		_pen_buttons[i].expand_icon = true
-		_pen_buttons[i].add_theme_constant_override("icon_max_width", 14)
-		_pen_buttons[i].add_theme_color_override("icon_normal_color", PEN_COLORS[i].lightened(0.3))
-		_pen_buttons[i].add_theme_color_override("icon_pressed_color", PEN_COLORS[i].lightened(0.3))
-		row.add_child(_pen_buttons[i])
-	_pen_buttons[0].set_pressed_no_signal(true)
+	var pens := _segment_row(PEN_NAMES, func(i: int):
+		pen_color_changed.emit(i)
+		show_plan_settings(i, _style_shown, _snap_shown))
+	for i in pens.size():
+		pens[i].icon = Style.icon("mark")
+		pens[i].expand_icon = true
+		pens[i].add_theme_constant_override("icon_max_width", 14)
+		pens[i].add_theme_color_override("icon_normal_color", PEN_COLORS[i].lightened(0.3))
+		pens[i].add_theme_color_override("icon_pressed_color", PEN_COLORS[i].lightened(0.3))
+		row.add_child(pens[i])
+	pens[0].set_pressed_no_signal(true)
+	_pen_buttons.append_array(pens)
 	page.add_child(row)
-	page.add_child(Style.label("Markings are for planning only: they don't change the skin.", "Caption", true))
+	var srow := HBoxContainer.new()
+	srow.add_theme_constant_override("separation", 4)
+	var styles := _segment_row(LINE_STYLES, func(i: int):
+		line_style_changed.emit(i)
+		show_plan_settings(_color_shown, i, _snap_shown))
+	for b in styles:
+		srow.add_child(b)
+	styles[0].set_pressed_no_signal(true)
+	_style_buttons.append_array(styles)
+	page.add_child(srow)
+	var snap := HBoxContainer.new()
+	var sl := Style.label("Snap to 15°")
+	sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sl.tooltip_text = "Lines, rulers and angles click to 15° steps when close to one (30°, 45°, 60°, 90°...)."
+	snap.add_child(sl)
+	var sw := CheckButton.new()
+	sw.focus_mode = Control.FOCUS_NONE
+	sw.button_pressed = true
+	sw.toggled.connect(func(on: bool):
+		snap_changed.emit(on)
+		show_plan_settings(_color_shown, _style_shown, on))
+	snap.add_child(sw)
+	_snap_switches.append(sw)
+	page.add_child(snap)
+	page.add_child(Style.label("Markings are for planning only: they don't change the skin. Erase them with the Erase tool, or undo.",
+		"Caption", true))
 	_button(page, "Clear markings", "trash", func(): clear_requested.emit("markings"))
+
+
+func _build_erase(page: VBoxContainer) -> void:
+	_button(page, "Clear markings", "trash", func(): clear_requested.emit("markings"))
+
+
+## Keep every drawing tool's page showing the same colour, style and snap.
+func show_plan_settings(color: int, style: int, snap: bool) -> void:
+	_color_shown = color
+	_style_shown = style
+	_snap_shown = snap
+	for i in _pen_buttons.size():
+		_pen_buttons[i].set_pressed_no_signal(i % PEN_NAMES.size() == color)
+	for i in _style_buttons.size():
+		_style_buttons[i].set_pressed_no_signal(i % LINE_STYLES.size() == style)
+	for sw in _snap_switches:
+		sw.set_pressed_no_signal(snap)
 
 
 # --- updates from main.gd -------------------------------------------------

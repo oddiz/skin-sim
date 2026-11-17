@@ -99,6 +99,12 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   (solver/src/marks.cpp) samples them every 0.5 mm and splits them at incision lips (cached
   as material points per mesh); lesion outlines use it too. The overlay caches the projected
   markings until the render version or the view changes.
+  Plan / Operate modes: ContextPanel.TOOLS[i].plan; the bar shows one mode's tools,
+  switch at the rail's head (AppShell.mode_selected -> main.set_planning). Plan tools: Lesion,
+  Pen (MARK), LINE, RECT, CIRCLE, RULER, ANGLE, ERASE (main.Tool; numbers are --tool values,
+  only append). Markings {kind, rest, color, style}; shapes built in rest coords (_shape_mark,
+  15 deg snap); ruler/angle labels "as drawn -> now" via SkinSheet.rest_point_now; overlay
+  _draw_styled (dash/dot pattern continuous along the path). --demo-plan, --mode plan.
   UI2: narrow layout (< 820 logical px: bottom tool bar + pull-up context sheet), UI scale
   from the screen's pixel density (content_scale_size = window / scale), two-finger pan/pinch
   with gesture arbitration (main.gd _touch_down), wheel / right-drag / Home on desktop.

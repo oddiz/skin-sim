@@ -212,6 +212,10 @@ public:
     // Where the tissue at these rest points is now, as world-space pieces:
     // points not on skin (excised, in an open wound) split the line.
     Array rest_to_world(const PackedVector2Array& p_rest_points) const;
+    // Where the tissue at one rest point is now: a world point, a hair above
+    // the skin, and its position on the sheet in mm (for measuring: rulers,
+    // angles). {} if that point is not on skin.
+    Dictionary rest_point_now(const Vector2& p_rest_point) const;
 
     // --- Local flaps (world-space points) ---
     // A flap designed from a drag: pressed on a lesion, the defect is the

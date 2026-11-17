@@ -142,6 +142,7 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("excise", "point"), &SkinSheet::excise);
     ClassDB::bind_method(D_METHOD("to_rest", "point"), &SkinSheet::to_rest);
     ClassDB::bind_method(D_METHOD("rest_to_world", "rest_points"), &SkinSheet::rest_to_world);
+    ClassDB::bind_method(D_METHOD("rest_point_now", "rest_point"), &SkinSheet::rest_point_now);
     ClassDB::bind_method(D_METHOD("get_flap_preview", "start", "end"), &SkinSheet::get_flap_preview);
     ClassDB::bind_method(D_METHOD("make_flap", "start", "end"), &SkinSheet::make_flap);
     ClassDB::bind_method(D_METHOD("undo_flap"), &SkinSheet::undo_flap);
@@ -585,6 +586,16 @@ Array SkinSheet::rest_to_world(const PackedVector2Array& p_rest_points) const {
     }
     map();
     return pieces;
+}
+
+Dictionary SkinSheet::rest_point_now(const Vector2& p_rest_point) const {
+    Dictionary out;
+    const skinsim::Simulation* s = sim();
+    Eigen::Vector2d now;
+    if (!s || !s->current_position_at_rest(Eigen::Vector2d(p_rest_point.x, p_rest_point.y), now)) return out;
+    out["world"] = to_global(to_godot(now, 0.05f));
+    out["mm"] = Vector2(static_cast<real_t>(now.x()), static_cast<real_t>(now.y()));
+    return out;
 }
 
 skinsim::FlapDesign SkinSheet::flap_design(const Vector3& p_start, const Vector3& p_end) const {

@@ -495,17 +495,28 @@ func _pill(font: Font, pos: Vector2, text: String, size: int, color: Color) -> v
 	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
 
 
-## Pen markings: each line is kept in rest coordinates and drawn where that
-## tissue is now, so it stretches with the skin; parts over a wound or an
-## excised area are not drawn. Then the stroke being drawn.
+## Markings (main.marks): each is kept in rest coordinates and drawn where
+## that tissue is now, so it stretches with the skin; parts over a wound or
+## an excised area are not drawn. Rulers and angles get their scale, arc and
+## a label: the value as drawn, and what it measures now if that differs.
+## Then the shape and the pen stroke being drawn.
+##
 ## The markings on screen are cached: mapping them (dense, ~2 points per mm)
 ## and projecting every point each frame would cost a phone real time. They
 ## only change when the skin moves, the view moves or a marking is edited.
 var _marks_key: Array = []
-var _marks_screen: Array = []  # [{"color": Color, "pieces": [PackedVector2Array]}]
+var _marks_screen: Array = []  # one _mark_on_screen() per marking
+## The shape being drawn in the Plan mode (main.gd), drawn like a marking.
+var plan_preview: Dictionary = {}
+
+const DASH_PX := 9.0
+const GAP_PX := 6.0
+const DOT_PX := 7.0       # dot spacing
 
 
-func _marks_on_screen() -> Array:
+## The markings as drawn on screen, in the order of main.marks (the Erase
+## tool picks from these).
+func marks_on_screen() -> Array:
 	var key: Array = [sheet.get_render_version(), camera.position, camera.size,
 		get_viewport_rect().size, main.marks.size(), main.marks.hash()]
 	if key == _marks_key:
@@ -513,33 +524,205 @@ func _marks_on_screen() -> Array:
 	_marks_key = key
 	_marks_screen = []
 	for m in main.marks:
-		var pieces: Array = []
-		for piece in sheet.rest_to_world(m.rest):
-			if piece.size() < 2:
-				continue
-			var pts := PackedVector2Array()
-			pts.resize(piece.size())
-			for k in piece.size():
-				pts[k] = camera.unproject_position(piece[k])
-			pieces.append(pts)
-		_marks_screen.append({"color": ContextPanel.PEN_COLORS[m.color], "pieces": pieces})
+		_marks_screen.append(_mark_on_screen(m))
 	return _marks_screen
 
 
+## One marking on screen: {"color", "style", "pieces": [PackedVector2Array],
+## "extra": [PackedVector2Array] (thin solid strokes: ruler ticks, angle
+## arc), "label", "label_at"}.
+func _mark_on_screen(m: Dictionary) -> Dictionary:
+	var pieces: Array = []
+	for piece in sheet.rest_to_world(m.rest):
+		if piece.size() < 2:
+			continue
+		var pts := PackedVector2Array()
+		pts.resize(piece.size())
+		for k in piece.size():
+			pts[k] = camera.unproject_position(piece[k])
+		pieces.append(pts)
+	var d := {"color": ContextPanel.PEN_COLORS[m.color], "style": m.get("style", 0), "pieces": pieces,
+		"extra": [], "label": "", "label_at": Vector2.ZERO}
+	match m.get("kind", "pen"):
+		"ruler":
+			_ruler_extras(m.rest, d)
+		"angle":
+			_angle_extras(m.rest, d)
+	if m.has("preview_label") and not pieces.is_empty():
+		var last: PackedVector2Array = pieces[pieces.size() - 1]
+		d.label = m.preview_label
+		d.label_at = last[last.size() - 1] + Vector2(0, -24)
+	return d
+
+
+## Where rest point X is now: {"screen": Vector2, "mm": Vector2}, or {} off the skin.
+func _now(X: Vector2) -> Dictionary:
+	var p: Dictionary = sheet.rest_point_now(X)
+	if p.is_empty():
+		return p
+	return {"screen": camera.unproject_position(p.world), "mm": p.mm}
+
+
+## Ruler: a tick every mm (longer every 5 and 10), on one side of the line,
+## and the length as drawn -> now.
+func _ruler_extras(r: PackedVector2Array, d: Dictionary) -> void:
+	var a := r[0]
+	var b := r[r.size() - 1]
+	var planned := a.distance_to(b)
+	if planned < 1e-3:
+		return
+	var ea := _now(a)
+	var eb := _now(b)
+	# Ticks at least ~5 px apart: every mm zoomed in, every 5 or 10 mm out.
+	var px_per_mm := 10.0
+	if not ea.is_empty() and not eb.is_empty():
+		px_per_mm = (ea.screen as Vector2).distance_to(eb.screen) / maxf((ea.mm as Vector2).distance_to(eb.mm), 1e-3)
+	var step := 1.0 if px_per_mm >= 5.0 else (5.0 if px_per_mm >= 1.0 else 10.0)
+	var n := int(floor(planned / step + 1e-6))
+	var marks_now: Array = []
+	for k in n + 1:
+		marks_now.append(_now(a.lerp(b, k * step / planned)))
+	for k in marks_now.size():
+		if marks_now[k].is_empty():
+			continue
+		# Along the ruler here (from its neighbours), on screen.
+		var prev: Dictionary = marks_now[k - 1] if k > 0 and not marks_now[k - 1].is_empty() else marks_now[k]
+		var next: Dictionary = marks_now[k + 1] if k + 1 < marks_now.size() and not marks_now[k + 1].is_empty() \
+			else marks_now[k]
+		var along: Vector2 = next.screen - prev.screen
+		if along.length() < 1e-3:
+			continue
+		var side := along.normalized().orthogonal()
+		var mm := k * step
+		var len_px := 10.0 if is_zero_approx(fmod(mm, 10.0)) else (7.0 if is_zero_approx(fmod(mm, 5.0)) else 4.0)
+		d.extra.append(PackedVector2Array([marks_now[k].screen, marks_now[k].screen + side * len_px]))
+	var text := "%.1f mm" % planned
+	if not ea.is_empty() and not eb.is_empty():
+		var now: float = (ea.mm as Vector2).distance_to(eb.mm)
+		if absf(now - planned) > 0.2:
+			text += " → %.1f now" % now
+		var mid: Vector2 = (ea.screen + eb.screen) * 0.5
+		var dir: Vector2 = (eb.screen - ea.screen).normalized()
+		d.label_at = mid - dir.orthogonal() * 18.0  # on the side away from the ticks
+	elif not d.pieces.is_empty():
+		d.label_at = d.pieces[0][0]
+	d.label = text
+
+
+## Angle [arm end a, corner v, arm end b]: an arc at the corner and the angle
+## as drawn -> now.
+func _angle_extras(r: PackedVector2Array, d: Dictionary) -> void:
+	var a := r[0]
+	var v := r[1]
+	var b := r[2]
+	var planned := rad_to_deg(absf((a - v).angle_to(b - v)))
+	var text := "%.0f°" % planned
+	var na := _now(a)
+	var nv := _now(v)
+	var nb := _now(b)
+	if na.is_empty() or nv.is_empty() or nb.is_empty():
+		d.label = text
+		if not d.pieces.is_empty():
+			d.label_at = d.pieces[0][0]
+		return
+	var now := rad_to_deg(absf(((na.mm as Vector2) - nv.mm).angle_to((nb.mm as Vector2) - nv.mm)))
+	if absf(now - planned) > 1.0:
+		text += " → %.0f° now" % now
+	# The arc on screen, between the arms' directions out of the corner.
+	var sv: Vector2 = nv.screen
+	var ta: float = ((na.screen as Vector2) - sv).angle()
+	var sweep := wrapf(((nb.screen as Vector2) - sv).angle() - ta, -PI, PI)
+	var arc := PackedVector2Array()
+	for k in 25:
+		arc.append(sv + 26.0 * Vector2.from_angle(ta + sweep * k / 24.0))
+	d.extra.append(arc)
+	d.label = text
+	d.label_at = sv + 50.0 * Vector2.from_angle(ta + sweep * 0.5)
+
+
 func _draw_marks() -> void:
-	if main != null:
-		for m in _marks_on_screen():
-			var c: Color = m.color
-			for pts in m.pieces:
-				if style.get("neon", false):
-					draw_polyline(pts, Color(c.lightened(0.3), 0.18), 10.0, true)
-					draw_polyline(pts, Color(c.lightened(0.3), 0.35), 5.5, true)
-					draw_polyline(pts, c.lightened(0.6), 2.2, true)
-				elif style.get("ink_bleed", false):
-					# Marker ink soaking into the skin: a soft halo under the line.
-					draw_polyline(pts, Color(c, 0.22), 7.0, true)
-					draw_polyline(pts, Color(c, 0.75), 2.6, true)
-				else:
-					draw_polyline(pts, Color(c, 0.9), 3.0, true)
+	if main == null:
+		return
+	var font: Font = Style.FONT_REGULAR
+	var shown: Array = marks_on_screen().duplicate()
+	if not plan_preview.is_empty():
+		shown.append(_mark_on_screen(plan_preview))
+	for m in shown:
+		var c: Color = m.color
+		for pts in m.pieces:
+			_draw_styled(pts, c, m["style"])
+		for e in m.extra:
+			draw_polyline(e, Color(c, 0.9), 1.5, true)
+	# Labels on top of every line.
+	for m in shown:
+		if m.label != "":  # centred on label_at
+			var w := font.get_string_size(m.label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+			_pill(font, m.label_at + Vector2(-0.5 * w, 4.0), m.label, 12, Style.TEXT)
 	if pen_path.size() >= 2:
 		draw_polyline(pen_path, Color(pen_color, 0.9), 3.0, true)
+
+
+## A marker line, solid / dashed / dotted, in the look's ink style. Dashes
+## and dots are laid out along the whole path (Godot's draw_dashed_line
+## restarts its pattern on every segment, which breaks on dense paths).
+func _draw_styled(pts: PackedVector2Array, c: Color, line_style: int) -> void:
+	var neon: bool = style.get("neon", false)
+	var bleed: bool = style.get("ink_bleed", false)
+	if line_style == 0:
+		if neon:
+			draw_polyline(pts, Color(c.lightened(0.3), 0.18), 10.0, true)
+			draw_polyline(pts, Color(c.lightened(0.3), 0.35), 5.5, true)
+			draw_polyline(pts, c.lightened(0.6), 2.2, true)
+		elif bleed:
+			# Marker ink soaking into the skin: a soft halo under the line.
+			draw_polyline(pts, Color(c, 0.22), 7.0, true)
+			draw_polyline(pts, Color(c, 0.75), 2.6, true)
+		else:
+			draw_polyline(pts, Color(c, 0.9), 3.0, true)
+		return
+	var ink := c.lightened(0.6) if neon else Color(c, 0.85 if bleed else 0.9)
+	if line_style == 2:  # dotted
+		var r := 2.4 if neon else 1.9
+		for p in _resample(pts, DOT_PX, 0.0):
+			if bleed:
+				draw_circle(p, r + 1.6, Color(c, 0.2))
+			draw_circle(p, r, ink)
+		return
+	# Dashed: walk the path, drawing DASH_PX on, GAP_PX off.
+	var w := 2.2 if neon else (2.6 if bleed else 3.0)
+	var period := DASH_PX + GAP_PX
+	var dist := 0.0  # along the path, at pts[k]
+	for k in range(pts.size() - 1):
+		var a := pts[k]
+		var b := pts[k + 1]
+		var seg := a.distance_to(b)
+		if seg < 1e-6:
+			continue
+		var s := 0.0
+		while s < seg:
+			var phase := fmod(dist + s, period)
+			if phase < DASH_PX:
+				var e := minf(seg, s + DASH_PX - phase)
+				var p0 := a.lerp(b, s / seg)
+				var p1 := a.lerp(b, e / seg)
+				if bleed:
+					draw_line(p0, p1, Color(c, 0.2), w + 4.0, true)
+				draw_line(p0, p1, ink, w, true)
+				s = e
+			else:
+				s += period - phase
+		dist += seg
+
+
+## Points every `spacing` px along a polyline, starting `offset` px in.
+func _resample(pts: PackedVector2Array, spacing: float, offset: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	var next := offset
+	var dist := 0.0
+	for k in range(pts.size() - 1):
+		var seg := pts[k].distance_to(pts[k + 1])
+		while next <= dist + seg:
+			out.append(pts[k].lerp(pts[k + 1], (next - dist) / maxf(seg, 1e-6)))
+			next += spacing
+		dist += seg
+	return out
