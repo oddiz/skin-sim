@@ -244,6 +244,27 @@ func apply(sheet: SkinSheet, sun: DirectionalLight3D, env: Environment, overlay:
 		skin_material.set_shader_parameter("window_half", half - Vector2(margin, margin))
 
 
+## Does this look's skin shader draw the lesions (lesions.gdshaderinc)? If
+## not (Classic), the overlay draws them as discs.
+func draws_lesions() -> bool:
+	return skin_material is ShaderMaterial
+
+
+## The lesions for the skin shader, from SkinSheet.get_lesion_info (rest
+## centre, radius, kind). Up to 8 are drawn.
+func set_lesions(info: Array) -> void:
+	if not skin_material is ShaderMaterial:
+		return
+	var arr := PackedVector4Array()
+	arr.resize(8)
+	var n := mini(info.size(), 8)
+	for i in n:
+		var c: Vector2 = info[i].centre
+		arr[i] = Vector4(c.x, c.y, info[i].radius, info[i].kind)
+	skin_material.set_shader_parameter("lesions", arr)
+	skin_material.set_shader_parameter("lesion_count", n)
+
+
 ## Skin type 0..5 (Fitzpatrick I-VI), for looks that have one (Realistic).
 ## Blanching and flushing scale with the tone: on dark skin a blanched patch
 ## goes greyer rather than white, and redness shows less.

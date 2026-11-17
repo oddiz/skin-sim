@@ -4,6 +4,7 @@
 shader_type spatial;
 
 #include "res://looks/skin_common.gdshaderinc"
+#include "res://looks/lesions.gdshaderinc"
 
 uniform vec3 tone : source_color = vec3(0.90, 0.72, 0.61);
 uniform vec3 shade_tint : source_color = vec3(0.74, 0.50, 0.50);
@@ -37,6 +38,15 @@ void fragment() {
 	float jitter = texture(noise_tex, rest_mm / 3.0).r;
 	hatch *= step(fract(along + floor(ph) * 0.37 + jitter), 0.6);
 	col = mix(col, ink, 0.35 * hatch * wrinkle_amount());
+	// Lesions, as painted in an atlas: their colours softened towards the
+	// skin, and a fine ink line round the edge.
+	vec2 lg = vec2(0.0);
+	float lgloss;
+	vec3 under = col;
+	float lesion = lesions_apply(rest_mm, length(fwidth(rest_mm)), col, lg, lgloss);
+	col = mix(col, under, 0.15 * lesion);
+	// (The edge band only above 55%: an SCC's halo, at most 50%, gets none.)
+	col = mix(col, ink, 0.5 * smoothstep(0.55, 0.75, lesion) * (1.0 - smoothstep(0.85, 1.0, lesion)));
 	// Along the lips: a little shadow, then a fine ink line.
 	col *= mix(0.8, 1.0, smoothstep(0.0, 1.8, lip_mm));
 	float edge = 1.0 - smoothstep(0.12, 0.3, lip_mm);

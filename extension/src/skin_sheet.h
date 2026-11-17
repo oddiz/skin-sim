@@ -268,6 +268,9 @@ public:
     int get_lesion_count() const { return sheet_ ? static_cast<int>(sheet_->lesions().size()) : 0; }
     void set_lesion_diameter(double p_mm) { lesion_diameter_ = p_mm > 0.5 ? p_mm : 0.5; }
     double get_lesion_diameter() const { return lesion_diameter_; }
+    // Type of the next lesion (drawing only): 0 nodular BCC, 1 SCC, 2 melanoma.
+    void set_lesion_kind(int p_kind) { lesion_kind_ = p_kind < 0 ? 0 : (p_kind > 2 ? 2 : p_kind); }
+    int get_lesion_kind() const { return lesion_kind_; }
     // One Dictionary per lesion: outline (Array of PackedVector3Array, world
     // space: the parts still on skin), excised, complete (bool), margin_mm.
     Array get_lesion_info() const;
@@ -386,6 +389,8 @@ private:
     int heatmap_ = 0;
     double undermine_radius_ = 8.0;  // mm
     double lesion_diameter_ = 6.0;   // mm
+    int lesion_kind_ = 0;
+    std::vector<int> lesion_kinds_;  // per lesion, in the solver's order
     double ellipse_ratio_ = 3.0;     // length : width
     double tip_angle_deg_ = 30.0;
     double heatmap_range_kpa_ = 50.0;

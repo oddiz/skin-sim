@@ -105,6 +105,10 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   only append). Markings {kind, rest, color, style}; shapes built in rest coords (_shape_mark,
   15 deg snap); ruler/angle labels "as drawn -> now" via SkinSheet.rest_point_now; overlay
   _draw_styled (dash/dot pattern continuous along the path). --demo-plan, --mode plan.
+  Lesions: type per lesion (SkinSheet.lesion_kind / lesion_kinds_: 0 BCC, 1 SCC, 2 melanoma;
+  drawing only), drawn by the skin shaders (looks/lesions.gdshaderinc, procedural, rest mm;
+  Look.set_lesions); the overlay draws discs only for Classic / colour maps. Margin tool
+  (Tool.MARGIN): tap a lesion = panel margin, drag = any; marking kind "margin". --demo-lesions [--margins].
   UI2: narrow layout (< 820 logical px: bottom tool bar + pull-up context sheet), UI scale
   from the screen's pixel density (content_scale_size = window / scale), two-finger pan/pinch
   with gesture arbitration (main.gd _touch_down), wheel / right-drag / Home on desktop.

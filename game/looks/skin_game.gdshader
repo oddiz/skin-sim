@@ -6,6 +6,7 @@
 shader_type spatial;
 
 #include "res://looks/skin_common.gdshaderinc"
+#include "res://looks/lesions.gdshaderinc"
 
 uniform vec3 tone : source_color = vec3(0.98, 0.62, 0.47);
 uniform vec3 shade : source_color = vec3(0.62, 0.36, 0.52);   // cool purple shadows
@@ -30,6 +31,14 @@ void fragment() {
 	// A cartoon outline along every lip, the same width on screen at any zoom
 	// (but at most 0.5 mm, so it never covers a closed wound when zoomed out).
 	float px = length(fwidth(rest_mm));
+	// Lesions, a little bolder (cartoon), with an outline of their own.
+	vec2 lg = vec2(0.0);
+	float lgloss;
+	float lesion = lesions_apply(rest_mm, px, col, lg, lgloss);
+	col = mix(col, col * col * 1.25, 0.5 * lesion);  // richer colour
+	// The edge band (above 55%: an SCC's halo, at most 50%, gets none).
+	float ledge = smoothstep(0.55, 0.75, lesion) * (1.0 - smoothstep(0.85, 1.0, lesion));
+	col = mix(col, outline, 0.6 * ledge);
 	float wid = min(outline_px * px, 0.5);
 	ALBEDO = mix(col, outline, 1.0 - smoothstep(wid - px, wid + px, lip_mm));
 	ROUGHNESS = 0.6;

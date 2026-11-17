@@ -43,6 +43,8 @@ extends Node3D
 ##   ANGLE   drag the first arm from the corner, then drag the second arm:
 ##           labelled with the angle as drawn and now.
 ##   ERASE   tap or rub across markings to erase them (undoable).
+##   MARGIN  tap a lesion: a circle at the panel's margin round it; or drag
+##           outward from it for any margin.
 ##
 ## Navigation: two fingers pan and pinch-zoom the view. A second finger that
 ## lands soon after the first (or before the first has moved) turns both
@@ -61,6 +63,8 @@ extends Node3D
 ##   --open <panel>            open tissue | view | help | sheet | sheet-full
 ##   --tool <n>                pick a tool (0 grab .. 13 erase: main.Tool)
 ##   --mode plan               start in the Plan mode
+##   --demo-lesions [--margins]  one lesion of each type (BCC, SCC, melanoma)
+##                             [then margins: 4 mm tapped, 6 mm dragged, 10 mm]
 ##   --demo-plan               draw one of each planning shape, cut through
 ##                             them and pull the wound open (for checks)
 ##   --look <n>                visual style (0 classic, 1 illustration, 2 realistic = default, 3 game)
@@ -89,7 +93,7 @@ extends Node3D
 ##                             excised and closed: dog-ears at both ends;
 ##                             excess skin heatmap (for checks)
 
-enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK, LINE, RECT, CIRCLE, RULER, ANGLE, ERASE }
+enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK, LINE, RECT, CIRCLE, RULER, ANGLE, ERASE, MARGIN }
 ## The Plan tools that draw a shape by dragging.
 const SHAPE_TOOLS := [Tool.LINE, Tool.RECT, Tool.CIRCLE, Tool.RULER, Tool.ANGLE]
 
@@ -166,6 +170,11 @@ var _shape_start := Vector2.ZERO          # its start, rest coordinates
 var _shape_end := Vector2.ZERO            # its end so far (last point over skin)
 var _angle_pending := {}                  # {"v": corner, "a": first arm's end}: waiting for the second arm
 var _erase_touch := -1                    # touch index rubbing out markings
+var _margin_touch := -1                   # touch index drawing a lesion's margin
+var _margin_lesion := {}                  # that lesion (get_lesion_info entry)
+var _margin_start := Vector2.ZERO         # screen, to tell a tap from a drag
+var _margin_mm := 4.0                     # panel choice (a tap uses it)
+var _margin_style := 2                    # dotted
 var _last_tool := {true: Tool.MARK, false: Tool.GRAB}  # per mode (true = Plan), to return to
 var _mark_touch := -1                     # touch index drawing with the pen, -1 = none
 var _mark_rest := PackedVector2Array()    # the stroke so far, rest coordinates
@@ -227,6 +236,8 @@ func _ready() -> void:
 	panel.pen_color_changed.connect(func(i: int): _pen_color = i)
 	panel.line_style_changed.connect(func(i: int): _line_style = i)
 	panel.snap_changed.connect(func(on: bool): _snap = on)
+	panel.margin_changed.connect(func(mm: float): _margin_mm = mm)
+	panel.margin_style_changed.connect(func(i: int): _margin_style = i)
 	ui.mode_selected.connect(set_planning)
 	panel.tightness_changed.connect(func(t: float):
 		if _selected_suture >= 0:
@@ -299,6 +310,8 @@ func _ready() -> void:
 		set_planning(args[md + 1] == "plan")
 	if args.has("--demo-plan"):
 		_demo_plan()
+	if args.has("--demo-lesions"):
+		_demo_lesions()
 	var o := args.find("--open")  # for screenshots: --open tissue | view | help
 	if o != -1 and o + 1 < args.size():
 		ui.open_panel(args[o + 1])
@@ -348,6 +361,8 @@ func apply_look(i: int) -> void:
 	look = Look.make(i)
 	look.apply(sheet, sun, world_env.environment, overlay, drape)
 	look.set_skin_type(ui.skin_type)
+	look.set_lesions(_lesions)
+	overlay.lesions_in_skin = look.draws_lesions()
 	# For performance tests, override the look's anti-aliasing:
 	# --msaa 0 / 1 (2x) / 2 (4x), --fxaa.
 	var args := OS.get_cmdline_user_args()
@@ -438,6 +453,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_shape(event.position)
 		elif event.index == _erase_touch:
 			_erase_mark_at(event.position)
+		elif event.index == _margin_touch:
+			_update_margin(event.position)
 		elif event.index == _suture_touch:
 			overlay.suture_line = PackedVector2Array([_suture_start, event.position])
 			overlay.suture_line_ok = _on_skin(_suture_start) \
@@ -505,6 +522,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_tool(Tool.RULER)
 			KEY_A:
 				_set_tool(Tool.ANGLE)
+			KEY_N:
+				_set_tool(Tool.MARGIN)
 			KEY_ESCAPE:
 				if not _angle_pending.is_empty():
 					_cancel_plan_drawing()
@@ -601,6 +620,9 @@ func _cancel_action(index: int) -> void:
 		_show_pending_angle()  # back to the first arm, or nothing
 	elif index == _erase_touch:
 		_erase_touch = -1
+	elif index == _margin_touch:
+		_margin_touch = -1
+		overlay.plan_preview = {}
 	elif index == _lesion_touch:
 		_lesion_touch = -1
 	else:
@@ -707,6 +729,9 @@ func _on_press(index: int, pos: Vector2) -> void:
 		if _erase_touch == -1:
 			_erase_touch = index
 			_erase_mark_at(pos)
+	elif tool == Tool.MARGIN:
+		if _margin_touch == -1:
+			_start_margin(index, pos)
 	elif not is_planning():
 		_start_grab(index, pos)
 
@@ -727,6 +752,8 @@ func _on_release(index: int, pos: Vector2) -> void:
 		_commit_shape(pos)
 	elif index == _erase_touch:
 		_erase_touch = -1
+	elif index == _margin_touch:
+		_commit_margin(pos)
 	elif index == _lesion_touch:
 		_lesion_touch = -1
 		if sheet.add_lesion(_screen_to_sheet_plane(pos)):
@@ -1094,6 +1121,7 @@ func _process(delta: float) -> void:
 		panel.show_contact(sheet.get_contact_info())
 		_lesions = sheet.get_lesion_info()
 		panel.show_lesions(_lesions)
+		look.set_lesions(_lesions)
 		panel.show_flaps(sheet.get_flap_info())
 	var lesions := _lesions
 	Prof.end("panels")
@@ -1202,6 +1230,10 @@ func _hint(selected: Dictionary, lesions: Array) -> String:
 			return "Drag the first arm out from the corner."
 		Tool.ERASE:
 			return "Tap a marking, or rub across several, to erase them."
+		Tool.MARGIN:
+			if lesions.is_empty():
+				return "Mark a lesion first (Lesion tool), then tap it here."
+			return "Tap a lesion for a %.0f mm margin, or drag outward from it." % _margin_mm
 	return ""
 
 
@@ -1211,6 +1243,31 @@ func _sci(x: float) -> String:
 		return "0"
 	var exponent := floori(log(absf(x)) / log(10.0))
 	return "%.1fe%d" % [x / pow(10.0, exponent), exponent]
+
+
+## One lesion of each type side by side: BCC 8 mm, SCC 8 mm, melanoma 10 mm.
+func _demo_lesions() -> void:
+	await get_tree().process_frame
+	var spots := [[0, 8.0, Vector2(-16, 0)], [1, 8.0, Vector2(0, 0)], [2, 10.0, Vector2(17, 0)]]
+	for s in spots:
+		sheet.lesion_kind = s[0]
+		sheet.lesion_diameter = s[1]
+		sheet.add_lesion(sheet.to_global(Vector3(s[2].x, 0, -s[2].y)))
+		_history.append({"kind": "lesion"})
+	sheet.lesion_kind = 0
+	sheet.lesion_diameter = 6.0
+	if not OS.get_cmdline_user_args().has("--margins"):
+		return
+	# Margins: a tap (4 mm), a drag out to 6 mm, a tap with 10 mm chosen.
+	for _f in 3:
+		await get_tree().process_frame  # lesion info reaches main
+	set_planning(true)
+	_set_tool(Tool.MARGIN)
+	await _gesture([Vector2(-16, 0)])
+	await _gesture([Vector2(0, 0), Vector2(0, 7.0), Vector2(0, 10.0)])  # 4 mm radius + 6
+	_margin_mm = 10.0
+	await _gesture([Vector2(17, 1)])
+	print("demo-lesions: margins %s" % [marks.map(func(m): return m.get("margin", -1.0))])
 
 
 ## Plan mode: one of each shape (dotted line, dashed rectangle, circle, ruler,
@@ -1928,6 +1985,68 @@ func _commit_shape(pos: Vector2) -> void:
 	_add_mark(m)
 
 
+# --- Plan: lesion margins -------------------------------------------------
+
+## The lesion under a screen point (a little beyond its edge counts), or {}.
+func _lesion_at(pos: Vector2) -> Dictionary:
+	var X: Vector2 = sheet.to_rest(_screen_to_sheet_plane(pos))
+	if is_nan(X.x):
+		return {}
+	var best := {}
+	var best_d := INF
+	for l in _lesions:
+		var d: float = X.distance_to(l.centre) - l.radius
+		if d < maxf(1.5, 0.25 * l.radius) and d < best_d:
+			best = l
+			best_d = d
+	return best
+
+
+func _start_margin(index: int, pos: Vector2) -> void:
+	_margin_lesion = _lesion_at(pos)
+	if _margin_lesion.is_empty():
+		_status = "Tap a lesion (mark one with the Lesion tool)."
+		return
+	_margin_touch = index
+	_margin_start = pos
+	overlay.plan_preview = _margin_mark(_margin_mm)
+
+
+## Dragging: the margin reaches the finger (0.5 mm steps).
+func _update_margin(pos: Vector2) -> void:
+	if pos.distance_to(_margin_start) < TAP_PX:
+		overlay.plan_preview = _margin_mark(_margin_mm)
+		return
+	var X: Vector2 = sheet.to_rest(_screen_to_sheet_plane(pos))
+	if is_nan(X.x):
+		return
+	var m := maxf(0.5, snappedf(X.distance_to(_margin_lesion.centre) - _margin_lesion.radius, 0.5))
+	overlay.plan_preview = _margin_mark(m)
+
+
+func _commit_margin(pos: Vector2) -> void:
+	_update_margin(pos)
+	_margin_touch = -1
+	var m: Dictionary = overlay.plan_preview
+	overlay.plan_preview = {}
+	if m.is_empty():
+		return
+	m.erase("preview_label")
+	_add_mark(m)
+	_status = "Margin %.1f mm drawn." % m.margin
+
+
+## A circle `mm` outside the lesion's edge, as a marking.
+func _margin_mark(mm: float) -> Dictionary:
+	var c: Vector2 = _margin_lesion.centre
+	var r: float = _margin_lesion.radius + mm
+	var ring := PackedVector2Array()
+	for k in CIRCLE_SEGMENTS + 1:
+		ring.append(c + r * Vector2.from_angle(TAU * k / CIRCLE_SEGMENTS))
+	return {"kind": "margin", "rest": ring, "color": _pen_color, "style": _margin_style, "margin": mm,
+		"preview_label": "%.1f mm margin" % mm}
+
+
 ## While an angle waits for its second arm, its first arm stays on show.
 func _show_pending_angle() -> void:
 	if _angle_pending.is_empty():
@@ -1940,6 +2059,7 @@ func _show_pending_angle() -> void:
 ## Drop a shape being drawn and a half-made angle (tool or mode change, Esc).
 func _cancel_plan_drawing() -> void:
 	_shape_touch = -1
+	_margin_touch = -1
 	_angle_pending = {}
 	if overlay != null:
 		overlay.plan_preview = {}

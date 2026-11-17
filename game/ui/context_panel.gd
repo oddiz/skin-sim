@@ -21,6 +21,8 @@ signal clear_requested(what: String)
 signal pen_color_changed(index: int)
 signal line_style_changed(index: int)
 signal snap_changed(on: bool)
+signal margin_changed(mm: float)
+signal margin_style_changed(index: int)
 
 ## Matches main.gd's Tool enum (the numbers are used by --tool: only add at
 ## the end). "plan" tools are in the Plan mode's bar, the others in Operate.
@@ -53,10 +55,20 @@ const TOOLS := [
 		"how": "Drag the first arm out from the corner, then drag again for the second arm; the angle shows while you drag. To keep the labels (as drawn, and now): View → Measurements."},
 	{"name": "Erase", "icon": "eraser", "key": "", "plan": true,
 		"how": "Tap a marking, or rub across several, to erase them. Undo brings them back."},
+	{"name": "Margin", "icon": "margin", "key": "N", "plan": true,
+		"how": "Tap a lesion to draw its excision margin around it, or drag outward from it for any margin."},
 ]
+## Margin tool: quick choices, mm.
+const MARGINS := [2.0, 4.0, 5.0, 10.0, 20.0]
 ## The drawing tools of the Plan mode (they share colour, line style, snap).
 const DRAW_TOOLS := [7, 8, 9, 10, 11, 12]
 const LINE_STYLES := ["Solid", "Dashed", "Dotted"]
+## Lesion types (SkinSheet.lesion_kind; drawn by looks/lesions.gdshaderinc).
+const LESION_TYPES := [
+	["BCC", "Nodular basal cell carcinoma: a pearly, translucent dome with a rolled edge and fine vessels (telangiectasia); larger ones ulcerate in the middle."],
+	["SCC", "Squamous cell carcinoma: a keratin crust (yellow-white to brown, cracked) on a raised, inflamed pink base."],
+	["Melanoma", "Melanoma: asymmetric, with an irregular, partly blurred border and several colours: brown, black, blue-grey, pale regression."],
+]
 ## USP thread sizes offered (5 = 5-0).
 const THREADS := [6, 5, 4, 3]
 const TIGHTNESS_STEP := 0.05
@@ -149,6 +161,7 @@ func setup(p_sheet: SkinSheet) -> void:
 	for t in DRAW_TOOLS:
 		_build_draw(_pages[t])
 	_build_erase(_pages[13])
+	_build_margin(_pages[14])
 	show_thread(sheet.suture_thread)
 	show_tool(0)
 
@@ -343,6 +356,18 @@ func _build_undermine(page: VBoxContainer) -> void:
 
 
 func _build_lesion(page: VBoxContainer) -> void:
+	_section(page, "Type")
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	var looks := Style.label(LESION_TYPES[0][1], "Caption", true)
+	var kinds := _segment_row(LESION_TYPES.map(func(t): return t[0]), func(i: int):
+		sheet.lesion_kind = i
+		looks.text = LESION_TYPES[i][1])
+	for b in kinds:
+		row.add_child(b)
+	kinds[clampi(sheet.lesion_kind, 0, kinds.size() - 1)].set_pressed_no_signal(true)
+	page.add_child(row)
+	page.add_child(looks)
 	_row(page, {"prop": "lesion_diameter", "label": "Lesion diameter", "min": 0.5, "max": 40.0, "step": 0.5,
 		"fmt": "%.1f mm", "tip": "Size of the next lesion you mark."})
 	var l := Style.label("", "Caption", true)
@@ -534,6 +559,42 @@ func _build_draw(page: VBoxContainer) -> void:
 	page.add_child(Style.label("Markings are for planning only: they don't change the skin. Erase them with the Erase tool, or undo.",
 		"Caption", true))
 	_button(page, "Clear markings", "trash", func(): clear_requested.emit("markings"))
+
+
+func _build_margin(page: VBoxContainer) -> void:
+	_section(page, "Margin")
+	var mrow := HBoxContainer.new()
+	mrow.add_theme_constant_override("separation", 4)
+	var picks := _segment_row(MARGINS.map(func(m): return "%d" % m), func(i: int): margin_changed.emit(MARGINS[i]))
+	for b in picks:
+		mrow.add_child(b)
+	picks[1].set_pressed_no_signal(true)  # 4 mm
+	page.add_child(mrow)
+	page.add_child(Style.label("mm of normal skin round the lesion. Drag outward from a lesion for any other margin (0.5 mm steps).",
+		"Caption", true))
+	_section(page, "Marker")
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	var pens := _segment_row(PEN_NAMES, func(i: int):
+		pen_color_changed.emit(i)
+		show_plan_settings(i, _style_shown, _snap_shown))
+	for i in pens.size():
+		pens[i].icon = Style.icon("mark")
+		pens[i].expand_icon = true
+		pens[i].add_theme_constant_override("icon_max_width", 14)
+		pens[i].add_theme_color_override("icon_normal_color", PEN_COLORS[i].lightened(0.3))
+		pens[i].add_theme_color_override("icon_pressed_color", PEN_COLORS[i].lightened(0.3))
+		row.add_child(pens[i])
+	pens[0].set_pressed_no_signal(true)
+	_pen_buttons.append_array(pens)
+	page.add_child(row)
+	var srow := HBoxContainer.new()
+	srow.add_theme_constant_override("separation", 4)
+	var styles := _segment_row(LINE_STYLES, func(i: int): margin_style_changed.emit(i))
+	for b in styles:
+		srow.add_child(b)
+	styles[2].set_pressed_no_signal(true)  # margins: dotted unless chosen otherwise
+	page.add_child(srow)
 
 
 func _build_erase(page: VBoxContainer) -> void:

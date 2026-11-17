@@ -183,6 +183,8 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_lesion_count"), &SkinSheet::get_lesion_count);
     ClassDB::bind_method(D_METHOD("set_lesion_diameter", "mm"), &SkinSheet::set_lesion_diameter);
     ClassDB::bind_method(D_METHOD("get_lesion_diameter"), &SkinSheet::get_lesion_diameter);
+    ClassDB::bind_method(D_METHOD("set_lesion_kind", "kind"), &SkinSheet::set_lesion_kind);
+    ClassDB::bind_method(D_METHOD("get_lesion_kind"), &SkinSheet::get_lesion_kind);
     ClassDB::bind_method(D_METHOD("get_lesion_info"), &SkinSheet::get_lesion_info);
     ClassDB::bind_method(D_METHOD("set_undermine_radius", "mm"), &SkinSheet::set_undermine_radius);
     ClassDB::bind_method(D_METHOD("get_undermine_radius"), &SkinSheet::get_undermine_radius);
@@ -313,6 +315,8 @@ void SkinSheet::_bind_methods() {
     ADD_GROUP("Excision", "");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lesion_diameter", PROPERTY_HINT_RANGE, "0.5,40,0.5,suffix:mm"),
                  "set_lesion_diameter", "get_lesion_diameter");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "lesion_kind", PROPERTY_HINT_ENUM, "Nodular BCC,SCC,Melanoma"),
+                 "set_lesion_kind", "get_lesion_kind");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ellipse_ratio", PROPERTY_HINT_RANGE, "1,6,0.1"),
                  "set_ellipse_ratio", "get_ellipse_ratio");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tip_angle_deg", PROPERTY_HINT_RANGE, "10,120,1,suffix:deg"),
@@ -729,21 +733,29 @@ bool SkinSheet::undo_excise() {
     return true;
 }
 
-// Lesions are drawn by the overlay, not the mesh: changing them only
-// invalidates the cached lesion outlines.
+// Lesions are drawn by the looks' skin shaders (from get_lesion_info) and the
+// overlay, not the mesh: changing them only invalidates the cached info.
+// Their type (lesion_kind) is for drawing only; the solver doesn't need it.
 bool SkinSheet::add_lesion(const Vector3& p_world_point) {
     ++render_version_;
-    return sheet_ && sheet_->add_lesion(world_to_sheet(p_world_point), lesion_diameter_);
+    if (!sheet_) return false;
+    lesion_kinds_.resize(sheet_->lesions().size(), 0);
+    if (!sheet_->add_lesion(world_to_sheet(p_world_point), lesion_diameter_)) return false;
+    lesion_kinds_.push_back(lesion_kind_);
+    return true;
 }
 
 bool SkinSheet::undo_lesion() {
     ++render_version_;
-    return sheet_ && sheet_->undo_lesion();
+    if (!sheet_ || !sheet_->undo_lesion()) return false;
+    lesion_kinds_.resize(sheet_->lesions().size(), 0);
+    return true;
 }
 
 void SkinSheet::clear_lesions() {
     ++render_version_;
     if (sheet_) sheet_->clear_lesions();
+    lesion_kinds_.clear();
 }
 
 Array SkinSheet::get_lesion_info() const {
@@ -779,6 +791,9 @@ Array SkinSheet::compute_lesion_info() const {
         const skinsim::Sheet::LesionStatus st = sheet_->lesion_status(i);
         Dictionary d;
         d["outline"] = pieces;
+        d["centre"] = Vector2(static_cast<real_t>(l.centre.x()), static_cast<real_t>(l.centre.y()));  // rest mm
+        d["radius"] = l.radius;
+        d["kind"] = i < static_cast<int>(lesion_kinds_.size()) ? lesion_kinds_[i] : 0;
         d["excised"] = st.excised;
         d["complete"] = st.complete;
         d["margin_mm"] = st.margin;

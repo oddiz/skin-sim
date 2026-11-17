@@ -53,7 +53,7 @@ const MAPS := [
 const SHORTCUTS := [
 	["P", "Plan / Operate"],
 	["G C S U E F", "Grab, Cut, Suture, Undermine, Excise, Flap"],
-	["L M I B O D A", "Lesion, Pen, Line, Rectangle, Circle, Ruler, Angle"],
+	["L M I B O D A N", "Lesion, Pen, Line, Rectangle, Circle, Ruler, Angle, Margin"],
 	["Shift + drag", "Cut with any Operate tool"],
 	["Wheel", "Zoom (around the pointer)"],
 	["Right / middle drag", "Move the view"],

@@ -17,6 +17,7 @@
 shader_type spatial;
 
 #include "res://looks/skin_common.gdshaderinc"
+#include "res://looks/lesions.gdshaderinc"
 
 uniform vec3 tone : source_color = vec3(0.86, 0.66, 0.55);
 uniform vec3 melanin : source_color = vec3(0.55, 0.36, 0.25);
@@ -72,10 +73,15 @@ void fragment() {
 	float fold = 0.5 + 0.5 * cos(6.2831853 * ph);
 	col *= 1.0 - 0.18 * amt * fold;
 
+	// --- lesions (lesions.gdshaderinc): colour, relief, gloss ---
+	vec2 lgrad = vec2(0.0);
+	float lgloss;
+	float lesion = lesions_apply(p, mm_per_px, col, lgrad, lgloss);
+
 	// Pores: small round pits at the centres of a cellular pattern.
 	vec2 pore_uv = p / (pore_mm * 8.0);
 	float pit = 1.0 - smoothstep(0.0, 0.16, texture(cell_tex, pore_uv).r);
-	col *= 1.0 - 0.12 * pit * detail;
+	col *= 1.0 - 0.12 * pit * detail * (1.0 - lesion);
 
 	// --- the lips: shadow, a wet dark-red rim ---
 	col *= mix(0.72, 1.0, smoothstep(0.0, 1.5, lip_mm));
@@ -83,7 +89,7 @@ void fragment() {
 	col = mix(col, rim_color, 0.7 * rim);
 	float w = rim;
 
-	wet = w;
+	wet = max(w, 0.6 * lgloss);
 
 	// --- the drape, glued on outside the window ---
 	float cloth_amt = 0.0;
@@ -139,6 +145,8 @@ void fragment() {
 		grad += line_depth * 6.0 * x * (1.0 - x) / 0.12 * sign(f) * dir;
 		grad *= detail;
 	}
+	// A lesion's surface replaces the skin's fine relief.
+	grad = grad * (1.0 - 0.85 * lesion) + 14.0 * lgrad;
 	// Wrinkle ridges across the squeeze direction (only where it puckers).
 	vec2 sd = squeeze_dir();
 	grad += sd * (-sin(6.2831853 * ph) * 6.2831853 / wrinkle_period) * wrinkle_depth * amt * 0.25;
@@ -150,8 +158,8 @@ void fragment() {
 
 	vec2 v = SCREEN_UV - 0.5;
 	ALBEDO = col * (1.0 - vignette * 2.0 * dot(v, v));
-	ROUGHNESS = mix(mix(0.55, 0.12, w), 0.95, on_cloth);
-	SPECULAR = mix(mix(0.35, 0.8, w), 0.05, on_cloth);
+	ROUGHNESS = mix(mix(0.55, 0.12, wet), 0.95, on_cloth);
+	SPECULAR = mix(mix(0.35, 0.8, wet), 0.05, on_cloth);
 }
 
 void light() {

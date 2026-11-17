@@ -105,7 +105,7 @@ build every push on its own (and fail: it has no Emscripten or Godot).
 
 The screen: tools on the left rail, in two modes switched at its top (or P):
 **Operate** (grab, cut, suture, undermine, excise, flap) and **Plan** (lesion,
-pen, line, rectangle, circle, ruler, angle, erase). In Plan one finger on the
+pen, line, rectangle, circle, ruler, angle, erase, margin). In Plan one finger on the
 skin only draws: the skin can't be pulled by accident; the current tool's settings and results
 in the panel on the right; **Fit**, **View** (colour map, mesh, solver
 details), **Tissue** (body-site presets and skin properties, raw model
@@ -142,7 +142,8 @@ skin again.
 | Del (or X, or "Cut") | Cut the selected suture out; Z ties it again |
 | T | Cycle the suture labels: smart / all / none |
 | Drag (Undermine tool, U) | Paint where the skin is freed from the tissue below (shaded darker) |
-| Tap (Lesion tool, L) | Plan: mark a lesion (diameter in the panel) |
+| Tap (Lesion tool, L) | Plan: mark a lesion: type (nodular BCC, SCC, melanoma) and diameter in the panel. The looks draw it in the skin itself, so it stretches with the skin and goes exactly where it is excised |
+| Tap or drag (Margin, N) | Plan: tap a lesion for a circle at the chosen margin round it (2, 4, 5, 10, 20 mm; dotted by default), or drag outward from it for any margin in 0.5 mm steps |
 | Drag (Excise tool, E) | Tip to tip: a fusiform excision (shape in the panel), cut and removed on release |
 | Tap (Excise tool) | Remove the piece of skin under the finger, if incisions have cut it free all round |
 | Drag (Flap tool, F) | From a lesion outward: designs the excision and a local flap in that direction (previewed), then cuts, removes and undermines on release (or draws it with the marker: "Plan with the marker") |

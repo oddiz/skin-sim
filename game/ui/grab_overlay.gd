@@ -468,22 +468,33 @@ func _draw_rstl(font: Font) -> void:
 		Color(0.95, 0.85, 0.7))
 
 
-## Lesions: a brown disc on the skin, following it as it deforms. Parts
-## that have been cut out are not drawn; an incompletely excised lesion is
-## outlined in red.
+## Lesions: the looks' skin shaders draw them (lesions.gdshaderinc). Here:
+## a brown disc instead where they can't (the Classic look, or a colour map
+## on), following the skin as it deforms (parts cut out are not drawn); and
+## a red outline round an incompletely excised lesion, whatever the look.
+## Set by main.gd from Look.draws_lesions().
+var lesions_in_skin := false
+## Disc colours by type (BCC pearly pink, SCC crusted tan, melanoma dark brown).
+const LESION_FILL := [Color(0.88, 0.66, 0.66, 0.9), Color(0.78, 0.62, 0.42, 0.9), Color(0.27, 0.16, 0.1, 0.9)]
+
+
 func _draw_lesions() -> void:
+	var discs := not lesions_in_skin or sheet.heatmap != 0
 	for l in sheet.get_lesion_info():
 		var pieces: Array = l.outline
-		var edge := Color(0.9, 0.1, 0.1, 0.95) if l.excised and not l.complete else Color(0.2, 0.1, 0.05, 0.9)
+		var incomplete: bool = l.excised and not l.complete
+		if not discs and not incomplete:
+			continue
+		var edge := Color(0.9, 0.1, 0.1, 0.95) if incomplete else Color(0.2, 0.1, 0.05, 0.9)
 		for piece in pieces:
 			var pts := PackedVector2Array()
 			for p in piece:
 				pts.append(camera.unproject_position(p))
 			if pts.size() < 2:
 				continue
-			if pieces.size() == 1 and pts.size() > 40:  # whole lesion still on skin: fill it
+			if discs and pieces.size() == 1 and pts.size() > 40:  # whole lesion still on skin: fill it
 				# (Without the repeated closing point: the polygon fill wants each corner once.)
-				draw_colored_polygon(pts.slice(0, pts.size() - 1), Color(0.35, 0.2, 0.12, 0.85))
+				draw_colored_polygon(pts.slice(0, pts.size() - 1), LESION_FILL[clampi(int(l.get("kind", 0)), 0, 2)])
 			draw_polyline(pts, edge, 2.0, true)
 
 
