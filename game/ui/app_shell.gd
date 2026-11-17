@@ -77,6 +77,8 @@ var drawer: TissueDrawer
 var narrow := false
 ## View option (drawn by the overlay): tension direction strokes.
 var show_tension_lines := true
+## Blood from open incisions (looks that draw it).
+var bleeding := true
 
 var _rail: PanelContainer
 var _rail_box: BoxContainer
@@ -335,6 +337,8 @@ func _build_view_card() -> void:
 	v.add_child(looks)
 	_look_caption = Style.label("", "Caption", true)
 	v.add_child(_look_caption)
+	var bleed := _switch_row(v, "Bleeding", bleeding, func(on: bool): bleeding = on)
+	bleed.tooltip_text = "Fresh incisions ooze and blood pools in the wound, darkening as it clots. Drawing only: it does not change the mechanics."
 	v.add_child(Style.label("COLOUR MAP", "SectionTitle"))
 	var group := ButtonGroup.new()
 	for i in MAPS.size():

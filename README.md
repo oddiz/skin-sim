@@ -301,7 +301,22 @@ changes. `--look N` picks one from the command line.
   across its wrinkles; every incision has a fine ink line, and the cut face
   shows the layers (epidermis, dermis, yellow fat lobules) above the red
   wound bed.
-- Realistic and Game looks are planned next (G2, G3).
+- **Realistic**: as under theatre lights. Pores and fine skin lines (bumps
+  in the shading that fade out when zoomed out, so they never shimmer),
+  melanin and blood variation and a few freckles, all fixed to the tissue;
+  light glowing red through the skin at the edge of shadows (faked
+  subsurface scattering: the browser renderer has none built in); dog-ears
+  as real folds; blanching; wet, glossy cut faces and wound bed; black nylon
+  sutures (their load shows as a ring at each needle hole); marker ink with
+  a soft edge; a blue-green surgical drape around the skin (drawn
+  procedurally, no image files).
+- A Game look is planned next (G3).
+
+**Bleeding** (View, on by default): open incisions ooze and blood pools in
+the wound over about 15 s; it is bright when fresh and darkens over the half
+minute after the last cut. Drawing only: no blood physics, and it does not
+change the mechanics. Strong in Realistic, a flat red band in Illustration,
+none in Classic.
 
 How it works: SkinSheet gives each vertex extra data for the shaders (its
 rest position, the excess skin and the direction the skin is squeezed, the
@@ -309,7 +324,8 @@ area change, the distance to the nearest incision), and a shading relief
 (normals tilted where skin puckers and at the rounded lips). The cut face is
 drawn as a narrow band sloping into the wound, since a vertical wall is
 invisible from straight above. The shaders are in `game/looks/`
-(`skin_illustration.gdshader`, `walls.gdshader`, `bed.gdshader`) and can be
+(`skin_illustration.gdshader`, `skin_realistic.gdshader`, `walls.gdshader`,
+`bed.gdshader`, `drape.gdshader`) and can be
 edited without touching C++. Every look uses Godot's Compatibility renderer
 (as the browser does), so the desktop shows what a phone shows.
 

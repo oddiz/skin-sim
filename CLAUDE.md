@@ -110,6 +110,9 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   shader data (UV rest mm, UV2 (J, lip distance), COLOR (undermined, excess, squeeze dir));
   cut walls = sloped bands; relief normals. Renderer: gl_compatibility everywhere (web parity).
   Screenshots: --look N --plain --zoom X.
+  G2 Realistic (look 2): skin_realistic.gdshader (bumps from rest-space noise, fake SSS in
+  light()), drape.gdshader (procedural, a plane below the wound bed made in main.gd).
+  Bleeding: main._update_bleeding -> Look.update_wound(level, fresh) sets shader uniforms.
 
 ## Planned features
 - Z-plasty in the simulation; scenarios (UI4); tissue drawer polish (UI3).

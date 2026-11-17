@@ -86,6 +86,10 @@ enum Tool { GRAB, CUT, SUTURE, UNDERMINE, LESION, EXCISE, FLAP, MARK }
 @onready var world_env: WorldEnvironment = $WorldEnvironment
 ## The visual style (game/looks/look.gd).
 var look: Look
+## The surgical drape around the skin (shown by looks that have one).
+var drape: MeshInstance3D
+## Bleeding: how much blood has come out so far (0..1), across all cuts.
+var _blood := 0.0
 ## The current tool's settings (part of ui; kept as a short name).
 var panel: ContextPanel
 
@@ -186,6 +190,13 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_frame_sheet)
 	_frame_sheet()
 
+	drape = MeshInstance3D.new()
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(4000, 4000)
+	drape.mesh = plane
+	drape.position.y = -1.5  # below the wound bed: never seen through a wound
+	add_child(drape)
+
 	var args := OS.get_cmdline_user_args()
 	var lk := args.find("--look")
 	apply_look(int(args[lk + 1]) if lk != -1 and lk + 1 < args.size() else 1)
@@ -230,7 +241,7 @@ func _demo_map(i: int) -> void:
 ## Switch the visual style (0 Classic, 1 Illustration, ...).
 func apply_look(i: int) -> void:
 	look = Look.make(i)
-	look.apply(sheet, sun, world_env.environment, overlay)
+	look.apply(sheet, sun, world_env.environment, overlay, drape)
 	ui.show_look(look.index)
 
 
@@ -749,7 +760,8 @@ func _screen_to_sheet_plane(screen_pos: Vector2) -> Vector3:
 	return hit if hit != null else origin
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_update_bleeding(delta)
 	var s: Dictionary = sheet.get_step_info()
 	var selected := _selected_info()
 	panel.show_selected_suture(selected)
@@ -774,6 +786,19 @@ func _process(_delta: float) -> void:
 			"at rest" if s.converged else "solving", s.iterations, s.step_ms, _sci(s.residual), flags] \
 		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs])
+
+
+## Blood comes out of open incisions over about 15 s and stays (no
+## physics: a level the looks' shaders turn into ooze and pooling). Fresh
+## blood is bright; it darkens over the half minute after the last cut.
+func _update_bleeding(delta: float) -> void:
+	var w: Dictionary = sheet.get_wound_info()
+	if w.has_cuts:
+		_blood = minf(1.0, _blood + delta / 15.0)
+	else:
+		_blood = 0.0
+	var fresh := exp(-float(w.since_cut_s) / 30.0)
+	look.update_wound(_blood if ui.bleeding else 0.0, fresh)
 
 
 ## What to do next, in one line, for the current tool and state.

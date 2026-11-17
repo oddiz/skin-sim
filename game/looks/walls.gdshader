@@ -18,6 +18,8 @@ uniform float lobule_mm = 0.9;   // fat lobule size
 uniform float wetness = 0.0;     // 0 matte .. 1 glistening
 uniform float depth_shade = 0.35;
 uniform float outline = 1.0;
+uniform float blood = 0.0;      // blood film over the cut face (Look.update_wound)
+uniform vec3 blood_color : source_color = vec3(0.45, 0.03, 0.04);
 uniform sampler2D cell_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
 
 varying float depth;
@@ -40,9 +42,14 @@ void fragment() {
 	col = mix(col, deep, smoothstep(0.85, 1.0, depth) * 0.6);
 	col *= 1.0 - depth_shade * depth;
 	col = mix(col, contact_color, show_contact * pressure * 0.8);
+	// Blood runs down the cut face: more at the bottom, in streaks.
+	float streak = texture(cell_tex, vec2(along / 3.0, 0.3)).r;
+	float film = blood * smoothstep(0.1, 0.9, depth + 0.5 * streak - 0.2);
+	col = mix(col, blood_color, 0.85 * film);
 	// A fine ink line at the skin surface.
 	col = mix(col, ink, outline * (1.0 - smoothstep(0.0, 0.05 + aa, depth)));
 	ALBEDO = col;
-	ROUGHNESS = mix(0.9, 0.25, wetness);
-	SPECULAR = mix(0.1, 0.6, wetness);
+	float w = max(wetness, film);
+	ROUGHNESS = mix(0.9, 0.15, w);
+	SPECULAR = mix(0.1, 0.7, w);
 }
