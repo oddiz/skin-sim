@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "title": "Ellipse basics",
+  "site": "Face (cheek)",
+  "sheet": {
+    "width": 100,
+    "height": 60,
+    "element_mm": 2.5
+  },
+  "params": {
+    "pin_boundary": false
+  },
+  "lesion": {
+    "kind": 0,
+    "diameter": 8,
+    "at": [
+      0,
+      0
+    ]
+  },
+  "margin_mm": 4,
+  "brief": "A 64-year-old with an 8 mm nodular BCC on the cheek. Excise it with a 4 mm margin and close the defect directly.",
+  "goals": [
+    "Plan the excision: mark the lesion's margin, think about the direction of the skin tension lines (the RSTL compass).",
+    "Excise a fusiform ellipse around the margin and close it with sutures."
+  ],
+  "approach": {
+    "text": "A fusiform ellipse about 3 times as long as it is wide (30° tips), its long axis along the relaxed skin tension lines: the scar then lies in a line of least tension, and the length lets the ends close flat without dog-ears. Close from the middle outwards, halving the gaps.",
+    "draw": {
+      "kind": "ellipse",
+      "along": "rstl",
+      "ratio": 3.0,
+      "tip_deg": 30
+    }
+  },
+  "reference": {
+    "tension_kpa": 7.55,
+    "max_excess": 0.12
+  },
+  "tips": {
+    "lesion": "Keep the outline outside the margin circle all round: the margin is measured from the lesion's edge to the edge of the defect.",
+    "closed": "Close the whole length: a suture every few mm, starting in the middle and halving the gaps.",
+    "tension": "An ellipse across the tension lines closes under much more tension. Turn it along the RSTL compass.",
+    "dog_ears": "Short ellipses pucker at the ends. Aim for about 3:1 with 30° tips, or remove the dog-ears (Burow's triangles).",
+    "sutures": "A thread near its breaking strength will snap. Use a thicker thread, undermine, or reduce the tension with a better orientation."
+  }
+}

@@ -111,6 +111,7 @@ var _snap_switches: Array[CheckButton] = []
 var _color_shown := 0
 var _style_shown := 0
 var _snap_shown := true
+var _margin_buttons: Array[Button] = []
 
 
 func setup(p_sheet: SkinSheet) -> void:
@@ -565,10 +566,10 @@ func _build_margin(page: VBoxContainer) -> void:
 	_section(page, "Margin")
 	var mrow := HBoxContainer.new()
 	mrow.add_theme_constant_override("separation", 4)
-	var picks := _segment_row(MARGINS.map(func(m): return "%d" % m), func(i: int): margin_changed.emit(MARGINS[i]))
-	for b in picks:
+	_margin_buttons = _segment_row(MARGINS.map(func(m): return "%d" % m), func(i: int): margin_changed.emit(MARGINS[i]))
+	for b in _margin_buttons:
 		mrow.add_child(b)
-	picks[1].set_pressed_no_signal(true)  # 4 mm
+	_margin_buttons[1].set_pressed_no_signal(true)  # 4 mm
 	page.add_child(mrow)
 	page.add_child(Style.label("mm of normal skin round the lesion. Drag outward from a lesion for any other margin (0.5 mm steps).",
 		"Caption", true))
@@ -599,6 +600,14 @@ func _build_margin(page: VBoxContainer) -> void:
 
 func _build_erase(page: VBoxContainer) -> void:
 	_button(page, "Clear markings", "trash", func(): clear_requested.emit("markings"))
+
+
+## The Margin tool's current margin (a scenario sets it): its quick button
+## pressed, or none if it isn't one of them.
+func show_margin(mm: float) -> void:
+	for i in _margin_buttons.size():
+		_margin_buttons[i].button_group.allow_unpress = true
+		_margin_buttons[i].set_pressed_no_signal(is_equal_approx(MARGINS[i], mm))
 
 
 ## Keep every drawing tool's page showing the same colour, style and snap.

@@ -63,6 +63,10 @@ extends Node3D
 ##   --open <panel>            open tissue | view | help | sheet | sheet-full
 ##   --tool <n>                pick a tool (0 grab .. 13 erase: main.Tool)
 ##   --mode plan               start in the Plan mode
+##   --scenario <n>            start teaching case n (1-based, game/scenarios)
+##     [--approach] [--check]  draw its suggested approach / check the closure
+##   --probe-scenario <n>      carry out case n's suggested approach in the
+##                             simulator, print reference values, quit
 ##   --demo-lesions [--margins]  one lesion of each type (BCC, SCC, melanoma)
 ##                             [then margins: 4 mm tapped, 6 mm dragged, 10 mm]
 ##   --demo-plan               draw one of each planning shape, cut through
@@ -119,6 +123,8 @@ var _panels_version := -1
 var _lesions: Array = []
 ## The current tool's settings (part of ui; kept as a short name).
 var panel: ContextPanel
+## The teaching case being worked on (game/scenario.gd), or null.
+var scenario: Scenario
 
 ## Empty space around the sheet, as a fraction of its size.
 const FRAME_MARGIN := 1.3
@@ -221,7 +227,11 @@ func _ready() -> void:
 	ui.setup(sheet)
 	panel = ui.context
 	ui.reset_requested.connect(sheet.reset_simulation)
-	ui.start_over_requested.connect(start_over)
+	ui.start_over_requested.connect(func():
+		if scenario != null:
+			scenario.start(self)  # a fresh start of the same case
+		else:
+			start_over())
 	ui.tool_selected.connect(_set_tool)
 	ui.undo_requested.connect(_undo)
 	ui.fit_requested.connect(_frame_sheet)
@@ -239,6 +249,21 @@ func _ready() -> void:
 	panel.margin_changed.connect(func(mm: float): _margin_mm = mm)
 	panel.margin_style_changed.connect(func(i: int): _margin_style = i)
 	ui.mode_selected.connect(set_planning)
+	var card := ui.scenario_card
+	card.start_requested.connect(start_scenario)
+	card.check_requested.connect(check_closure)
+	card.draw_approach_requested.connect(func():
+		if scenario != null:
+			scenario.draw_approach(self)
+			_status = "Suggested approach drawn with the marker (dashed: cut along it; Undo removes it).")
+	card.restart_requested.connect(func():
+		if scenario != null:
+			scenario.start(self))
+	card.end_requested.connect(end_scenario)
+	card.folded_changed.connect(func():
+		for _f in 3:  # (the card measures itself over two frames)
+			await get_tree().process_frame
+		_frame_sheet())
 	panel.tightness_changed.connect(func(t: float):
 		if _selected_suture >= 0:
 			sheet.set_suture_tightness(_selected_suture, t))
@@ -312,6 +337,23 @@ func _ready() -> void:
 		_demo_plan()
 	if args.has("--demo-lesions"):
 		_demo_lesions()
+	if args.has("--cases"):  # for screenshots: the scenario picker
+		ui.scenario_card.show_picker()
+	var sc := args.find("--scenario")  # 1-based
+	if sc != -1 and sc + 1 < args.size():
+		start_scenario(int(args[sc + 1]) - 1)
+		if scenario != null and args.has("--approach"):  # for screenshots
+			scenario.draw_approach(self)
+		if scenario != null and args.has("--check"):
+			for _f in 60:
+				await get_tree().process_frame
+			check_closure()
+	var pr := args.find("--probe-scenario")
+	if pr != -1 and pr + 1 < args.size():
+		var s := Scenario.make(int(args[pr + 1]) - 1)
+		if s != null:
+			await s.probe(self)
+		get_tree().quit()
 	var o := args.find("--open")  # for screenshots: --open tissue | view | help
 	if o != -1 and o + 1 < args.size():
 		ui.open_panel(args[o + 1])
@@ -336,8 +378,12 @@ func _demo_map(i: int) -> void:
 ## never opens a gap.
 func _build_drape() -> void:
 	var outer := 2000.0
-	var hx := maxf(1.0, sheet.width * 0.5 - 4.0)
-	var hz := maxf(1.0, sheet.height * 0.5 - 4.0)
+	# The hole: the opening the drape is glued round (Look.apply's margin),
+	# under the skin's margin. If the skin's edges are free and prestressed
+	# skin draws back from them, cloth shows there, not the wound bed.
+	var margin := clampf(0.12 * minf(sheet.width, sheet.height), 4.0, 15.0)
+	var hx := maxf(1.0, sheet.width * 0.5 - margin)
+	var hz := maxf(1.0, sheet.height * 0.5 - margin)
 	var o := [Vector3(-outer, 0, -outer), Vector3(outer, 0, -outer), Vector3(outer, 0, outer), Vector3(-outer, 0, outer)]
 	var h := [Vector3(-hx, 0, -hz), Vector3(hx, 0, -hz), Vector3(hx, 0, hz), Vector3(-hx, 0, hz)]
 	var verts := PackedVector3Array()
@@ -841,6 +887,8 @@ func _cut_selected_suture() -> void:
 
 
 func _on_suture_snapped(id: int, a: Vector3, b: Vector3, tension_n: float, thread: int) -> void:
+	if scenario != null:
+		scenario.snapped += 1
 	overlay.add_snap(a, b, "SNAPPED %d-0 at %.1f N" % [thread, tension_n])
 	fx.snap(a, b)
 	_status = "Suture #%d (%d-0) snapped: thread tension %.1f N, over its %.1f N strength." % [
@@ -900,7 +948,7 @@ func _place_suture_buttons(su: Dictionary) -> void:
 ## goes (incisions and excisions, flaps, sutures, undermining, lesions,
 ## markings, hooks, bleeding), the skin comes to rest, the view fits it.
 ## The tissue settings, look and view options stay.
-func start_over() -> void:
+func start_over(quiet := false) -> void:
 	_cancel_all_touches()
 	release_all_grabs()
 	sheet.clear_sutures()
@@ -915,7 +963,54 @@ func start_over() -> void:
 	_blood = 0.0
 	sheet.reset_simulation()
 	_frame_sheet()
-	_status = "Fresh skin: everything cleared."
+	if not quiet:
+		_status = "Fresh skin: everything cleared."
+
+
+## Start teaching case i (0-based, Scenario.list() order).
+func start_scenario(i: int) -> void:
+	var s := Scenario.make(i)
+	if s == null:
+		_status = "No such scenario."
+		return
+	s.start(self)
+
+
+## The skin patch changed size (a scenario): the drape and the look's
+## glued window follow.
+func on_sheet_resized() -> void:
+	_build_drape()
+	apply_look(look.index)
+
+
+## Called by Scenario.start once the skin and the lesion are ready.
+func on_scenario_started(s: Scenario) -> void:
+	scenario = s
+	_margin_mm = s.margin_mm()
+	panel.show_margin(_margin_mm)
+	set_planning(true)
+	_set_tool(Tool.MARGIN)
+	ui.show_scenario(s)
+	# Frame the skin beside the card, once the card has its size.
+	await get_tree().process_frame
+	_frame_sheet()
+	_status = "%s: plan first (Plan), then operate." % s.title()
+
+
+## Score the closure (Scenario.score) and show the report card.
+func check_closure() -> void:
+	if scenario == null:
+		return
+	var r := scenario.score(self)
+	ui.scenario_card.show_report(r)
+	_status = "%s: %d of 3 stars." % [scenario.title(), r.stars]
+
+
+## Leave the teaching case (the skin stays as it is).
+func end_scenario() -> void:
+	scenario = null
+	ui.show_scenario(null)
+	_frame_sheet()
 
 
 func _cancel_all_touches() -> void:

@@ -386,6 +386,43 @@ rest: ~1.6 ms per frame (desktop: 98 -> 240 fps). `--bench` also prints a
 per-section breakdown (`Prof` in game/prof.gd) and waits for the skin to
 come to rest (`--bench-frames N`).
 
+## Scenarios (teaching cases)
+
+**Cases** in the top bar (or ⋯ → Scenarios) lists the cases in
+`game/scenarios/` (format in the README there):
+
+| Case | Site | Lesion | Margin | Teaches |
+|---|---|---|---|---|
+| Ellipse basics | cheek | 8 mm nodular BCC | 4 mm | fusiform ellipse along the RSTL, 3:1, dog-ears |
+| Cheek rhomboid | cheek | 12 mm nodular BCC | 4 mm | rhomboid (Limberg) flap and which side to take it from |
+| Scalp rotation | scalp | 15 mm SCC | 6 mm | a long rotation flap in stiff skin, undermining |
+| Back melanoma WLE | back | 10 mm melanoma | 10 mm | a long ellipse under tension, undermining, suture strength |
+
+Starting a case gives fresh skin of the right size and site, places the
+lesion and opens the Plan mode. The card shows the brief and goals;
+**Suggested approach** (hidden until asked) explains the textbook design and
+can draw it on the skin with the marker. **Check closure** scores the result,
+green / amber / red for each of:
+
+- **Lesion removed**: excised completely, with at least the target margin.
+- **Wound closed**: the area still open between the lips.
+- **Tension**: the tension the closure adds to the skin, averaged over the
+  patch, against the suggested approach carried out by the simulator itself.
+- **Dog-ears**: excess skin (99th percentile).
+- **Sutures**: none snapped, none above 75% of its strength.
+
+3 stars when all are green, 2 with no red, 1 otherwise (0 while the lesion is
+still in). A tip explains each miss.
+
+The reference values come from `--probe-scenario <n>`: the simulator does
+the suggested approach (an ellipse closed with sutures every 5 mm, with the
+undermining the case asks for; a flap tried in 8 directions with its key
+sutures tied, the lowest tension winning) and prints what it measured. In the
+cases the patch's edges are free (held by tethering only): a finite patch
+with pinned edges is far stiffer than a body, and a 30 mm closure on it
+needed absurd forces. Prestressed skin then draws back a little from the
+edges, under the drape. Values are illustrative, like the tissue presets.
+
 ## Reading the tension map
 
 The **Tension** map colours the largest principal stress; **Squeezing** the

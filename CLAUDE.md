@@ -109,6 +109,11 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   drawing only), drawn by the skin shaders (looks/lesions.gdshaderinc, procedural, rest mm;
   Look.set_lesions); the overlay draws discs only for Classic / colour maps. Margin tool
   (Tool.MARGIN): tap a lesion = panel margin, drag = any; marking kind "margin". --demo-lesions [--margins].
+- Scenarios (UI4): game/scenarios/*.json (README there), game/scenario.gd (start, draw_approach,
+  score, probe), ui/scenario_card.gd (picker / case / report), "Cases" top-bar button. Score from
+  SkinSheet.get_closure_metrics (open area via oriented lip edges, mean added tension, excess p99);
+  references from --probe-scenario n. Cases use pin_boundary false (pinned finite patch = absurd forces);
+  drape hole and wound bed are inset by the glued margin so retracted edges show cloth. --scenario n [--approach] [--check].
   UI2: narrow layout (< 820 logical px: bottom tool bar + pull-up context sheet), UI scale
   from the screen's pixel density (content_scale_size = window / scale), two-finger pan/pinch
   with gesture arbitration (main.gd _touch_down), wheel / right-drag / Home on desktop.

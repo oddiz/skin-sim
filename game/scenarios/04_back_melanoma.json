@@ -1,0 +1,48 @@
+{
+  "format_version": 1,
+  "title": "Back melanoma WLE",
+  "site": "Back",
+  "sheet": {
+    "width": 170,
+    "height": 90,
+    "element_mm": 3.5
+  },
+  "params": {
+    "pin_boundary": false
+  },
+  "lesion": {
+    "kind": 2,
+    "diameter": 10,
+    "at": [
+      0,
+      0
+    ]
+  },
+  "margin_mm": 10,
+  "brief": "A melanoma on the back, 10 mm, Breslow 0.8 mm after excision biopsy: wide local excision with a 1 cm margin. The defect is 30 mm across, in thick skin under tension.",
+  "goals": [
+    "Mark the 1 cm margin and design a long ellipse along the skin tension lines.",
+    "Excise, undermine, and close the long wound without snapping sutures."
+  ],
+  "approach": {
+    "text": "A long fusiform ellipse, about 3:1 (here some 90 mm), along the relaxed skin tension lines, with undermining on both sides before closing. Close with strong sutures from the middle outwards.",
+    "draw": {
+      "kind": "ellipse",
+      "along": "rstl",
+      "ratio": 3.0,
+      "tip_deg": 30,
+      "undermine_mm": 25
+    }
+  },
+  "reference": {
+    "tension_kpa": 4.6,
+    "max_excess": 0.165
+  },
+  "tips": {
+    "lesion": "Wide local excision: 10 mm from the lesion's edge all round.",
+    "closed": "Close the full length: many sutures, middle outwards.",
+    "tension": "Undermine both sides widely (Undermine tool) before closing, and keep the ellipse along the RSTL.",
+    "dog_ears": "Make the ellipse long enough (3:1) or remove the dog-ears at the ends.",
+    "sutures": "Back skin is under tension: use thicker thread (3-0) and undermine."
+  }
+}

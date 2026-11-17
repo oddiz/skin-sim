@@ -1,0 +1,50 @@
+{
+  "format_version": 1,
+  "title": "Cheek rhomboid",
+  "site": "Face (cheek)",
+  "sheet": {
+    "width": 110,
+    "height": 80,
+    "element_mm": 2.5
+  },
+  "params": {
+    "pin_boundary": false
+  },
+  "lesion": {
+    "kind": 0,
+    "diameter": 12,
+    "at": [
+      0,
+      0
+    ]
+  },
+  "margin_mm": 4,
+  "brief": "A 12 mm nodular BCC on the cheek. With a 4 mm margin the defect is 20 mm across: a straight-line closure would be long and tight. Close it with a local flap.",
+  "goals": [
+    "Choose a transposition flap (rhomboid / Limberg or Dufourmentel) and the side to take it from.",
+    "Raise it, tie the key sutures, then close the remaining gaps."
+  ],
+  "approach": {
+    "text": "A rhomboid (Limberg) flap. Of the four possible flaps around the rhombus, take the one from where the skin is loosest, so the donor site, which carries most of the tension, closes across the line of maximal extensibility. Suggested here: the direction with the least closure tension in the simulator.",
+    "draw": {
+      "kind": "flap",
+      "type": 2,
+      "direction_deg": 45
+    }
+  },
+  "reference": {
+    "tension_kpa": 4.76,
+    "max_excess": 0.27
+  },
+  "tips": {
+    "lesion": "Design the rhombus around the margin circle, not the lesion.",
+    "closed": "After 'Tie key sutures', close the remaining gaps with the Suture tool.",
+    "tension": "Try the flap from another side: the donor site's closure should run along the skin tension lines.",
+    "dog_ears": "Some puckering at the flap's base is expected; a large dog-ear means the flap is turning too far.",
+    "sutures": "The key suture at the donor site carries the most tension: a thicker thread, or undermine more."
+  },
+  "tension_factors": [
+    1.6,
+    2.5
+  ]
+}

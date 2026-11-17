@@ -152,6 +152,12 @@ public:
     double get_wall_width_mm() const { return wall_width_mm_; }
     // since_cut_s: seconds since the incisions last changed (for bleeding).
     Dictionary get_wound_info() const;
+    // For scoring a closure (scenarios): {"open_area_mm2": wound still open
+    // (area enclosed by the lips now), "defect_area_mm2": the same at rest,
+    // "peak_tension_kpa": 98th percentile of the tension added to resting
+    // skin (largest principal stress), "max_excess": excess skin (dog-ears,
+    // fraction; 99th percentile), "peak_excess": its maximum}.
+    Dictionary get_closure_metrics() const;
     // Heatmap: 0 = off, 1 = max principal stress, 2 = von Mises stress,
     // 3 = area change. The range sets the colour scale for the stresses (kPa);
     // area change always spans 1/1.5 .. 1.5x.

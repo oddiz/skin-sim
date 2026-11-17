@@ -1,0 +1,50 @@
+{
+  "format_version": 1,
+  "title": "Scalp rotation",
+  "site": "Scalp",
+  "sheet": {
+    "width": 220,
+    "height": 170,
+    "element_mm": 4.0
+  },
+  "params": {
+    "pin_boundary": false
+  },
+  "lesion": {
+    "kind": 1,
+    "diameter": 15,
+    "at": [
+      0,
+      25
+    ]
+  },
+  "margin_mm": 6,
+  "brief": "A 15 mm SCC on the scalp. With a 6 mm margin the defect is 27 mm across. Scalp skin is thick and barely stretches: close it with a rotation flap.",
+  "goals": [
+    "Design a rotation flap with a long arc (about 4 times the defect's width) and undermine widely.",
+    "Rotate it in, tie the key sutures, close the rest; watch the sutures under the scalp's tension."
+  ],
+  "approach": {
+    "text": "A large rotation flap: a long arc (several times the defect's width) swung round a pivot, with wide undermining under the galea. A back-cut or Burow's triangle at the base helps it turn. Suggested here: the direction with the least closure tension in the simulator.",
+    "draw": {
+      "kind": "flap",
+      "type": 1,
+      "direction_deg": 180
+    }
+  },
+  "reference": {
+    "tension_kpa": 5.8,
+    "max_excess": 0.12
+  },
+  "tips": {
+    "lesion": "The margin circle must lie inside the defect all round.",
+    "closed": "The scalp pulls hard: close the remaining gaps with several sutures.",
+    "tension": "Lengthen the arc (Length : width in the Flap panel) and undermine further (Undermine beyond).",
+    "dog_ears": "A dog-ear at the pivot is common: a Burow's triangle there removes it.",
+    "sutures": "Scalp closures need stronger thread (3-0 or 4-0) or less tension."
+  },
+  "tension_factors": [
+    1.6,
+    2.5
+  ]
+}

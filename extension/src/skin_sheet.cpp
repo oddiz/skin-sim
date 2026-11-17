@@ -144,6 +144,7 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("to_rest", "point"), &SkinSheet::to_rest);
     ClassDB::bind_method(D_METHOD("rest_to_world", "rest_points"), &SkinSheet::rest_to_world);
     ClassDB::bind_method(D_METHOD("rest_point_now", "rest_point"), &SkinSheet::rest_point_now);
+    ClassDB::bind_method(D_METHOD("get_closure_metrics"), &SkinSheet::get_closure_metrics);
     ClassDB::bind_method(D_METHOD("get_flap_preview", "start", "end"), &SkinSheet::get_flap_preview);
     ClassDB::bind_method(D_METHOD("make_flap", "start", "end"), &SkinSheet::make_flap);
     ClassDB::bind_method(D_METHOD("undo_flap"), &SkinSheet::undo_flap);
@@ -989,6 +990,59 @@ void SkinSheet::set_wall_width_mm(double p_mm) {
     if (is_inside_tree()) update_render_mesh();
 }
 
+// The lip edges, each oriented with its skin on the left, bound the wounds
+// clockwise: the shoelace sum over them is minus the open area, without
+// having to trace each wound's outline.
+Dictionary SkinSheet::get_closure_metrics() const {
+    Dictionary d;
+    const skinsim::Simulation* s = sim();
+    if (!s) return d;
+    const Eigen::Map<const Eigen::Matrix2Xd> x = s->positions();
+    double open = 0.0, defect = 0.0;
+    for (size_t e = 0; e < mesh_.cut_edges.size(); ++e) {
+        int a = mesh_.cut_edges[e][0], b = mesh_.cut_edges[e][1];
+        const int t = e < cut_edge_third_.size() ? cut_edge_third_[e] : -1;
+        if (t < 0) continue;
+        const Eigen::Vector2d A = mesh_.rest_positions.col(a), B = mesh_.rest_positions.col(b),
+                              T = mesh_.rest_positions.col(t);
+        if ((B - A).x() * (T - A).y() - (B - A).y() * (T - A).x() < 0.0) std::swap(a, b);
+        const Eigen::Vector2d ra = mesh_.rest_positions.col(a), rb = mesh_.rest_positions.col(b);
+        defect -= 0.5 * (ra.x() * rb.y() - rb.x() * ra.y());
+        open -= 0.5 * (x(0, a) * x(1, b) - x(0, b) * x(1, a));
+    }
+    d["open_area_mm2"] = std::max(0.0, open);
+    d["defect_area_mm2"] = std::max(0.0, defect);
+    auto percentile = [](Eigen::VectorXd v, double q) {
+        if (v.size() == 0) return 0.0;
+        std::vector<double> w(v.data(), v.data() + v.size());
+        const size_t k = static_cast<size_t>(q * static_cast<double>(w.size() - 1));
+        std::nth_element(w.begin(), w.begin() + static_cast<long>(k), w.end());
+        return w[k];
+    };
+    const Eigen::VectorXd added = s->vertex_field(skinsim::Field::MaxPrincipalStress, true);
+    d["peak_tension_kpa"] = 1000.0 * percentile(added, 0.98);
+    // The closure's load on the skin as a whole: the added tension averaged
+    // over the sheet (vertices weighted by their area), where it is pulled.
+    // Unlike a peak, hardly affected by the stress round each needle hole.
+    double sum = 0.0, area = 0.0;
+    for (const skinsim::Triangle& t : mesh_.triangles) {
+        const double a = 0.5 * std::abs((mesh_.rest_positions.col(t[1]) - mesh_.rest_positions.col(t[0])).x() *
+                                            (mesh_.rest_positions.col(t[2]) - mesh_.rest_positions.col(t[0])).y() -
+                                        (mesh_.rest_positions.col(t[1]) - mesh_.rest_positions.col(t[0])).y() *
+                                            (mesh_.rest_positions.col(t[2]) - mesh_.rest_positions.col(t[0])).x());
+        for (int v : t)
+            if (v < added.size()) sum += a / 3.0 * std::max(0.0, added[v]);
+        area += a;
+    }
+    d["mean_tension_kpa"] = area > 0.0 ? 1000.0 * sum / area : 0.0;
+    const Eigen::VectorXd excess = s->vertex_field(skinsim::Field::ExcessSkin);
+    // Dog-ears are areas; a few single nodes bunched at a suture's bite are
+    // not: the 99th percentile ignores them, the maximum doesn't.
+    d["max_excess"] = percentile(excess, 0.99);
+    d["peak_excess"] = excess.size() > 0 ? excess.maxCoeff() : 0.0;
+    return d;
+}
+
 Dictionary SkinSheet::get_wound_info() const {
     Dictionary d;
     d["since_cut_s"] = static_cast<double>(Time::get_singleton()->get_ticks_msec()) / 1000.0 - topology_time_s_;
@@ -1591,7 +1645,12 @@ void SkinSheet::rebuild(bool p_keep_cuts) {
     push_params();
     last_step_ = skinsim::StepInfo{};
     // Same size as the sheet: it lies underneath, so it only shows through wounds.
-    wound_bed_mesh_->set_size(Vector2(static_cast<real_t>(width_), static_cast<real_t>(height_)));
+    // Inset by the drape's glued margin (see main.gd _build_drape): if the
+    // skin's edges are free, prestressed skin draws back from them, and the
+    // bed must not show there (the drape does).
+    const double inset = std::clamp(0.12 * std::min(width_, height_), 4.0, 15.0);
+    wound_bed_mesh_->set_size(Vector2(static_cast<real_t>(std::max(1.0, width_ - 2.0 * inset)),
+                                      static_cast<real_t>(std::max(1.0, height_ - 2.0 * inset))));
     topology_changed();
     emit_signal("mesh_rebuilt");
 }

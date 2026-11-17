@@ -81,6 +81,9 @@ const SHEET_FULL := 0.86
 var sheet: SkinSheet
 var context: ContextPanel
 var drawer: TissueDrawer
+## Teaching cases: picker, brief and report card (main.gd connects to it).
+var scenario_card: ScenarioCard
+var _cases_button: Button
 ## Phone layout in use.
 var narrow := false
 ## View option (drawn by the overlay): tension direction strokes.
@@ -164,6 +167,8 @@ func setup(p_sheet: SkinSheet) -> void:
 	_subtitle.text = drawer.current_preset
 	_build_view_card()
 	_build_help()
+	scenario_card = ScenarioCard.new()
+	add_child(scenario_card)
 	_build_stats()
 	_build_hint()
 	get_viewport().size_changed.connect(_layout)
@@ -350,6 +355,13 @@ func _build_top_bar() -> void:
 	_status_dot.tooltip_text = "Settling: the skin is still moving towards equilibrium. At rest: it is in equilibrium."
 	_status_dot.mouse_filter = Control.MOUSE_FILTER_PASS
 	_top.add_child(_status_dot)
+	_cases_button = Style.icon_button("scenarios", "Cases", "Teaching cases (scenarios)", "")
+	_cases_button.pressed.connect(func():
+		if scenario_card.visible and scenario_card._scenario == null:
+			scenario_card.visible = false
+		else:
+			scenario_card.show_picker())
+	_top.add_child(_cases_button)
 	# Start over: two taps (it cannot be undone), the first one says what it does.
 	_start_over = Style.icon_button("reset", "", "Start over: fresh skin, no surgery [Ctrl+R]", "")
 	_start_over.pressed.connect(_on_start_over_pressed)
@@ -392,6 +404,8 @@ func _build_top_bar() -> void:
 	popup.add_item("Clear undermining", 4)
 	popup.add_item("Clear lesions", 5)
 	popup.add_item("Clear markings", 6)
+	popup.add_separator()
+	popup.add_item("Scenarios (teaching cases)", 8)
 	popup.id_pressed.connect(_on_menu)
 	_top.add_child(_menu)
 
@@ -414,6 +428,8 @@ func _on_menu(id: int) -> void:
 			clear("markings")
 		7:
 			start_over_requested.emit()
+		8:
+			scenario_card.show_picker()
 
 
 func _on_start_over_pressed() -> void:
@@ -794,7 +810,7 @@ func close_overlays() -> bool:
 
 ## True if a screen point is over a part of the UI (not over the skin).
 func is_over_ui(p: Vector2) -> bool:
-	for c in [_rail, context, drawer, _view_card, _help_card]:
+	for c in [_rail, context, drawer, _view_card, _help_card, scenario_card]:
 		if c.visible and c.get_global_rect().has_point(p):
 			return true
 	return _top.get_global_rect().has_point(p) and _over_top_button(p)
@@ -810,13 +826,18 @@ func _over_top_button(p: Vector2) -> bool:
 ## The part of the window where the skin is visible (not under the rail,
 ## the panel, the bottom bar or the sheet), for framing the camera and
 ## placing the legend.
-func free_rect() -> Rect2:
+func free_rect(beside_card := true) -> Rect2:
 	var vp := get_viewport_rect().size
+	var card := beside_card and scenario_card != null and scenario_card.visible
 	if narrow:
 		var top := 8.0 + Style.TOUCH + 4.0
+		if card:  # below the scenario card
+			top = maxf(top, scenario_card.position.y + scenario_card.size.y + 4.0)
 		var bottom := vp.y - BAR_HEIGHT - _sheet_height - 8.0
 		return Rect2(0.0, top, vp.x, maxf(bottom - top, 80.0))
 	var left := float(Style.RAIL_WIDTH)
+	if card:  # beside the scenario card
+		left = scenario_card.position.x + scenario_card.size.x + 8.0
 	var right := vp.x - Style.PANEL_WIDTH - 24.0
 	return Rect2(left, 0.0, maxf(right - left, 100.0), vp.y)
 
@@ -911,6 +932,7 @@ func _switch_layout() -> void:
 	# Compact top bar: icons only, no subtitle.
 	_titles.visible = not narrow
 	_tissue_button.text = "" if narrow else "Tissue"
+	_cases_button.text = "" if narrow else "Cases"
 	context.handle.visible = narrow
 	_sheet_state = 0
 	_sheet_height = SHEET_PEEK
@@ -923,11 +945,22 @@ func _layout_wide(vp: Vector2) -> void:
 	for card in [context, drawer]:
 		card.position = Vector2(vp.x - Style.PANEL_WIDTH - 12.0, 12.0)
 		card.size = Vector2(Style.PANEL_WIDTH, vp.y - 24.0)
-	var fr := free_rect()
+	var fr := free_rect(false)  # (the top bar and View card ignore the scenario card)
 	_top.position = Vector2(fr.position.x + 16.0, 12.0)
 	_top.size = Vector2(fr.size.x - 20.0, Style.TOUCH)
 	_fit_view_card(300.0, vp.y - Style.TOUCH - 40.0)
 	_view_card.position = Vector2(fr.end.x - _view_card.size.x - 4.0, 12.0 + Style.TOUCH + 8.0)
+	_place_scenario_card(Vector2(Style.RAIL_WIDTH + 16.0, 12.0 + Style.TOUCH + 8.0), 340.0,
+		vp.y - (12.0 + Style.TOUCH + 8.0) - 90.0)
+
+
+## Top left, under the top bar (full width on a phone).
+func _place_scenario_card(at: Vector2, width: float, max_h: float) -> void:
+	scenario_card.position = at
+	scenario_card.custom_minimum_size.x = width
+	scenario_card.size.x = width
+	scenario_card.max_height = maxf(max_h, 160.0)
+	scenario_card.fit()
 
 
 func _layout_narrow(vp: Vector2) -> void:
@@ -944,6 +977,13 @@ func _layout_narrow(vp: Vector2) -> void:
 	_top.size = Vector2(vp.x - 16.0, Style.TOUCH)
 	_fit_view_card(minf(300.0, vp.x - 16.0), vp.y - BAR_HEIGHT - Style.TOUCH - 32.0)
 	_view_card.position = Vector2(vp.x - _view_card.size.x - 8.0, 8.0 + Style.TOUCH + 8.0)
+	var top := 8.0 + Style.TOUCH + 8.0
+	_place_scenario_card(Vector2(8.0, top), vp.x - 16.0, vp.y - BAR_HEIGHT - _sheet_height - top - 50.0)
+
+
+## The teaching case's card: its brief (null: hidden).
+func show_scenario(s: Scenario) -> void:
+	scenario_card.show_case(s)
 
 
 func _process(delta: float) -> void:
