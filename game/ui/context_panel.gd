@@ -15,6 +15,7 @@ signal thread_changed(usp_size: int)
 signal label_mode_changed(mode: int)
 signal tie_key_sutures_requested
 signal release_grabs_requested
+signal hold_all_changed(on: bool)
 ## A "Clear ..." button: what = "cuts", "sutures", "undermining", "lesions", "markings".
 signal clear_requested(what: String)
 signal pen_color_changed(index: int)
@@ -63,6 +64,8 @@ var _suture_detail: Label
 var _load_bar: ProgressBar
 var _suture_actions: Array[Button] = []
 var _contact_label: Label
+var _hooks_label: Label
+var _hooks_shown := -1
 var _lesion_labels: Array[Label] = []
 var _flap_label: Label
 var _flap_rows := {}  # prop -> ParamRow (shape rows shown only for the flaps they apply to)
@@ -196,6 +199,21 @@ func _build_grab(page: VBoxContainer) -> void:
 		"exp": true, "fmt": "%.1f N", "tip": "The forceps never pull harder than this: beyond it the skin lags behind your finger (shown in orange)."})
 	_row(page, {"prop": "grab_stiffness", "label": "Grip firmness", "min": 0.1, "max": 100.0, "step": 0.1,
 		"exp": true, "fmt": "%.1f N/mm", "tip": "How tightly the skin follows the finger, until the strongest pull is reached."})
+	page.add_child(Style.label("SKIN HOOKS", "SectionTitle"))
+	page.add_child(Style.label("To hold the skin where it is, keep your finger still for a moment while grabbing: the ring fills and a hook is set. It stays when you let go, also while you suture. Drag a hook to move it; tap it to let go.",
+		"Caption", true))
+	var hold := HBoxContainer.new()
+	var hl := Style.label("Every grab holds")
+	hl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hold.add_child(hl)
+	var hold_switch := CheckButton.new()
+	hold_switch.focus_mode = Control.FOCUS_NONE
+	hold_switch.tooltip_text = "Each grab becomes a skin hook when you let go, without waiting."
+	hold_switch.toggled.connect(func(on: bool): hold_all_changed.emit(on))
+	hold.add_child(hold_switch)
+	page.add_child(hold)
+	_hooks_label = Style.label("", "Caption", true)
+	page.add_child(_hooks_label)
 	_button(page, "Release all", "close", func(): release_grabs_requested.emit())
 
 
@@ -520,6 +538,14 @@ func show_selected_suture(info: Dictionary) -> void:
 		_suture_title.text = "Suture #%d · %d-0 · %.0f%% of breaking" % [info.id, info.thread, load * 100.0]
 	_suture_detail.text = "Closing force %.2f N (thread %.2f N each way). Loop stress %+.0f kPa. Tied at %+.0f%%." % [
 		info.force, info.tension_n, info.loop_stress_kpa, info.tightness * 100.0]
+
+
+## How many skin hooks hold the skin now.
+func show_hooks(n: int) -> void:
+	if n == _hooks_shown:
+		return
+	_hooks_shown = n
+	_hooks_label.text = "No hooks." if n == 0 else ("1 hook holding the skin." if n == 1 else "%d hooks holding the skin." % n)
 
 
 func show_contact(info: Dictionary) -> void:

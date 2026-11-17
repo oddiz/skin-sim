@@ -118,6 +118,10 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   Realistic polish: Look.msaa/fxaa (Realistic: FXAA, no MSAA = half the GPU time),
   skin types (Look.SKIN_TYPES, --skin-type 1..6), drape plane is a frame (main._build_drape),
   --bench / --msaa / --fxaa, render stats in Solver details.
+  Skin hooks (main.gd): each grab has its own id (_next_grab_id, touch -> id in _grab_of), so
+  it can outlive the touch; hold still HOOK_HOLD_S -> hook; tap a hook to release. Suture
+  labels go past the thread's right end (overlay _beyond_end), buttons past the left end.
+  --demo-hook [--tap-hook].
   G3 Game (look 3): skin_game.gdshader (cel bands, outline in px), game_background.gdshader
   on the drape plane. No 3D glow (bloomed the pale skin, costly on phones): thread/marker
   glow drawn by the overlay (style glow/neon). Effects: game/fx/feedback.gd (2D, anchored

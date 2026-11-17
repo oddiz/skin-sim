@@ -123,7 +123,8 @@ skin again.
 
 | Input | Action |
 |---|---|
-| Drag (Grab tool, G) | Grab and pull the skin with forceps |
+| Drag (Grab tool, G) | Grab and pull the skin with forceps; let go and it springs back |
+| Drag, then hold still ~0.6 s | Set a **skin hook**: a ring fills, and the grab stays when you let go (also while you suture or cut). Drag a hook to move it, tap it to let go. Grab panel: "Every grab holds", "Release all" |
 | Two fingers / wheel / right drag | Pan and zoom the view; Home fits the skin again |
 | Drag (Cut tool, C), or Shift + drag | Draw an incision; it is made when you release |
 | Drag (Suture tool, S) | Press at the needle entry, release at the exit: a suture tied with the panel's knot tightness |

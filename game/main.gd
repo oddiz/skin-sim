@@ -159,6 +159,22 @@ var _nav_span := 0.0                      # distance between them, last frame
 var _pan_button := false                  # right / middle mouse drag
 var _fit_size := 100.0                    # camera.size that fits the skin
 
+# Grabs and skin hooks. Every forceps grab gets its own id (not the touch
+# index), so a grab can outlive the finger that made it: a skin hook, like
+# an assistant's hook holding the skin where you left it. Keep the finger
+# still for HOOK_HOLD_S to set a hook; in the Grab tool, drag a hook to move
+# it, tap it to let go.
+const HOOK_HOLD_S := 0.6
+const HOOK_STILL_PX := 8.0                # finger "still" if it stays within this
+const HOOK_PICK_PX := 26.0                # how close a press must be to pick up a hook
+var _grab_of := {}                        # touch index -> grab id
+var _grab_still := {}                     # grab id -> {"pos", "t"}: finger down, not hooked yet
+var _hooks := {}                          # grab id -> true: held without a finger
+var _picked := {}                         # touch index -> {"start", "target"}: moving a hook
+var _next_grab_id := 1000
+## Grab panel: every grab stays as a hook when released.
+var hold_all := false
+
 
 func _ready() -> void:
 	_apply_ui_scale()
@@ -171,6 +187,8 @@ func _ready() -> void:
 	ui.undo_requested.connect(_undo)
 	ui.fit_requested.connect(_frame_sheet)
 	ui.look_changed.connect(apply_look)
+	panel.release_grabs_requested.connect(release_all_grabs)
+	panel.hold_all_changed.connect(func(on: bool): hold_all = on)
 	ui.skin_type_changed.connect(func(i: int): look.set_skin_type(i))
 	var st := OS.get_cmdline_user_args().find("--skin-type")  # 1..6 (Fitzpatrick I-VI)
 	if st != -1 and st + 1 < OS.get_cmdline_user_args().size():
@@ -236,6 +254,8 @@ func _ready() -> void:
 		_demo_excise()
 	if args.has("--demo-wrinkle"):
 		_demo_wrinkle()
+	if args.has("--demo-hook"):
+		_demo_hook()
 	if args.has("--demo-nav"):
 		_demo_nav()
 	var o := args.find("--open")  # for screenshots: --open tissue | view | help
@@ -362,8 +382,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				and _on_skin(event.position)
 		elif event.index == _lesion_touch:
 			pass
-		else:
-			sheet.move_grab(event.index, _screen_to_sheet_plane(event.position))
+		elif _grab_of.has(event.index):
+			_move_grab(event.index, event.position)
 	elif event is InputEventMouseButton and event.pressed and not ui.is_over_ui(event.position) \
 			and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 		var steps: float = event.factor if event.factor > 0.0 else 1.0
@@ -500,7 +520,7 @@ func _cancel_action(index: int) -> void:
 	elif index == _lesion_touch:
 		_lesion_touch = -1
 	else:
-		sheet.release_grab(index)
+		_end_grab(index, true)
 
 
 func _two_finger_centre() -> Vector2:
@@ -597,7 +617,7 @@ func _on_press(index: int, pos: Vector2) -> void:
 			_mark_screen = PackedVector2Array()
 			_extend_mark(pos)
 	else:
-		sheet.grab(index, _screen_to_sheet_plane(pos))
+		_start_grab(index, pos)
 
 
 func _on_release(index: int, pos: Vector2) -> void:
@@ -625,7 +645,7 @@ func _on_release(index: int, pos: Vector2) -> void:
 			_history.append({"kind": "undermine"})
 			_status = "Undermined (%d areas)." % sheet.get_undermine_count()
 	else:
-		sheet.release_grab(index)
+		_end_grab(index, false, pos)
 
 
 ## Turn the finished stroke into an incision. The solver does the rest:
@@ -745,13 +765,123 @@ func _place_suture_buttons(su: Dictionary) -> void:
 	var left := a if a.x <= b.x else b
 	var right := b if a.x <= b.x else a
 	var dir := (left - right).normalized() if left.distance_to(right) > 1.0 else Vector2.LEFT
-	var centre := left + dir * (14.0 + 0.5 * size.x)
+	var centre := left + dir * (22.0 + 0.5 * size.x)
 	var anchor := centre - 0.5 * size
 	var vp := get_viewport().get_visible_rect().size
 	var fr := ui.free_rect()
 	anchor.x = clampf(anchor.x, fr.position.x + 4.0, fr.end.x - size.x - 4.0)
 	anchor.y = clampf(anchor.y, 4.0, vp.y - size.y - 4.0)
 	_suture_buttons.position = anchor
+
+
+## A press in the Grab tool: pick up the skin hook under the finger, or
+## grab the skin with the forceps.
+func _start_grab(index: int, pos: Vector2) -> void:
+	var hook := _hook_at(pos)
+	if hook != -1:
+		_picked[index] = {"start": pos, "target": _world_of_grab(hook)}
+		_grab_of[index] = hook
+		return
+	var id := _next_grab_id
+	_next_grab_id += 1
+	if sheet.grab(id, _screen_to_sheet_plane(pos)):
+		_grab_of[index] = id
+		_grab_still[id] = {"pos": pos, "t": Time.get_ticks_msec() / 1000.0}
+
+
+func _move_grab(index: int, pos: Vector2) -> void:
+	var id: int = _grab_of[index]
+	if _picked.has(index):
+		# Moving a hook: by as much as the finger moved (no jump to the finger).
+		var p: Dictionary = _picked[index]
+		sheet.move_grab(id, p.target + _screen_to_sheet_plane(pos) - _screen_to_sheet_plane(p.start))
+		return
+	sheet.move_grab(id, _screen_to_sheet_plane(pos))
+	if _grab_still.has(id) and pos.distance_to(_grab_still[id].pos) > HOOK_STILL_PX:
+		_grab_still[id] = {"pos": pos, "t": Time.get_ticks_msec() / 1000.0}  # moving: start again
+
+
+## The finger lifts (or the touch turns into navigation: `cancelled`).
+## A hooked grab stays; a tap on a hook lets it go.
+func _end_grab(index: int, cancelled: bool, pos := Vector2.ZERO) -> void:
+	if not _grab_of.has(index):
+		return
+	var id: int = _grab_of[index]
+	_grab_of.erase(index)
+	_grab_still.erase(id)
+	if _picked.has(index):
+		var start: Vector2 = _picked[index].start
+		_picked.erase(index)
+		if not cancelled and pos.distance_to(start) < TAP_PX:
+			_release_hook(id)
+			_status = "Skin hook removed."
+		return
+	if not cancelled and (hold_all or _hooks.has(id)):
+		if not _hooks.has(id):
+			fx.tie_pulse(_world_of_grab(id), 0.0, Color(0.95, 0.95, 1.0))
+		_hooks[id] = true
+		_status = "Skin hook set: it holds the skin there. Drag it to move it, tap it to let go."
+		return
+	sheet.release_grab(id)
+
+
+func _release_hook(id: int) -> void:
+	_hooks.erase(id)
+	sheet.release_grab(id)
+
+
+func release_all_grabs() -> void:
+	_hooks.clear()
+	_grab_still.clear()
+	_picked.clear()
+	_grab_of.clear()
+	sheet.release_all_grabs()
+
+
+## The skin hook whose holding point (where the finger left it) is under
+## the screen point, or -1.
+func _hook_at(pos: Vector2) -> int:
+	var best := -1
+	var best_d := HOOK_PICK_PX
+	for g in sheet.get_grab_info():
+		if not _hooks.has(g.id):
+			continue
+		var d := pos.distance_to(camera.unproject_position(g.target))
+		if d < best_d:
+			best_d = d
+			best = g.id
+	return best
+
+
+## Each frame: a finger held still long enough turns its grab into a hook
+## (marked now; it stays when the finger lifts). Progress feeds the
+## overlay's filling ring.
+func _update_hooks() -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	var progress := {}
+	for id in _grab_still:
+		var k: float = (now - _grab_still[id].t) / HOOK_HOLD_S
+		if k >= 1.0 and not _hooks.has(id):
+			_hooks[id] = true
+			fx.tie_pulse(_world_of_grab(id), 0.0, Color(0.95, 0.95, 1.0))
+		progress[id] = clampf(k, 0.0, 1.0)
+	# Hooks gone from the solver (their skin cut away, or reset) are forgotten.
+	var alive := {}
+	for g in sheet.get_grab_info():
+		alive[g.id] = true
+	for id in _hooks.keys():
+		if not alive.has(id):
+			_hooks.erase(id)
+	overlay.hooks = _hooks
+	overlay.hook_progress = progress
+	panel.show_hooks(_hooks.size())
+
+
+func _world_of_grab(id: int) -> Vector3:
+	for g in sheet.get_grab_info():
+		if g.id == id:
+			return g.target
+	return Vector3.ZERO
 
 
 ## True if the screen point is over skin (not over an open wound or outside).
@@ -820,6 +950,7 @@ func _screen_to_sheet_plane(screen_pos: Vector2) -> Vector3:
 
 func _process(delta: float) -> void:
 	_update_bleeding(delta)
+	_update_hooks()
 	var s: Dictionary = sheet.get_step_info()
 	var selected := _selected_info()
 	panel.show_selected_suture(selected)
@@ -843,9 +974,9 @@ func _process(delta: float) -> void:
 			sheet.get_cut_count(), sheet.get_suture_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [
 			"at rest" if s.converged else "solving", s.iterations, s.step_ms, _sci(s.residual), flags] \
-		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d
-" % [
-			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] 		+ _render_stats())
+		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d\n" % [
+			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
+		+ _render_stats())
 
 
 ## Frame rate and where the time goes: CPU (scripts + solver + building the
@@ -880,8 +1011,13 @@ func _update_bleeding(delta: float) -> void:
 func _hint(selected: Dictionary, lesions: Array) -> String:
 	match tool:
 		Tool.GRAB:
-			return "Drag the skin with the forceps." if sheet.get_grab_info().is_empty() \
-				else "Let go to release; the skin settles back."
+			if not _picked.is_empty():
+				return "Move the hook; let go and it holds there. A tap lets it go."
+			if not _grab_of.is_empty():
+				return "Let go to release, or hold still for a moment to set a skin hook."
+			if not _hooks.is_empty():
+				return "Skin hooks hold the skin (also while you suture). Drag a hook to move it, tap it to let go."
+			return "Drag the skin with the forceps. Hold still for a moment to leave a skin hook."
 		Tool.CUT:
 			return "Draw an incision across the skin. Lift to cut."
 		Tool.SUTURE:
@@ -948,6 +1084,39 @@ func _demo_pull() -> void:
 	await get_tree().process_frame  # let the camera settle on its first frame
 	_touch(0, Vector2.ZERO, true)
 	_drag(0, Vector2(15, 0))
+
+
+## Skin hooks: cut, grab the right lip and hold still until a hook is set,
+## let go (the hook keeps holding), then suture while it holds.
+func _demo_hook() -> void:
+	await get_tree().process_frame
+	_set_tool(Tool.CUT)
+	_touch(0, Vector2(0, -15), true)
+	for k in range(1, 31):
+		_drag(0, Vector2(0, -15 + k))
+	_touch(0, Vector2(0, 15), false)
+	await get_tree().process_frame
+	_set_tool(Tool.GRAB)
+	_touch(0, Vector2(4, -6), true)
+	_drag(0, Vector2(12, -6))
+	await get_tree().create_timer(HOOK_HOLD_S + 0.2).timeout
+	_touch(0, Vector2(12, -6), false)
+	_touch(0, Vector2(4, 6), true)
+	_drag(0, Vector2(12, 6))
+	_touch(0, Vector2(12, 6), false)  # a quick grab: released, no hook
+	_set_tool(Tool.SUTURE)
+	_touch(0, Vector2(-3, 6), true)
+	_drag(0, Vector2(3, 6))
+	_touch(0, Vector2(3, 6), false)
+	print("demo-hook: %d grabs, %d hooks" % [sheet.get_grab_info().size(), _hooks.size()])
+	if OS.get_cmdline_user_args().has("--tap-hook"):  # check: a tap on the hook lets it go
+		await get_tree().process_frame
+		_set_tool(Tool.GRAB)
+		_touch(0, Vector2(12, -6), true)
+		_touch(0, Vector2(12, -6), false)
+		await get_tree().process_frame
+		await get_tree().process_frame
+		print("after tap: %d grabs, %d hooks" % [sheet.get_grab_info().size(), _hooks.size()])
 
 
 ## Draw a vertical incision through the centre with the scalpel, then grab

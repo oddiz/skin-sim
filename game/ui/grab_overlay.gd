@@ -36,6 +36,10 @@ var flap_preview: Dictionary = {}
 var show_tension_lines := true
 ## Load dots at each suture's needle holes (View panel; off by default).
 var show_suture_dots := false
+## Skin hooks (main.gd): grab id -> true; and for fingers still held, how far
+## the ring has filled towards setting a hook (id -> 0..1).
+var hooks := {}
+var hook_progress := {}
 ## The look's way of drawing (Look.overlay_style): thread_width,
 ## thread_color (a real thread; load as rings at the needle holes), ink_bleed,
 ## outline
@@ -115,11 +119,38 @@ func _draw() -> void:
 			draw_arc(p, g.radius * px_per_mm, 0.0, TAU, 48, color, 2.0, true)
 		else:
 			draw_circle(p, 4.0, color)
-		draw_circle(t, 5.0, color)
 		var label := "%.2f N%s" % [g.force, "  (max)" if g.force_limited else ""]
-		# Dark outline first, then the text on top: readable over any background.
 		var pos := t + Vector2(10, -10)
+		if hooks.has(g.id):
+			_draw_hook(t, p, color)
+			# Hooks stay for long: a smaller label, beside the hook.
+			_pill(font, t + Vector2(18, 5), label, 12, Color(color, 0.85))
+			continue
+		draw_circle(t, 5.0, color)
+		var k: float = hook_progress.get(g.id, 0.0)
+		if k > 0.08:
+			# The finger is still: a ring fills up; when full, a hook is set.
+			draw_arc(t, 20.0, -PI * 0.5, -PI * 0.5 + TAU * k, 40, Color(1, 1, 1, 0.9), 3.0, true)
+			draw_arc(t, 20.0, 0.0, TAU, 40, Color(1, 1, 1, 0.2), 3.0, true)
 		_pill(font, pos, label, 16, color)
+
+
+## A skin hook: a ring where it holds (tap or drag it there) with a small
+## hook shape pointing at the skin it pulls.
+func _draw_hook(at: Vector2, skin: Vector2, color: Color) -> void:
+	var dir := (skin - at).normalized() if at.distance_to(skin) > 2.0 else Vector2.DOWN
+	draw_circle(at + Vector2(1.5, 2), 11.0, Color(0, 0, 0, 0.3))
+	draw_circle(at, 11.0, Color(0.12, 0.13, 0.16, 0.92))
+	draw_arc(at, 11.0, 0.0, TAU, 32, color, 2.0, true)
+	# The hook: a shank towards the skin ending in a curl.
+	var side := Vector2(-dir.y, dir.x)
+	var pts := PackedVector2Array()
+	for i in 10:
+		var u := i / 9.0
+		pts.append(at - dir * 5.0 + dir * 9.0 * minf(u * 1.6, 1.0) + side * 3.5 * maxf(0.0, u * 1.6 - 1.0) * 1.6)
+	pts.append(at + dir * 4.0 + side * 3.5)
+	pts.append(at + dir * 1.0 + side * 4.0)
+	draw_polyline(pts, Color(0.92, 0.94, 1.0), 2.0, true)
 
 
 func _draw_sutures(font: Font) -> void:
@@ -219,9 +250,29 @@ func _draw_sutures(font: Font) -> void:
 			# Loop stress: stress along the thread in the tissue the loop
 			# holds (+ stretched, - squeezed).
 			label += "  %+.0f kPa" % su.loop_stress_kpa
-		var pos := (a + b) * 0.5 + Vector2(8, -6)
-		_pill(font, pos, label, 12, color)
+		_pill(font, _beyond_end(font, a, b, label, 12), label, 12, color)
 	_draw_snaps(font)
+
+
+## Where a suture's label goes: past the thread's right-hand end, in line
+## with the thread, so it sits on intact skin beside the wound rather than
+## over it (the selected suture's buttons go past the other end). Returns
+## the text's baseline start for _pill.
+func _beyond_end(font: Font, a: Vector2, b: Vector2, text: String, size: int) -> Vector2:
+	var right := b if b.x >= a.x else a
+	var left := a if b.x >= a.x else b
+	var dir := (right - left).normalized() if left.distance_to(right) > 1.0 else Vector2.RIGHT
+	var p := right + dir * 16.0
+	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	# A thread pointing up or down: put the text beside the end, centred.
+	if absf(dir.x) < 0.35:
+		p.x -= 0.5 * w
+		p.y += 6.0 if dir.y > 0.0 else -2.0
+		if dir.y > 0.0:
+			p.y += font.get_ascent(size)
+	else:
+		p.y += 0.35 * font.get_ascent(size)
+	return p
 
 
 ## Green (0) -> yellow (0.5) -> red (1 and beyond).

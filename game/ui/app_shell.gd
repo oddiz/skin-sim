@@ -139,7 +139,6 @@ func setup(p_sheet: SkinSheet) -> void:
 	context = ContextPanel.new()
 	add_child(context)
 	context.setup(sheet)
-	context.release_grabs_requested.connect(func(): sheet.release_all_grabs())
 	context.clear_requested.connect(clear)
 	context.handle.gui_input.connect(_on_handle_input)
 	drawer = TissueDrawer.new()
