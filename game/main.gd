@@ -348,6 +348,14 @@ func _ready() -> void:
 			for _f in 60:
 				await get_tree().process_frame
 			check_closure()
+		if scenario != null and args.has("--card-test"):  # list, back, hide, Cases
+			var c := ui.scenario_card
+			c.show_picker()
+			await get_tree().process_frame
+			c.show_case(scenario, true)
+			c.visible = false
+			c.toggle()
+			print("card-test: visible %s, list %s, result kept %s" % [c.visible, c._picking, not c._last_report.is_empty()])
 	var pr := args.find("--probe-scenario")
 	if pr != -1 and pr + 1 < args.size():
 		var s := Scenario.make(int(args[pr + 1]) - 1)

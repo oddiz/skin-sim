@@ -24,6 +24,7 @@ var _body: VBoxContainer
 var _scroll: ScrollContainer
 var _scenario: Scenario
 var _folded := false
+var _picking := false  # showing the list (a case may still be going on)
 ## Max height the shell allows (it sets this on layout).
 var max_height := 400.0
 
@@ -46,9 +47,10 @@ func _ready() -> void:
 		folded_changed.emit())
 	head.add_child(_fold)
 	var close := Style.icon_button("close", "", "Close")
+	close.tooltip_text = "Hide (the case goes on: Cases brings it back)"
 	close.pressed.connect(func():
-		if _scenario != null:
-			end_requested.emit()
+		if _scenario != null and _picking:
+			show_case(_scenario, true)  # back from the list to the case
 		else:
 			visible = false)
 	head.add_child(close)
@@ -130,10 +132,32 @@ func _button(text: String, icon_name: String, on_press: Callable, variation := "
 const KIND_NAMES := ["BCC", "SCC", "melanoma"]
 
 
+## The Cases button: during a case, show its card (or fold it if open);
+## otherwise the list.
+func toggle() -> void:
+	if _scenario == null:
+		if visible:
+			visible = false
+		else:
+			show_picker()
+	elif visible and not _picking and not _folded:
+		set_folded(true)
+		folded_changed.emit()
+	else:
+		if _picking:
+			show_case(_scenario, true)
+		visible = true
+		set_folded(false)
+		folded_changed.emit()
+
+
 func show_picker() -> void:
-	_scenario = null
+	_picking = true
 	_clear()
 	_title.text = "Scenarios"
+	if _scenario != null:
+		var s := _scenario
+		_body.add_child(_button("Back to " + s.title(), "chevron_left", func(): show_case(s, true)))
 	_caption("Teaching cases: a site, a lesion and a target margin. Plan, operate, then check your closure.")
 	var all := Scenario.list()
 	for i in all.size():
@@ -152,8 +176,13 @@ func show_picker() -> void:
 
 # --- case ---------------------------------------------------------------------
 
-func show_case(s: Scenario) -> void:
+## keep_report: show the last result again (back from the list); a new
+## start clears it.
+func show_case(s: Scenario, keep_report := false) -> void:
 	_scenario = s
+	_picking = false
+	if not keep_report:
+		_last_report = {}
 	if s == null:
 		visible = false
 		return
@@ -175,6 +204,11 @@ func show_case(s: Scenario) -> void:
 		fit()))
 	row2.add_child(_button("Restart", "reset", func(): restart_requested.emit()))
 	_body.add_child(row2)
+	var row3 := HBoxContainer.new()
+	row3.add_theme_constant_override("separation", 6)
+	row3.add_child(_button("Other cases", "scenarios", func(): show_picker()))
+	row3.add_child(_button("End case", "close", func(): end_requested.emit()))
+	_body.add_child(row3)
 	_body.add_child(approach)
 	var at := Style.label(s.data.get("approach", {}).get("text", ""), "Caption", true)
 	at.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -183,6 +217,8 @@ func show_case(s: Scenario) -> void:
 	_report = VBoxContainer.new()
 	_report.add_theme_constant_override("separation", 6)
 	_body.add_child(_report)
+	if not _last_report.is_empty():
+		show_report(_last_report)
 	visible = true
 	set_folded(false)
 
@@ -190,11 +226,13 @@ func show_case(s: Scenario) -> void:
 # --- report -------------------------------------------------------------------
 
 var _report: VBoxContainer
+var _last_report := {}
 
 
 func show_report(r: Dictionary) -> void:
 	if _report == null:
 		return
+	_last_report = r
 	for c in _report.get_children():
 		_report.remove_child(c)
 		c.queue_free()

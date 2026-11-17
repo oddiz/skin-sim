@@ -356,11 +356,7 @@ func _build_top_bar() -> void:
 	_status_dot.mouse_filter = Control.MOUSE_FILTER_PASS
 	_top.add_child(_status_dot)
 	_cases_button = Style.icon_button("scenarios", "Cases", "Teaching cases (scenarios)", "")
-	_cases_button.pressed.connect(func():
-		if scenario_card.visible and scenario_card._scenario == null:
-			scenario_card.visible = false
-		else:
-			scenario_card.show_picker())
+	_cases_button.pressed.connect(func(): scenario_card.toggle())
 	_top.add_child(_cases_button)
 	# Start over: two taps (it cannot be undone), the first one says what it does.
 	_start_over = Style.icon_button("reset", "", "Start over: fresh skin, no surgery [Ctrl+R]", "")
