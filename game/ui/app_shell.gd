@@ -32,6 +32,7 @@ signal undo_requested
 signal reset_requested
 signal fit_requested
 signal look_changed(index: int)
+signal effects_changed(on: bool)
 ## Something was cleared from the menu or a panel: "cuts", "sutures",
 ## "undermining", "lesions" or "markings" (main.gd trims its undo history).
 signal cleared(what: String)
@@ -81,6 +82,7 @@ var show_tension_lines := true
 var bleeding := true
 ## Load-coloured dots at the sutures' needle holes.
 var show_suture_dots := false
+var _effects_switch: CheckButton
 
 var _rail: PanelContainer
 var _rail_box: BoxContainer
@@ -341,6 +343,8 @@ func _build_view_card() -> void:
 	v.add_child(_look_caption)
 	var bleed := _switch_row(v, "Bleeding", bleeding, func(on: bool): bleeding = on)
 	bleed.tooltip_text = "Blood pools in the open wound, darkening as it clots. Drawing only: it does not change the mechanics."
+	_effects_switch = _switch_row(v, "Effects", false, func(on: bool): effects_changed.emit(on))
+	_effects_switch.tooltip_text = "Game-style feedback: sparks while cutting, a pulse when a suture is tied, a whip and a shake when one snaps."
 	v.add_child(Style.label("COLOUR MAP", "SectionTitle"))
 	var group := ButtonGroup.new()
 	for i in MAPS.size():
@@ -409,6 +413,11 @@ func set_heatmap(i: int) -> void:
 		_map_buttons[k].set_pressed_no_signal(k == i)
 	_map_caption.text = MAPS[i][1]
 	_view_button.text = "" if narrow else ("View" if i == 0 else MAPS[i][0].get_slice(" (", 0))
+
+
+## The Effects switch follows the look's default when a look is picked.
+func show_effects(on: bool) -> void:
+	_effects_switch.set_pressed_no_signal(on)
 
 
 ## Show which look is on (the switch does not apply it: main.gd does).

@@ -311,7 +311,17 @@ changes. `--look N` picks one from the command line.
   a soft edge; a blue-green surgical drape glued over the skin's margin
   (drawn by the skin shader on the tissue's rest position, so its edge moves
   with the skin; no cloth physics, no image files).
-- A Game look is planned next (G3).
+- **Game**: bright and bold. Cel shading (light in three flat bands, cool
+  purple shadows), a cartoon outline along every incision (same width on
+  screen at any zoom), layer-cake cut faces, a glossy candy-red wound bed,
+  glowing threads and neon marker, a dark background with a 10 mm grid.
+
+**Effects** (View; on by default in Game, off in the others): sparks from the
+scalpel while cutting, a ring pulse when a suture is tied (one after another
+for 'Tie key sutures') or a flap is raised, and when a suture snaps its two
+ends whip back, sparks fly and the view shakes briefly. Drawn in 2D over the
+view but pinned to the skin, so they stay put when you pan or zoom
+(`game/fx/feedback.gd`). `--demo-fx` fires them all for a screenshot.
 
 **Bleeding** (View, on by default): blood pools in the open wound bed over
 about 15 s; it is bright when fresh and darkens over the half minute after
@@ -324,8 +334,8 @@ area change, the distance to the nearest incision), and a shading relief
 (normals tilted where skin puckers and at the rounded lips). The cut face is
 drawn as a narrow band sloping into the wound, since a vertical wall is
 invisible from straight above. The shaders are in `game/looks/`
-(`skin_illustration.gdshader`, `skin_realistic.gdshader`, `walls.gdshader`,
-`bed.gdshader`, `drape.gdshader`) and can be
+(`skin_illustration.gdshader`, `skin_realistic.gdshader`, `skin_game.gdshader`,
+`walls.gdshader`, `bed.gdshader`, `drape.gdshader`, `game_background.gdshader`) and can be
 edited without touching C++. Every look uses Godot's Compatibility renderer
 (as the browser does), so the desktop shows what a phone shows.
 

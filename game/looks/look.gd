@@ -10,11 +10,12 @@ extends RefCounted
 ## skin_common.gdshaderinc).
 
 ## Index = the value of --look and the View panel's switch.
-const NAMES := ["Classic", "Illustration", "Realistic"]
+const NAMES := ["Classic", "Illustration", "Realistic", "Game"]
 const BLURBS := [
 	"The plain working view: flat colours, no detail.",
 	"Stylised realism, like a surgical atlas: soft light, the skin's layers in every cut, wrinkles as hatching.",
 	"As under theatre lights: pores and skin lines, light glowing through the skin, wet cut surfaces, a drape, black nylon sutures.",
+	"Bright and bold: cel shading, thick outlines, layer-cake cuts, glowing threads and neon marker, effects on.",
 ]
 
 var index := 0
@@ -22,7 +23,13 @@ var name := ""
 var skin_material: Material        # null = SkinSheet's plain skin
 var wall_material: Material
 var bed_material: Material
-var drape_material: Material       # null = no drape (plain background)
+var drape_material: Material       # the plane around the skin; null = plain background
+## The drape also covers the skin's margin (skin shader's window_half).
+var drape_on_skin := false
+## Bloom around bright parts.
+var glow := false
+## The Effects switch (View) is set to this when the look is picked.
+var effects_default := false
 ## How much this look bleeds, 0..1, when Bleeding is on (View panel).
 var bleed_scale := 0.0
 var relief_mm := 1.5               # how strongly dog-ears and lips are shaded
@@ -50,6 +57,8 @@ static func make(i: int) -> Look:
 			l._illustration()
 		2:
 			l._realistic()
+		3:
+			l._game()
 	return l
 
 
@@ -130,6 +139,7 @@ func _realistic() -> void:
 	bed_material.set_shader_parameter("tissue_dark", Color(0.36, 0.04, 0.05))
 	bed_material.set_shader_parameter("fat_amount", 0.3)
 	drape_material = _shader_material("res://looks/drape.gdshader")
+	drape_on_skin = true
 	relief_mm = 2.0
 	wall_width_mm = 0.8
 	# A theatre light: bright, slightly warm, from high up.
@@ -143,6 +153,41 @@ func _realistic() -> void:
 	overlay_style = {"thread_width": 2.0, "thread_color": Color(0.04, 0.04, 0.05), "ink_bleed": true}
 	bleed_scale = 1.0
 
+
+
+func _game() -> void:
+	skin_material = _shader_material("res://looks/skin_game.gdshader")
+	wall_material = _shader_material("res://looks/walls.gdshader")
+	wall_material.set_shader_parameter("epidermis", Color(0.95, 0.45, 0.42))
+	wall_material.set_shader_parameter("dermis", Color(1.0, 0.78, 0.86))
+	wall_material.set_shader_parameter("fat", Color(1.0, 0.86, 0.15))
+	wall_material.set_shader_parameter("deep", Color(0.95, 0.12, 0.35))
+	wall_material.set_shader_parameter("ink", Color(0.22, 0.04, 0.12))
+	wall_material.set_shader_parameter("epidermis_end", 0.2)
+	wall_material.set_shader_parameter("dermis_end", 0.6)
+	wall_material.set_shader_parameter("outline_width", 0.12)
+	wall_material.set_shader_parameter("depth_shade", 0.15)
+	wall_material.set_shader_parameter("wetness", 0.4)
+	bed_material = _shader_material("res://looks/bed.gdshader")
+	bed_material.set_shader_parameter("tissue", Color(0.98, 0.16, 0.30))
+	bed_material.set_shader_parameter("tissue_dark", Color(0.62, 0.03, 0.18))
+	bed_material.set_shader_parameter("fat_amount", 0.12)
+	bed_material.set_shader_parameter("wetness", 1.0)
+	bed_material.set_shader_parameter("blood_color", Color(0.55, 0.0, 0.12))
+	drape_material = _shader_material("res://looks/game_background.gdshader")
+	relief_mm = 3.0
+	wall_width_mm = 1.0
+	sun_rotation = Vector3(deg_to_rad(-50.0), deg_to_rad(30.0), 0.0)
+	sun_energy = 1.0
+	background = Color(0.03, 0.04, 0.09)
+	tonemap = Environment.TONE_MAPPER_FILMIC
+	sun_energy = 0.8
+	ambient_energy = 0.25
+	# (No 3D glow: it bloomed the whole pale skin and costs on phones; the
+	# threads' and markers' glow is drawn by the overlay.)
+	effects_default = true
+	overlay_style = {"thread_width": 3.0, "outline": true, "knot": true, "glow": true, "neon": true}
+	bleed_scale = 1.0
 
 ## Put this look on the scene.
 func apply(sheet: SkinSheet, sun: DirectionalLight3D, env: Environment, overlay: Node,
@@ -162,7 +207,14 @@ func apply(sheet: SkinSheet, sun: DirectionalLight3D, env: Environment, overlay:
 	overlay.set("style", overlay_style)
 	drape.visible = drape_material != null
 	drape.material_override = drape_material
-	if drape_material != null and skin_material is ShaderMaterial:
+	env.glow_enabled = glow
+	if glow:
+		# Only what is brighter than white (highlights) blooms.
+		env.glow_hdr_threshold = 0.95
+		env.glow_intensity = 0.6
+		env.glow_bloom = 0.0
+		env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+	if drape_on_skin and skin_material is ShaderMaterial:
 		# The opening in the drape: the skin minus a margin the cloth is glued on.
 		var half := Vector2(sheet.width, sheet.height) * 0.5
 		var margin := clampf(0.12 * minf(sheet.width, sheet.height), 4.0, 15.0)

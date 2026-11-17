@@ -90,6 +90,8 @@ var look: Look
 var drape: MeshInstance3D
 ## Bleeding: how much blood has come out so far (0..1), across all cuts.
 var _blood := 0.0
+## Game-style effects (game/fx/feedback.gd), drawn over the 3D view.
+var fx: Feedback
 ## The current tool's settings (part of ui; kept as a short name).
 var panel: ContextPanel
 
@@ -190,6 +192,11 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_frame_sheet)
 	_frame_sheet()
 
+	fx = Feedback.new()
+	fx.camera = camera
+	overlay.add_sibling(fx)  # above the overlay, under the UI
+	ui.effects_changed.connect(func(on: bool): fx.enabled = on)
+
 	drape = MeshInstance3D.new()
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(4000, 4000)
@@ -242,6 +249,8 @@ func _demo_map(i: int) -> void:
 func apply_look(i: int) -> void:
 	look = Look.make(i)
 	look.apply(sheet, sun, world_env.environment, overlay, drape)
+	ui.show_effects(look.effects_default)
+	fx.enabled = look.effects_default
 	ui.show_look(look.index)
 
 
@@ -291,6 +300,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.index == _cut_touch:
 			if event.position.distance_to(_cut_path[_cut_path.size() - 1]) >= CUT_SAMPLE_PX:
 				_cut_path.append(event.position)
+			fx.cut_spark(_screen_to_sheet_plane(event.position))
 			overlay.cut_path = _cut_path
 		elif event.index == _undermine_touch:
 			_paint_undermining(event.position)
@@ -602,6 +612,7 @@ func _commit_suture(end: Vector2) -> void:
 	if id >= 0:
 		_history.append({"kind": "suture", "id": id})
 		_select_suture(id)
+		fx.tie_pulse((_screen_to_sheet_plane(_suture_start) + _screen_to_sheet_plane(end)) * 0.5)
 		_status = "Suture tied (%+.0f%%)." % (panel.tightness * 100.0)
 	else:
 		_status = "No suture: the needle must go in and come out on skin."
@@ -643,6 +654,7 @@ func _cut_selected_suture() -> void:
 
 func _on_suture_snapped(id: int, a: Vector3, b: Vector3, tension_n: float, thread: int) -> void:
 	overlay.add_snap(a, b, "SNAPPED %d-0 at %.1f N" % [thread, tension_n])
+	fx.snap(a, b)
 	_status = "Suture #%d (%d-0) snapped: thread tension %.1f N, over its %.1f N strength." % [
 		id, thread, tension_n, SkinSheet.thread_strength(thread)]
 	if id == _selected_suture:
@@ -986,6 +998,18 @@ func _demo_snap() -> void:
 	_drag(0, Vector2(18, 0))
 
 
+## Fire every effect around the middle of the view (for screenshots of the
+## Effects; --demo-fx with --screenshot, which captures a few frames later).
+func _demo_fx() -> void:
+	fx.enabled = true
+	var c := camera.position * Vector3(1, 0, 1)
+	fx.snap(c + Vector3(-6, 0, -4), c + Vector3(6, 0, -4))
+	fx.tie_pulse(c + Vector3(-12, 0, 8))
+	fx.big_pulse(c + Vector3(12, 0, 8))
+	for k in 12:
+		fx.cut_spark(c + Vector3(-4 + k * 0.6, 0, 12), 0.05)
+
+
 ## An orthographic camera's `size` is the visible *height* in world units (mm).
 ## Fit the sheet into the part of the window not covered by the side panel,
 ## then slide the camera right so the sheet is centred in that free area.
@@ -1013,6 +1037,8 @@ func _save_screenshot_and_quit(path: String) -> void:
 	# Let the solver run for a moment (about 2 s at 60 fps), then capture.
 	for _frame in 120:
 		await RenderingServer.frame_post_draw
+		if _frame == 108 and args.has("--demo-fx"):
+			_demo_fx()
 	var err := get_viewport().get_texture().get_image().save_png(path)
 	print("Screenshot saved to %s (error code %d)" % [path, err])
 	get_tree().quit()
@@ -1138,6 +1164,7 @@ func _commit_flap(end: Vector2) -> void:
 	var result := sheet.make_flap(a, b)
 	if result == 1:
 		_history.append({"kind": "flap"})
+		fx.big_pulse(a)
 		_status = "Flap raised and undermined. 'Tie key sutures' pulls it into place. " \
 			+ _lesion_summary()
 	elif result == 0:
@@ -1172,6 +1199,11 @@ func _tie_key_sutures() -> void:
 	var ids: Array = sheet.tie_key_sutures(panel.tightness)
 	for id in ids:
 		_history.append({"kind": "suture", "id": id})
+	var k := 0
+	for su in sheet.get_suture_info():
+		if ids.has(su.id):
+			fx.tie_pulse((su.a + su.b) * 0.5, 0.12 * k)
+			k += 1
 	_status = "%d key sutures tied (%d-0)." % [ids.size(), sheet.suture_thread]
 
 

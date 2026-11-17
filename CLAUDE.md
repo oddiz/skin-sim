@@ -115,6 +115,10 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   coords), continued by drape.gdshader on a plane below the wound bed (main.gd); visual
   only. Bleeding: blood pools in the wound bed only (user removed blood on the lips);
   main._update_bleeding -> Look.update_wound(level, fresh).
+  G3 Game (look 3): skin_game.gdshader (cel bands, outline in px), game_background.gdshader
+  on the drape plane. No 3D glow (bloomed the pale skin, costly on phones): thread/marker
+  glow drawn by the overlay (style glow/neon). Effects: game/fx/feedback.gd (2D, anchored
+  to world points; camera shake via h/v_offset), Look.effects_default, --demo-fx.
 
 ## Planned features
 - Z-plasty in the simulation; scenarios (UI4); tissue drawer polish (UI3).

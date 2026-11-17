@@ -172,6 +172,11 @@ func _draw_sutures(font: Font) -> void:
 				if show_suture_dots:
 					draw_arc(h, 4.5 if overloaded else 4.0, 0.0, TAU, 20, Color(color, 0.85), 1.5, true)
 		else:
+			if style.get("glow", false):
+				# A soft halo in the thread's colour (the 2D overlay is not
+				# part of the 3D glow, so it is drawn).
+				draw_line(a, b, Color(color, 0.18), tw + 10.0, true)
+				draw_line(a, b, Color(color, 0.3), tw + 5.0, true)
 			if style.get("outline", false):
 				# A thread coloured by its load, on a dark edge so it reads on skin.
 				draw_line(a, b, Color(0.08, 0.04, 0.04, 0.75), tw + 2.0, true)
@@ -421,7 +426,11 @@ func _draw_marks() -> void:
 				var pts := PackedVector2Array()
 				for p in piece:
 					pts.append(camera.unproject_position(p))
-				if style.get("ink_bleed", false):
+				if style.get("neon", false):
+					draw_polyline(pts, Color(c.lightened(0.3), 0.18), 10.0, true)
+					draw_polyline(pts, Color(c.lightened(0.3), 0.35), 5.5, true)
+					draw_polyline(pts, c.lightened(0.6), 2.2, true)
+				elif style.get("ink_bleed", false):
 					# Marker ink soaking into the skin: a soft halo under the line.
 					draw_polyline(pts, Color(c, 0.22), 7.0, true)
 					draw_polyline(pts, Color(c, 0.75), 2.6, true)

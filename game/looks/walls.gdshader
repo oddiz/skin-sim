@@ -18,6 +18,7 @@ uniform float lobule_mm = 0.9;   // fat lobule size
 uniform float wetness = 0.0;     // 0 matte .. 1 glistening
 uniform float depth_shade = 0.35;
 uniform float outline = 1.0;
+uniform float outline_width = 0.05;  // share of the band's depth
 uniform sampler2D cell_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
 
 varying float depth;
@@ -41,7 +42,7 @@ void fragment() {
 	col *= 1.0 - depth_shade * depth;
 	col = mix(col, contact_color, show_contact * pressure * 0.8);
 	// A fine ink line at the skin surface.
-	col = mix(col, ink, outline * (1.0 - smoothstep(0.0, 0.05 + aa, depth)));
+	col = mix(col, ink, outline * (1.0 - smoothstep(outline_width, outline_width + aa, depth)));
 	ALBEDO = col;
 	ROUGHNESS = mix(0.9, 0.15, wetness);
 	SPECULAR = mix(0.1, 0.7, wetness);
