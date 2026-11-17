@@ -307,10 +307,15 @@ changes. `--look N` picks one from the command line.
   light glowing red through the skin at the edge of shadows (faked
   subsurface scattering: the browser renderer has none built in); dog-ears
   as real folds; blanching; wet, glossy cut faces and wound bed; black nylon
-  sutures (their load shows as a ring at each needle hole); marker ink with
+  sutures with a knot and its two cut ends (load rings at the needle holes
+  with View → Suture load dots); marker ink with
   a soft edge; a blue-green surgical drape glued over the skin's margin
   (drawn by the skin shader on the tissue's rest position, so its edge moves
-  with the skin; no cloth physics, no image files).
+  with the skin; no cloth physics, no image files). **Skin type**
+  (Fitzpatrick I–VI, View) sets the tone and pigment; blanching and redness
+  show less on darker skin, as in life. A soft vignette, as under a lamp.
+  Tuned for phones: no MSAA (FXAA instead, see below), and the pore and
+  skin-line relief costs 7 texture reads per pixel instead of 11.
 - **Game**: bright and bold. Cel shading (light in three flat bands, cool
   purple shadows), a cartoon outline along every incision (same width on
   screen at any zoom), layer-cake cut faces, a glossy candy-red wound bed,
@@ -338,6 +343,23 @@ invisible from straight above. The shaders are in `game/looks/`
 `walls.gdshader`, `bed.gdshader`, `drape.gdshader`, `game_background.gdshader`) and can be
 edited without touching C++. Every look uses Godot's Compatibility renderer
 (as the browser does), so the desktop shows what a phone shows.
+
+### Performance
+
+View → Solver details shows the frame rate, the CPU time per frame and the
+GPU (graphics card) time per frame, where the browser provides it. For
+before/after comparisons on the desktop:
+
+```
+Godot_v4.7.2-stable_win64_console.exe --path game --resolution 3840x2160 -- --look 2 --plain --zoom 1.5 --demo-flap --flap-type 2 --bench --screenshot out.png
+```
+
+prints the mean GPU time over 60 frames (vsync off; `--msaa 0|1|2` and
+`--fxaa` override the look's anti-aliasing). Measured at 4K, Realistic look:
+8 ms with 2x MSAA, 4 ms with FXAA. MSAA was the largest single cost: on a
+phone's high-resolution screen it would be worse still. The plane around the
+skin (drape, Game background) is a frame with a hole, so it is not shaded
+under the skin.
 
 ## Reading the tension map
 

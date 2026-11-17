@@ -115,6 +115,9 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   coords), continued by drape.gdshader on a plane below the wound bed (main.gd); visual
   only. Bleeding: blood pools in the wound bed only (user removed blood on the lips);
   main._update_bleeding -> Look.update_wound(level, fresh).
+  Realistic polish: Look.msaa/fxaa (Realistic: FXAA, no MSAA = half the GPU time),
+  skin types (Look.SKIN_TYPES, --skin-type 1..6), drape plane is a frame (main._build_drape),
+  --bench / --msaa / --fxaa, render stats in Solver details.
   G3 Game (look 3): skin_game.gdshader (cel bands, outline in px), game_background.gdshader
   on the drape plane. No 3D glow (bloomed the pale skin, costly on phones): thread/marker
   glow drawn by the overlay (style glow/neon). Effects: game/fx/feedback.gd (2D, anchored

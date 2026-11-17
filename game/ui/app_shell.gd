@@ -33,6 +33,7 @@ signal reset_requested
 signal fit_requested
 signal look_changed(index: int)
 signal effects_changed(on: bool)
+signal skin_type_changed(index: int)
 ## Something was cleared from the menu or a panel: "cuts", "sutures",
 ## "undermining", "lesions" or "markings" (main.gd trims its undo history).
 signal cleared(what: String)
@@ -83,6 +84,10 @@ var bleeding := true
 ## Load-coloured dots at the sutures' needle holes.
 var show_suture_dots := false
 var _effects_switch: CheckButton
+## Fitzpatrick skin type 0..5 (I-VI) for the Realistic look.
+var skin_type := 1
+var _skin_row: Control
+var _skin_buttons: Array[Button] = []
 
 var _rail: PanelContainer
 var _rail_box: BoxContainer
@@ -341,6 +346,29 @@ func _build_view_card() -> void:
 	v.add_child(looks)
 	_look_caption = Style.label("", "Caption", true)
 	v.add_child(_look_caption)
+	_skin_row = VBoxContainer.new()
+	_skin_row.add_child(Style.label("Skin type (Fitzpatrick)", "Caption"))
+	var types := HBoxContainer.new()
+	types.add_theme_constant_override("separation", 4)
+	var type_group := ButtonGroup.new()
+	for i in 6:
+		var tb := Button.new()
+		tb.text = ["I", "II", "III", "IV", "V", "VI"][i]
+		tb.theme_type_variation = "SegmentButton"
+		tb.toggle_mode = true
+		tb.button_group = type_group
+		tb.focus_mode = Control.FOCUS_NONE
+		tb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tb.custom_minimum_size.y = 32
+		tb.button_pressed = i == skin_type
+		tb.tooltip_text = "Fitzpatrick type %s: skin tone and pigment. Blanching and redness show less on darker skin." % tb.text
+		tb.pressed.connect(func():
+			skin_type = i
+			skin_type_changed.emit(i))
+		types.add_child(tb)
+		_skin_buttons.append(tb)
+	_skin_row.add_child(types)
+	v.add_child(_skin_row)
 	var bleed := _switch_row(v, "Bleeding", bleeding, func(on: bool): bleeding = on)
 	bleed.tooltip_text = "Blood pools in the open wound, darkening as it clots. Drawing only: it does not change the mechanics."
 	_effects_switch = _switch_row(v, "Effects", false, func(on: bool): effects_changed.emit(on))
@@ -415,6 +443,13 @@ func set_heatmap(i: int) -> void:
 	_view_button.text = "" if narrow else ("View" if i == 0 else MAPS[i][0].get_slice(" (", 0))
 
 
+## Select a skin type (without emitting skin_type_changed).
+func show_skin_type(i: int) -> void:
+	skin_type = i
+	for k in _skin_buttons.size():
+		_skin_buttons[k].set_pressed_no_signal(k == i)
+
+
 ## The Effects switch follows the look's default when a look is picked.
 func show_effects(on: bool) -> void:
 	_effects_switch.set_pressed_no_signal(on)
@@ -425,6 +460,7 @@ func show_look(i: int) -> void:
 	for k in _look_buttons.size():
 		_look_buttons[k].set_pressed_no_signal(k == i)
 	_look_caption.text = Look.BLURBS[i]
+	_skin_row.visible = i == 2  # only the Realistic look has skin types
 
 
 func refresh() -> void:

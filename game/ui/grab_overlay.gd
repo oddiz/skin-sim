@@ -163,7 +163,16 @@ func _draw_sutures(font: Font) -> void:
 			var sh := Vector2(1.5, 2.0)
 			draw_line(a + sh, b + sh, Color(0, 0, 0, 0.3), tw + 1.5, true)
 			draw_line(a, b, thread, tw, true)
+			# Monofilament catches the light: a thin highlight along it.
+			draw_line(a - Vector2(0.4, 0.5), b - Vector2(0.4, 0.5), Color(1, 1, 1, 0.22), maxf(0.8, tw * 0.35), true)
 			var k := a.lerp(b, 0.3)
+			# The knot's two cut ends ("ears"), a few mm long, splayed apart.
+			var dir := (b - a).normalized() if a.distance_to(b) > 1.0 else Vector2.RIGHT
+			var ear := tw * 4.0
+			for ang in [0.6, -0.6]:
+				var e := k + dir.rotated(PI * 0.5 + ang) * ear
+				draw_line(k + sh, e + sh, Color(0, 0, 0, 0.25), tw * 0.9, true)
+				draw_line(k, e, thread, tw * 0.8, true)
 			draw_circle(k + sh, tw * 1.5, Color(0, 0, 0, 0.3))
 			draw_circle(k, tw * 1.4, thread)
 			draw_circle(k - Vector2(0.4, 0.6) * tw * 0.5, tw * 0.45, Color(1, 1, 1, 0.35))

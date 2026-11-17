@@ -34,6 +34,7 @@ uniform float wrinkle_depth = 0.9;
 uniform float wrinkle_period = 1.6; // mm between dog-ear wrinkles
 uniform float freckles = 0.25;
 uniform float sheen = 0.35;
+uniform float vignette = 0.22;      // darker towards the screen's edges, as under a theatre lamp
 // The drape (Look sets these; window_half.x <= 0: no drape).
 uniform vec2 window_half = vec2(0.0);  // half size of the opening, rest mm
 uniform vec3 cloth : source_color = vec3(0.16, 0.40, 0.44);
@@ -45,18 +46,6 @@ varying float on_cloth;
 
 void vertex() {
 	READ_SKIN_DATA
-}
-
-// A bump height field on rest mm, and its slope, for the normal.
-float bumps(vec2 p, float detail) {
-	float pores = texture(cell_tex, p / (pore_mm * 8.0)).r;            // cellular: dips at the cell centres
-	float h = -pore_depth * (1.0 - smoothstep(0.0, 0.16, pores));  // small round pits
-	// Fine lines: two families crossing at about 70 degrees, wavy.
-	float wob = texture(noise_tex, p / 6.0).r * 4.0;
-	float l1 = abs(fract(dot(p, vec2(0.82, 0.57)) / 0.9 + wob) - 0.5);
-	float l2 = abs(fract(dot(p, vec2(-0.34, 0.94)) / 1.1 - wob) - 0.5);
-	h -= line_depth * (1.0 - smoothstep(0.0, 0.12, min(l1, l2)));
-	return h * detail;
 }
 
 void fragment() {
@@ -83,7 +72,9 @@ void fragment() {
 	float fold = 0.5 + 0.5 * cos(6.2831853 * ph);
 	col *= 1.0 - 0.18 * amt * fold;
 
-	float pit = 1.0 - smoothstep(0.0, 0.16, texture(cell_tex, p / (pore_mm * 8.0)).r);
+	// Pores: small round pits at the centres of a cellular pattern.
+	vec2 pore_uv = p / (pore_mm * 8.0);
+	float pit = 1.0 - smoothstep(0.0, 0.16, texture(cell_tex, pore_uv).r);
 	col *= 1.0 - 0.12 * pit * detail;
 
 	// --- the lips: shadow, a wet dark-red rim ---
@@ -123,9 +114,31 @@ void fragment() {
 	on_cloth = cloth_amt;
 
 	// --- normal: pores, fine lines, wrinkles ---
-	float e = 0.05;
-	float h0 = bumps(p, detail);
-	vec2 grad = vec2(bumps(p + vec2(e, 0.0), detail) - h0, bumps(p + vec2(0.0, e), detail) - h0) / e;
+	// (Slopes of the relief, per rest mm. The normal tilts against them.)
+	vec2 grad = vec2(0.0);
+	if (detail > 0.0) {
+		// Pores: the slope from two nearby samples (the pattern is a texture).
+		float e = 0.05;
+		float sc = 1.0 / (pore_mm * 8.0);
+		float px = 1.0 - smoothstep(0.0, 0.16, texture(cell_tex, pore_uv + vec2(e * sc, 0.0)).r);
+		float py = 1.0 - smoothstep(0.0, 0.16, texture(cell_tex, pore_uv + vec2(0.0, e * sc)).r);
+		grad -= pore_depth * vec2(px - pit, py - pit) / e;
+		// Fine lines: two families crossing at about 70 degrees, made wavy by
+		// the small-scale colour noise. Their slope is exact (worked out by
+		// hand), so it costs no texture reads.
+		float wob = small * 4.0;
+		vec2 d1 = vec2(0.82, 0.57) / 0.9;
+		vec2 d2 = vec2(-0.34, 0.94) / 1.1;
+		float f1 = fract(dot(p, d1) + wob) - 0.5;
+		float f2 = fract(dot(p, d2) - wob) - 0.5;
+		// Depth = line_depth * (1 - smoothstep(0, w, |f|)) of the nearer line.
+		bool first = abs(f1) < abs(f2);
+		float f = first ? f1 : f2;
+		vec2 dir = first ? d1 : d2;
+		float x = clamp(abs(f) / 0.12, 0.0, 1.0);
+		grad += line_depth * 6.0 * x * (1.0 - x) / 0.12 * sign(f) * dir;
+		grad *= detail;
+	}
 	// Wrinkle ridges across the squeeze direction (only where it puckers).
 	vec2 sd = squeeze_dir();
 	grad += sd * (-sin(6.2831853 * ph) * 6.2831853 / wrinkle_period) * wrinkle_depth * amt * 0.25;
@@ -135,7 +148,8 @@ void fragment() {
 	NORMAL = normalize(NORMAL + 0.12 * tilt);
 	NORMAL = normalize(NORMAL + on_cloth * 0.6 * (VIEW_MATRIX * vec4(-cloth_slope.x, 0.0, -cloth_slope.y, 0.0)).xyz);
 
-	ALBEDO = col;
+	vec2 v = SCREEN_UV - 0.5;
+	ALBEDO = col * (1.0 - vignette * 2.0 * dot(v, v));
 	ROUGHNESS = mix(mix(0.55, 0.12, w), 0.95, on_cloth);
 	SPECULAR = mix(mix(0.35, 0.8, w), 0.05, on_cloth);
 }

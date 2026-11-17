@@ -9,6 +9,17 @@ extends RefCounted
 ## bed.gdshader); they read the vertex data SkinSheet provides (see
 ## skin_common.gdshaderinc).
 
+## Skin types for the Realistic look (Fitzpatrick I-VI: how skin reacts to
+## sun, a proxy for its pigment): base tone, melanin colour, freckles.
+const SKIN_TYPES := [
+	[Color(0.95, 0.78, 0.70), Color(0.66, 0.47, 0.36), 0.35],
+	[Color(0.88, 0.68, 0.57), Color(0.58, 0.39, 0.28), 0.25],
+	[Color(0.80, 0.60, 0.45), Color(0.50, 0.33, 0.22), 0.08],
+	[Color(0.66, 0.46, 0.32), Color(0.40, 0.25, 0.15), 0.0],
+	[Color(0.46, 0.30, 0.20), Color(0.29, 0.17, 0.10), 0.0],
+	[Color(0.30, 0.19, 0.13), Color(0.18, 0.11, 0.07), 0.0],
+]
+
 ## Index = the value of --look and the View panel's switch.
 const NAMES := ["Classic", "Illustration", "Realistic", "Game"]
 const BLURBS := [
@@ -30,6 +41,12 @@ var drape_on_skin := false
 var glow := false
 ## The Effects switch (View) is set to this when the look is picked.
 var effects_default := false
+## Anti-aliasing (smoothing of jagged edges). MSAA renders edges at 2x and
+## costs a lot of GPU time on high-resolution screens (it doubled the
+## Realistic look's cost at 4K); FXAA smooths the finished image for almost
+## nothing. The shaders smooth their own lines, so FXAA is enough there.
+var msaa := Viewport.MSAA_2X
+var fxaa := false
 ## How much this look bleeds, 0..1, when Bleeding is on (View panel).
 var bleed_scale := 0.0
 var relief_mm := 1.5               # how strongly dog-ears and lips are shaded
@@ -137,9 +154,12 @@ func _realistic() -> void:
 	bed_material.set_shader_parameter("wetness", 0.75)
 	bed_material.set_shader_parameter("tissue", Color(0.66, 0.13, 0.11))
 	bed_material.set_shader_parameter("tissue_dark", Color(0.36, 0.04, 0.05))
-	bed_material.set_shader_parameter("fat_amount", 0.3)
+	bed_material.set_shader_parameter("fat_amount", 0.6)
+	bed_material.set_shader_parameter("fat_islands", Color(0.95, 0.78, 0.38))
 	drape_material = _shader_material("res://looks/drape.gdshader")
 	drape_on_skin = true
+	msaa = Viewport.MSAA_DISABLED
+	fxaa = true
 	relief_mm = 2.0
 	wall_width_mm = 0.8
 	# A theatre light: bright, slightly warm, from high up.
@@ -208,6 +228,9 @@ func apply(sheet: SkinSheet, sun: DirectionalLight3D, env: Environment, overlay:
 	drape.visible = drape_material != null
 	drape.material_override = drape_material
 	env.glow_enabled = glow
+	var vp := sheet.get_viewport()
+	vp.msaa_3d = msaa
+	vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA if fxaa else Viewport.SCREEN_SPACE_AA_DISABLED
 	if glow:
 		# Only what is brighter than white (highlights) blooms.
 		env.glow_hdr_threshold = 0.95
@@ -219,6 +242,26 @@ func apply(sheet: SkinSheet, sun: DirectionalLight3D, env: Environment, overlay:
 		var half := Vector2(sheet.width, sheet.height) * 0.5
 		var margin := clampf(0.12 * minf(sheet.width, sheet.height), 4.0, 15.0)
 		skin_material.set_shader_parameter("window_half", half - Vector2(margin, margin))
+
+
+## Skin type 0..5 (Fitzpatrick I-VI), for looks that have one (Realistic).
+## Blanching and flushing scale with the tone: on dark skin a blanched patch
+## goes greyer rather than white, and redness shows less.
+func set_skin_type(i: int) -> void:
+	if index != 2 or not skin_material is ShaderMaterial:
+		return
+	var t: Array = SKIN_TYPES[clampi(i, 0, SKIN_TYPES.size() - 1)]
+	var tone: Color = t[0]
+	var m := skin_material as ShaderMaterial
+	m.set_shader_parameter("tone", tone)
+	m.set_shader_parameter("melanin", t[1])
+	m.set_shader_parameter("freckles", t[2])
+	m.set_shader_parameter("haemoglobin", Color(tone.r * 0.98, tone.g * 0.62, tone.b * 0.66))
+	m.set_shader_parameter("blanched", tone.lerp(Color(0.97, 0.90, 0.80), 0.25 + 0.35 * tone.get_luminance()))
+	m.set_shader_parameter("undermined_tone", tone.lerp(Color(0.62, 0.48, 0.58), 0.5))
+	# The epidermis seen in the cut face carries the pigment.
+	if wall_material is ShaderMaterial:
+		wall_material.set_shader_parameter("epidermis", tone.darkened(0.3))
 
 
 ## Bleeding, every frame: `level` 0..1 how much blood has come out so far,

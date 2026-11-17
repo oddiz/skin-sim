@@ -10,6 +10,7 @@ uniform vec3 cloth : source_color = vec3(0.16, 0.40, 0.44);
 uniform vec3 cloth_dark : source_color = vec3(0.07, 0.22, 0.25);
 uniform sampler2D noise_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
 uniform float thread_mm = 0.7;
+uniform float vignette = 0.22;  // as on the skin (skin_realistic.gdshader)
 
 varying vec2 world_mm;
 
@@ -35,7 +36,8 @@ void fragment() {
 	float weave = mix(warp, weft, over);
 	vec3 col = mix(cloth_dark, cloth, 0.8 + 0.2 * f0);
 	col *= mix(1.0, 0.8 + 0.2 * weave, weave_vis);
-	ALBEDO = col;
+	vec2 v = SCREEN_UV - 0.5;
+	ALBEDO = col * (1.0 - vignette * 2.0 * dot(v, v));
 	NORMAL = normalize(NORMAL + (VIEW_MATRIX * vec4(-slope.x, 0.0, -slope.y, 0.0)).xyz * 0.6);
 	ROUGHNESS = 0.95;
 	SPECULAR = 0.05;

@@ -92,6 +92,9 @@ var drape: MeshInstance3D
 var _blood := 0.0
 ## Game-style effects (game/fx/feedback.gd), drawn over the 3D view.
 var fx: Feedback
+var _measuring := false
+var _bench_gpu := 0.0
+var _bench_cpu := 0.0
 ## The current tool's settings (part of ui; kept as a short name).
 var panel: ContextPanel
 
@@ -168,6 +171,10 @@ func _ready() -> void:
 	ui.undo_requested.connect(_undo)
 	ui.fit_requested.connect(_frame_sheet)
 	ui.look_changed.connect(apply_look)
+	ui.skin_type_changed.connect(func(i: int): look.set_skin_type(i))
+	var st := OS.get_cmdline_user_args().find("--skin-type")  # 1..6 (Fitzpatrick I-VI)
+	if st != -1 and st + 1 < OS.get_cmdline_user_args().size():
+		ui.show_skin_type(clampi(int(OS.get_cmdline_user_args()[st + 1]) - 1, 0, 5))
 	ui.cleared.connect(_on_cleared)
 	panel.pen_color_changed.connect(func(i: int): _pen_color = i)
 	panel.tightness_changed.connect(func(t: float):
@@ -198,13 +205,16 @@ func _ready() -> void:
 	ui.effects_changed.connect(func(on: bool): fx.enabled = on)
 
 	drape = MeshInstance3D.new()
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(4000, 4000)
-	drape.mesh = plane
 	drape.position.y = -1.5  # below the wound bed: never seen through a wound
 	add_child(drape)
+	_build_drape()
+	sheet.mesh_rebuilt.connect(_build_drape)  # the sheet's size may have changed
 
 	var args := OS.get_cmdline_user_args()
+	if args.has("--bench"):
+		# Run flat out: with vsync the GPU idles between frames, clocks down,
+		# and its timings swing widely.
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	var lk := args.find("--look")
 	apply_look(int(args[lk + 1]) if lk != -1 and lk + 1 < args.size() else 1)
 	if args.has("--demo-pull"):
@@ -245,10 +255,46 @@ func _demo_map(i: int) -> void:
 	sheet.heatmap = 0 if OS.get_cmdline_user_args().has("--plain") else i
 
 
+## The plane around the skin (drape or background): a large frame with a
+## hole under the skin, so the GPU does not shade it where the skin covers it
+## (it would be drawn there and then hidden: wasted work on every pixel).
+## The hole is a little smaller than the skin, so a skin edge pulled inwards
+## never opens a gap.
+func _build_drape() -> void:
+	var outer := 2000.0
+	var hx := maxf(1.0, sheet.width * 0.5 - 4.0)
+	var hz := maxf(1.0, sheet.height * 0.5 - 4.0)
+	var o := [Vector3(-outer, 0, -outer), Vector3(outer, 0, -outer), Vector3(outer, 0, outer), Vector3(-outer, 0, outer)]
+	var h := [Vector3(-hx, 0, -hz), Vector3(hx, 0, -hz), Vector3(hx, 0, hz), Vector3(-hx, 0, hz)]
+	var verts := PackedVector3Array()
+	for k in 4:  # one quad per side, between the outer and inner corners
+		var n := (k + 1) % 4
+		verts.append_array(PackedVector3Array([o[k], o[n], h[n], o[k], h[n], h[k]]))
+	var normals := PackedVector3Array()
+	normals.resize(verts.size())
+	normals.fill(Vector3.UP)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	drape.mesh = mesh
+
+
 ## Switch the visual style (0 Classic, 1 Illustration, ...).
 func apply_look(i: int) -> void:
 	look = Look.make(i)
 	look.apply(sheet, sun, world_env.environment, overlay, drape)
+	look.set_skin_type(ui.skin_type)
+	# For performance tests, override the look's anti-aliasing:
+	# --msaa 0 / 1 (2x) / 2 (4x), --fxaa.
+	var args := OS.get_cmdline_user_args()
+	var ms := args.find("--msaa")
+	if ms != -1 and ms + 1 < args.size():
+		get_viewport().msaa_3d = int(args[ms + 1]) as Viewport.MSAA
+	if args.has("--fxaa"):
+		get_viewport().screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	ui.show_effects(look.effects_default)
 	fx.enabled = look.effects_default
 	ui.show_look(look.index)
@@ -797,8 +843,24 @@ func _process(delta: float) -> void:
 			sheet.get_cut_count(), sheet.get_suture_count()] \
 		+ "%s: %d it/frame, %.2f ms, residual %s N%s\n" % [
 			"at rest" if s.converged else "solving", s.iterations, s.step_ms, _sci(s.residual), flags] \
-		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d" % [
-			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs])
+		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d
+" % [
+			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] 		+ _render_stats())
+
+
+## Frame rate and where the time goes: CPU (scripts + solver + building the
+## mesh) and GPU (drawing). The GPU time comes from timer queries, which
+## some browsers do not offer (then it shows "n/a").
+func _render_stats() -> String:
+	var vp := get_viewport().get_viewport_rid()
+	if not _measuring:
+		RenderingServer.viewport_set_measure_render_time(vp, true)
+		_measuring = true
+	var gpu := RenderingServer.viewport_get_measured_render_time_gpu(vp)
+	var cpu := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	return "%d fps, frame CPU %.1f ms, GPU %s, %s px" % [
+		Engine.get_frames_per_second(), cpu, "%.2f ms" % gpu if gpu > 0.0 else "n/a",
+		"%dx%d" % [get_viewport().get_texture().get_width(), get_viewport().get_texture().get_height()]]
 
 
 ## Blood comes out of open incisions over about 15 s and stays (no
@@ -1037,8 +1099,13 @@ func _save_screenshot_and_quit(path: String) -> void:
 	# Let the solver run for a moment (about 2 s at 60 fps), then capture.
 	for _frame in 120:
 		await RenderingServer.frame_post_draw
+		if _frame >= 60 and args.has("--bench"):
+			_bench_gpu += RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
+			_bench_cpu += RenderingServer.viewport_get_measured_render_time_cpu(get_viewport().get_viewport_rid())
 		if _frame == 108 and args.has("--demo-fx"):
 			_demo_fx()
+	if args.has("--bench"):
+		print("BENCH gpu %.3f ms, render cpu %.3f ms (mean of 60 frames)" % [_bench_gpu / 60.0, _bench_cpu / 60.0])
 	var err := get_viewport().get_texture().get_image().save_png(path)
 	print("Screenshot saved to %s (error code %d)" % [path, err])
 	get_tree().quit()
