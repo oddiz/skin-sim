@@ -13,6 +13,9 @@ config_version=5
 config/name="skin-sim"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7")
+config/description="Local flap simulator for plastic surgery training."
+boot_splash/show_image=false
+boot_splash/bg_color=Color(0.07058824, 0.078431375, 0.09411765, 1)
 
 [input_devices]
 

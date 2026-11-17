@@ -76,6 +76,11 @@ Godot_v4.7.2-stable_win64_console.exe --headless --path game --export-release "W
 python -m http.server 8060 --directory export/web    # then open http://127.0.0.1:8060
 ```
 
+The loading screen (logo, progress in MB, rotating teaching tips) is our own
+page, `game/web/shell.html`, based on Godot 4.7.2's default one (same loading
+code, our look); Godot's logo splash is switched off (project.godot,
+`application/boot_splash`).
+
 A browser can't open the page from disk (`file://`); it needs a web server,
 even a local one like the line above. Notes:
 
@@ -296,14 +301,14 @@ View → **Look** switches the visual style live; nothing in the mechanics
 changes. `--look N` picks one from the command line.
 
 - **Classic**: the plain working view (flat colours).
-- **Illustration** (default): stylised realism, like a surgical atlas. Soft
+- **Illustration**: stylised realism, like a surgical atlas. Soft
   wrapped light; faint mottling fixed to the tissue (it moves with the skin);
   skin pales where it is stretched and flushes where it is squeezed
   (blanching); puckered skin (dog-ears) is shaded as a bulge and hatched
   across its wrinkles; every incision has a fine ink line, and the cut face
   shows the layers (epidermis, dermis, yellow fat lobules) above the red
   wound bed.
-- **Realistic**: as under theatre lights. Pores and fine skin lines (bumps
+- **Realistic** (default): as under theatre lights. Pores and fine skin lines (bumps
   in the shading that fade out when zoomed out, so they never shimmer),
   melanin and blood variation and a few freckles, all fixed to the tissue;
   light glowing red through the skin at the edge of shadows (faked

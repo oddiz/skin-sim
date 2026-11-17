@@ -50,7 +50,7 @@ extends Node3D
 ##                             pixel density, e.g. 3 on a phone)
 ##   --open <panel>            open tissue | view | help | sheet | sheet-full
 ##   --tool <n>                pick a tool (0 grab .. 7 mark)
-##   --look <n>                visual style (0 classic, 1 illustration)
+##   --look <n>                visual style (0 classic, 1 illustration, 2 realistic = default, 3 game)
 ##   --plain                   demos leave the colour map off
 ##   --zoom <x>                screenshots: zoom in x times on the middle
 ##   --demo-pull               grab the centre and pull it 15 mm right (for checks)
@@ -238,7 +238,8 @@ func _ready() -> void:
 		# and its timings swing widely.
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	var lk := args.find("--look")
-	apply_look(int(args[lk + 1]) if lk != -1 and lk + 1 < args.size() else 1)
+	# Default: Realistic (2).
+	apply_look(int(args[lk + 1]) if lk != -1 and lk + 1 < args.size() else 2)
 	if args.has("--demo-pull"):
 		_demo_pull()
 	if args.has("--demo-cut"):

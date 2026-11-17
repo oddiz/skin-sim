@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<!--
+		skin-sim's web page: the loading screen shown while the engine and the
+		simulator download (~30 MB), then the app's canvas.
+		Based on Godot 4.7.2's default shell (godot.html in the web export
+		template); the loading logic below is unchanged from it, only the look
+		of the loading screen is ours. The $GODOT_... placeholders are filled
+		in by the exporter. Selected in export_presets.cfg
+		(html/custom_html_shell).
+		-->
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+		<meta name="description" content="skin-sim: a local flap simulator for plastic surgery training. Design flaps, cut, undermine and suture, and see the tension.">
+		<meta name="theme-color" content="#121418">
+		<title>skin-sim · local flap simulator</title>
+		<style>
+:root {
+	--bg: #121418;
+	--surface: #1b1f26;
+	--border: #2e3541;
+	--text: #e8eaed;
+	--dim: #9aa3ae;
+	--accent: #2bb3a3;
+	--accent-dim: #1d7f74;
+	--skin: #e9b9a2;
+}
+
+html, body, #canvas {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+body {
+	color: var(--text);
+	background-color: var(--bg);
+	overflow: hidden;
+	touch-action: none;
+	font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+#canvas {
+	display: block;
+}
+
+#canvas:focus {
+	outline: none;
+}
+
+/* --- loading screen --- */
+
+#status {
+	position: absolute;
+	inset: 0;
+	background: radial-gradient(ellipse at 50% 40%, #1c222b 0%, var(--bg) 70%);
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	gap: 0;
+	padding: 0 24px;
+	visibility: hidden;
+	transition: opacity 0.35s ease;
+}
+
+#status.leaving {
+	opacity: 0;
+}
+
+.logo {
+	width: 112px;
+	height: 112px;
+	margin-bottom: 20px;
+}
+
+/* The flap outline draws itself, then the sutures appear: a small hint of
+   what the app does while it loads. */
+.logo .incision {
+	stroke-dasharray: 260;
+	stroke-dashoffset: 260;
+	animation: draw 1.6s ease-out 0.2s forwards;
+}
+
+.logo .stitch {
+	opacity: 0;
+	animation: appear 0.3s ease-out forwards;
+}
+
+.logo .stitch:nth-of-type(1) { animation-delay: 1.5s; }
+.logo .stitch:nth-of-type(2) { animation-delay: 1.7s; }
+.logo .stitch:nth-of-type(3) { animation-delay: 1.9s; }
+
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes appear { to { opacity: 1; } }
+
+h1 {
+	margin: 0;
+	font-size: 28px;
+	font-weight: 650;
+	letter-spacing: -0.01em;
+}
+
+.subtitle {
+	margin: 6px 0 28px;
+	color: var(--dim);
+	font-size: 14px;
+}
+
+#status-progress {
+	width: min(320px, 80vw);
+	height: 6px;
+	border-radius: 3px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	overflow: hidden;
+	display: none;
+}
+
+#status-bar {
+	height: 100%;
+	width: 0%;
+	background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+	border-radius: 3px;
+	transition: width 0.2s ease;
+}
+
+/* Before the size is known: a sliding stripe. */
+#status-progress.indeterminate #status-bar {
+	width: 30%;
+	animation: slide 1.2s ease-in-out infinite;
+}
+
+@keyframes slide {
+	from { transform: translateX(-100%); }
+	to { transform: translateX(340%); }
+}
+
+#status-text {
+	margin-top: 10px;
+	color: var(--dim);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	min-height: 1.3em;
+}
+
+#tip {
+	margin-top: 36px;
+	max-width: 420px;
+	color: var(--dim);
+	font-size: 13px;
+	line-height: 1.45;
+	text-align: center;
+	min-height: 3em;
+	transition: opacity 0.4s ease;
+}
+
+#tip b {
+	color: var(--accent);
+	font-weight: 600;
+}
+
+#status-notice {
+	display: none;
+	max-width: 480px;
+	margin-top: 24px;
+	background-color: #3a2328;
+	border-radius: 10px;
+	border: 1px solid #9b3943;
+	color: var(--text);
+	line-height: 1.4;
+	padding: 1rem;
+	text-align: center;
+	font-size: 14px;
+	z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.logo .incision { animation: none; stroke-dashoffset: 0; }
+	.logo .stitch { animation: none; opacity: 1; }
+	#status-progress.indeterminate #status-bar { animation: none; width: 100%; opacity: 0.4; }
+}
+		</style>
+		$GODOT_HEAD_INCLUDE
+	</head>
+	<body>
+		<canvas id="canvas">
+			Your browser does not support the canvas tag.
+		</canvas>
+
+		<noscript>
+			skin-sim needs JavaScript to run.
+		</noscript>
+
+		<div id="status">
+			<!-- A rhomboid flap on a patch of skin, with three sutures. -->
+			<svg class="logo" viewBox="0 0 112 112" aria-hidden="true">
+				<rect x="6" y="6" width="100" height="100" rx="24" fill="#1b1f26" stroke="#2e3541" stroke-width="2"/>
+				<rect x="18" y="18" width="76" height="76" rx="14" fill="#e9b9a2" opacity="0.92"/>
+				<path class="incision" d="M34 62 L50 40 L72 40 L56 62 Z M72 40 L84 58 L68 80"
+					fill="none" stroke="#8e2a2a" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+				<line class="stitch" x1="57" y1="34" x2="66" y2="46" stroke="#121418" stroke-width="2.5" stroke-linecap="round"/>
+				<line class="stitch" x1="74" y1="53" x2="83" y2="47" stroke="#121418" stroke-width="2.5" stroke-linecap="round"/>
+				<line class="stitch" x1="71" y1="68" x2="80" y2="74" stroke="#121418" stroke-width="2.5" stroke-linecap="round"/>
+			</svg>
+			<h1>skin-sim</h1>
+			<div class="subtitle">Local flap simulator</div>
+			<div id="status-progress" class="indeterminate"><div id="status-bar"></div></div>
+			<div id="status-text">Loading…</div>
+			<div id="tip"></div>
+			<div id="status-notice"></div>
+		</div>
+
+		<script src="$GODOT_URL"></script>
+		<script>
+const GODOT_CONFIG = $GODOT_CONFIG;
+const GODOT_THREADS_ENABLED = $GODOT_THREADS_ENABLED;
+const engine = new Engine(GODOT_CONFIG);
+
+// Teaching tips shown while loading, one at a time.
+const TIPS = [
+	'Incisions along the <b>relaxed skin tension lines</b> (RSTL) heal with finer scars.',
+	'A fusiform excision closes flat when it is about <b>3 times as long as it is wide</b> (30° tips).',
+	'<b>Undermining</b> lowers the tension needed to close a wound.',
+	'<b>Dog-ears</b> form where excess skin bunches at the ends of a closure.',
+	'A <b>Z-plasty</b> with 60° limbs lengthens the central limb by about 75%.',
+	'In a <b>bilobed flap</b> the second lobe is smaller than the first; the classic Zitelli design turns about 90° in total.',
+	'Hold still while grabbing to leave a <b>skin hook</b> in place, then suture while it holds.',
+	'Switch on the <b>Tension</b> map to see where a closure pulls hardest.',
+];
+
+(function () {
+	const statusOverlay = document.getElementById('status');
+	const statusProgress = document.getElementById('status-progress');
+	const statusBar = document.getElementById('status-bar');
+	const statusText = document.getElementById('status-text');
+	const statusNotice = document.getElementById('status-notice');
+	const tip = document.getElementById('tip');
+
+	let initializing = true;
+	let statusMode = '';
+
+	// Rotate the tips every 5 s, starting at a random one.
+	let tipIndex = Math.floor(Math.random() * TIPS.length);
+	function showTip() {
+		tip.style.opacity = 0;
+		setTimeout(() => {
+			tip.innerHTML = TIPS[tipIndex];
+			tip.style.opacity = 1;
+			tipIndex = (tipIndex + 1) % TIPS.length;
+		}, 400);
+	}
+	tip.innerHTML = TIPS[tipIndex];
+	tipIndex = (tipIndex + 1) % TIPS.length;
+	const tipTimer = setInterval(showTip, 5000);
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			// Fade out, then remove.
+			clearInterval(tipTimer);
+			statusOverlay.classList.add('leaving');
+			setTimeout(() => statusOverlay.remove(), 400);
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		statusProgress.style.display = mode === 'progress' ? 'block' : 'none';
+		statusText.style.display = mode === 'progress' ? 'block' : 'none';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function setStatusNotice(text) {
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		const lines = text.split('\n');
+		lines.forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		if (err instanceof Error) {
+			setStatusNotice(err.message);
+		} else if (typeof err === 'string') {
+			setStatusNotice(err);
+		} else {
+			setStatusNotice('An unknown error occurred.');
+		}
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	const missing = Engine.getMissingFeatures({
+		threads: GODOT_THREADS_ENABLED,
+	});
+
+	if (missing.length !== 0) {
+		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
+			let serviceWorkerRegistrationPromise;
+			try {
+				serviceWorkerRegistrationPromise = navigator.serviceWorker.getRegistration();
+			} catch (err) {
+				serviceWorkerRegistrationPromise = Promise.reject(new Error('Service worker registration failed.'));
+			}
+			// There's a chance that installing the service worker would fix the issue
+			Promise.race([
+				serviceWorkerRegistrationPromise.then((registration) => {
+					if (registration != null) {
+						return Promise.reject(new Error('Service worker already exists.'));
+					}
+					return registration;
+				}).then(() => engine.installServiceWorker()),
+				// For some reason, `getRegistration()` can stall
+				new Promise((resolve) => {
+					setTimeout(() => resolve(), 2000);
+				}),
+			]).then(() => {
+				// Reload if there was no error.
+				window.location.reload();
+			}).catch((err) => {
+				console.error('Error while registering service worker:', err);
+			});
+		} else {
+			// Display the message as usual
+			const missingMsg = 'This browser cannot run skin-sim. Missing:\n';
+			displayFailureNotice(missingMsg + missing.join('\n'));
+		}
+	} else {
+		setStatusMode('progress');
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (current > 0 && total > 0) {
+					statusProgress.classList.remove('indeterminate');
+					const pct = Math.min(100, (100 * current) / total);
+					statusBar.style.width = pct + '%';
+					statusText.textContent = current >= total
+						? 'Starting the simulator…'
+						: 'Loading ' + (current / 1048576).toFixed(1) + ' / ' + (total / 1048576).toFixed(1) + ' MB';
+				} else {
+					statusProgress.classList.add('indeterminate');
+					statusText.textContent = 'Loading…';
+				}
+			},
+		}).then(() => {
+			setStatusMode('hidden');
+		}, displayFailureNotice);
+	}
+}());
+		</script>
+	</body>
+</html>
