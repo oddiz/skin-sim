@@ -488,7 +488,19 @@ in `solver/include/skinsim/wrinkling.hpp`.
 ## Planned features
 
 - Z-plasty in the simulation (the flaps would need to pass over each other).
-- Guided scenarios (UI4) and a tissue drawer polish (UI3).
+- More scenarios (TODO; add as `game/scenarios/*.json`, then `--probe-scenario` for references):
+  - Bilobed flap for a nasal tip / alar defect; note flap for the nose.
+  - V-Y advancement (upper lip, cheek) and keystone island flap (limb, back).
+  - O-Z and A-T plasty (forehead, scalp, near the brow).
+  - H-plasty / bilateral advancement (forehead).
+  - Lower eyelid / lip lesions near a free margin (needs landmarks: see below).
+  - Z-plasty for a scar contracture (once Z-plasty is simulated).
+  - Dog-ear correction: a short ellipse to fix (Burow's triangles, M-plasty).
+  - Same lesion, two designs: compare scores side by side.
+  - Skin types and ages (lax elderly skin vs. tight young skin) for the same defect.
+- Free-margin landmarks (eyelid, lip, alar rim): draw them in rest coordinates and score
+  their displacement (ectropion risk) in the closure check.
+- Tissue drawer polish (UI3).
 - Cheese-wiring (a suture tearing through the tissue it bites) as a second way
   for a suture to fail.
 - Friction between the lips; calibration against measured skin properties.

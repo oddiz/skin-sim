@@ -150,7 +150,8 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   to world points; camera shake via h/v_offset), Look.effects_default, --demo-fx.
 
 ## Planned features
-- Z-plasty in the simulation; scenarios (UI4); tissue drawer polish (UI3).
+- Z-plasty in the simulation; tissue drawer polish (UI3); more scenarios (TODO list in README:
+  bilobed, V-Y/keystone, O-Z/A-T, H-plasty, free margins with landmarks, Z-plasty, dog-ear fixes).
 - Cheese-wiring (suture tearing through tissue): deliberately left out of M9.
 - Friction between the lips; calibration against measured skin properties.
 
