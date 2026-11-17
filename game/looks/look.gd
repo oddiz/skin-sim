@@ -162,20 +162,17 @@ func apply(sheet: SkinSheet, sun: DirectionalLight3D, env: Environment, overlay:
 	overlay.set("style", overlay_style)
 	drape.visible = drape_material != null
 	drape.material_override = drape_material
-	if drape_material != null:
-		drape_material.set_shader_parameter("sheet_half", Vector2(sheet.width, sheet.height) * 0.5)
+	if drape_material != null and skin_material is ShaderMaterial:
+		# The opening in the drape: the skin minus a margin the cloth is glued on.
+		var half := Vector2(sheet.width, sheet.height) * 0.5
+		var margin := clampf(0.12 * minf(sheet.width, sheet.height), 4.0, 15.0)
+		skin_material.set_shader_parameter("window_half", half - Vector2(margin, margin))
 
 
 ## Bleeding, every frame: `level` 0..1 how much blood has come out so far,
-## `fresh` 1 just cut .. 0 long ago (blood darkens as it clots).
+## `fresh` 1 just cut .. 0 long ago (blood darkens as it clots). Blood only
+## pools in the wound bed: none on the skin or the cut faces.
 func update_wound(level: float, fresh: float) -> void:
-	var b := level * bleed_scale
-	for m in [skin_material, wall_material, bed_material]:
-		if m is ShaderMaterial:
-			m.set_shader_parameter("fresh", fresh)
-	if skin_material is ShaderMaterial:
-		skin_material.set_shader_parameter("bleed", b)
-	if wall_material is ShaderMaterial:
-		wall_material.set_shader_parameter("blood", 0.8 * b)
 	if bed_material is ShaderMaterial:
-		bed_material.set_shader_parameter("blood", 0.9 * b)
+		bed_material.set_shader_parameter("fresh", fresh)
+		bed_material.set_shader_parameter("blood", 0.9 * level * bleed_scale)

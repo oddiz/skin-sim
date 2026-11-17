@@ -1,13 +1,14 @@
 // A surgical drape around the skin: a large plane below the sheet (and below
-// the wound bed, so it never shows through a wound), cut out where the skin
-// is. Woven cotton drawn procedurally: threads in two directions, soft folds,
-// a shadow where it meets the skin.
+// the wound bed, so it never shows through a wound). The cloth continues
+// onto the skin's margin, drawn by the skin shader (skin_realistic.gdshader,
+// window_half), so it looks glued to the skin and moves with it. Woven
+// cotton drawn procedurally: threads in two directions, soft folds.
 shader_type spatial;
+render_mode diffuse_lambert;  // as the cloth drawn on the skin
 
 uniform vec3 cloth : source_color = vec3(0.16, 0.40, 0.44);
 uniform vec3 cloth_dark : source_color = vec3(0.07, 0.22, 0.25);
 uniform sampler2D noise_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
-uniform vec2 sheet_half = vec2(50.0, 40.0);  // half the skin's size, mm (set by Look)
 uniform float thread_mm = 0.7;
 
 varying vec2 world_mm;
@@ -34,11 +35,6 @@ void fragment() {
 	float weave = mix(warp, weft, over);
 	vec3 col = mix(cloth_dark, cloth, 0.8 + 0.2 * f0);
 	col *= mix(1.0, 0.8 + 0.2 * weave, weave_vis);
-	// Shadow along the edge of the fenestration (the cloth lies on the skin's
-	// edge and rises off it).
-	vec2 d = abs(p) - sheet_half;
-	float outside = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
-	col *= mix(0.45, 1.0, smoothstep(0.0, 5.0, outside));
 	ALBEDO = col;
 	NORMAL = normalize(NORMAL + (VIEW_MATRIX * vec4(-slope.x, 0.0, -slope.y, 0.0)).xyz * 0.6);
 	ROUGHNESS = 0.95;

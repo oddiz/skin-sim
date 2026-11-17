@@ -111,8 +111,10 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   cut walls = sloped bands; relief normals. Renderer: gl_compatibility everywhere (web parity).
   Screenshots: --look N --plain --zoom X.
   G2 Realistic (look 2): skin_realistic.gdshader (bumps from rest-space noise, fake SSS in
-  light()), drape.gdshader (procedural, a plane below the wound bed made in main.gd).
-  Bleeding: main._update_bleeding -> Look.update_wound(level, fresh) sets shader uniforms.
+  light()). Drape: glued on the skin's margin by the skin shader (window_half, rest
+  coords), continued by drape.gdshader on a plane below the wound bed (main.gd); visual
+  only. Bleeding: blood pools in the wound bed only (user removed blood on the lips);
+  main._update_bleeding -> Look.update_wound(level, fresh).
 
 ## Planned features
 - Z-plasty in the simulation; scenarios (UI4); tissue drawer polish (UI3).

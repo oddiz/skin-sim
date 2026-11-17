@@ -338,7 +338,7 @@ func _build_view_card() -> void:
 	_look_caption = Style.label("", "Caption", true)
 	v.add_child(_look_caption)
 	var bleed := _switch_row(v, "Bleeding", bleeding, func(on: bool): bleeding = on)
-	bleed.tooltip_text = "Fresh incisions ooze and blood pools in the wound, darkening as it clots. Drawing only: it does not change the mechanics."
+	bleed.tooltip_text = "Blood pools in the open wound, darkening as it clots. Drawing only: it does not change the mechanics."
 	v.add_child(Style.label("COLOUR MAP", "SectionTitle"))
 	var group := ButtonGroup.new()
 	for i in MAPS.size():

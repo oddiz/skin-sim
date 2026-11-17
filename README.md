@@ -308,15 +308,15 @@ changes. `--look N` picks one from the command line.
   subsurface scattering: the browser renderer has none built in); dog-ears
   as real folds; blanching; wet, glossy cut faces and wound bed; black nylon
   sutures (their load shows as a ring at each needle hole); marker ink with
-  a soft edge; a blue-green surgical drape around the skin (drawn
-  procedurally, no image files).
+  a soft edge; a blue-green surgical drape glued over the skin's margin
+  (drawn by the skin shader on the tissue's rest position, so its edge moves
+  with the skin; no cloth physics, no image files).
 - A Game look is planned next (G3).
 
-**Bleeding** (View, on by default): open incisions ooze and blood pools in
-the wound over about 15 s; it is bright when fresh and darkens over the half
-minute after the last cut. Drawing only: no blood physics, and it does not
-change the mechanics. Strong in Realistic, a flat red band in Illustration,
-none in Classic.
+**Bleeding** (View, on by default): blood pools in the open wound bed over
+about 15 s; it is bright when fresh and darkens over the half minute after
+the last cut. None on the skin or the cut faces. Drawing only: no blood
+physics, and it does not change the mechanics. Not in Classic.
 
 How it works: SkinSheet gives each vertex extra data for the shaders (its
 rest position, the excess skin and the direction the skin is squeezed, the

@@ -9,7 +9,9 @@
 //    out so they never shimmer)
 //  - dog-ears: real ridges along the wrinkle crests
 //  - blanching: stretched skin pales towards yellow-white, squeezed flushes
-//  - along the lips: a wet, darker rim; blood oozing from fresh incisions
+//  - along the lips: a wet, darker rim
+//  - the drape: woven cloth glued over the skin's margin, outside the
+//    fenestration; drawn on the skin's rest coordinates so it moves with it
 //  - light: wrapped diffuse with a red glow at the light/shadow line (light
 //    travelling under the surface), and a soft two-lobe sheen
 shader_type spatial;
@@ -32,13 +34,14 @@ uniform float wrinkle_depth = 0.9;
 uniform float wrinkle_period = 1.6; // mm between dog-ear wrinkles
 uniform float freckles = 0.25;
 uniform float sheen = 0.35;
-// Bleeding (set every frame by Look.update_wound).
-uniform float bleed = 0.0;          // 0 none .. 1 oozing everywhere along the lips
-uniform float fresh = 1.0;          // 1 bright fresh blood .. 0 dark, dried
-uniform vec3 blood_fresh : source_color = vec3(0.55, 0.03, 0.04);
-uniform vec3 blood_old : source_color = vec3(0.24, 0.03, 0.03);
+// The drape (Look sets these; window_half.x <= 0: no drape).
+uniform vec2 window_half = vec2(0.0);  // half size of the opening, rest mm
+uniform vec3 cloth : source_color = vec3(0.16, 0.40, 0.44);
+uniform vec3 cloth_dark : source_color = vec3(0.07, 0.22, 0.25);
+uniform float thread_mm = 0.7;
 
 varying float wet;
+varying float on_cloth;
 
 void vertex() {
 	READ_SKIN_DATA
@@ -89,16 +92,35 @@ void fragment() {
 	col = mix(col, rim_color, 0.7 * rim);
 	float w = rim;
 
-	// --- blood oozing from the lips ---
-	if (bleed > 0.0) {
-		float n = texture(noise_tex, p / 7.0 + 0.13).r;
-		float reach = bleed * (0.4 + 2.2 * smoothstep(0.35, 0.75, n));   // mm from the lip
-		float film = 1.0 - smoothstep(reach * 0.7, reach, lip_mm);
-		vec3 bc = mix(blood_old, blood_fresh, fresh);
-		col = mix(col, bc, 0.92 * film);
-		w = max(w, film * (0.3 + 0.7 * fresh));
-	}
 	wet = w;
+
+	// --- the drape, glued on outside the window ---
+	float cloth_amt = 0.0;
+	vec2 cloth_slope = vec2(0.0);
+	if (window_half.x > 0.0) {
+		vec2 dw = abs(p) - window_half;
+		float out_mm = max(dw.x, dw.y);           // > 0: under the drape
+		float aa = mm_per_px;
+		cloth_amt = smoothstep(-aa, aa, out_mm);
+		// The skin just inside the edge: a soft shadow cast by the cloth's thickness.
+		col *= mix(0.72, 1.0, smoothstep(0.0, 1.5, -out_mm));
+		vec2 t = p / thread_mm;
+		float over = step(0.5, fract(floor(t.x) * 0.5 + floor(t.y) * 0.5));
+		float weave = mix(sin(fract(t.x) * 3.14159), sin(fract(t.y) * 3.14159), over);
+		float weave_vis = 1.0 - smoothstep(0.12, 0.35, mm_per_px / thread_mm);
+		// Same folds and shading as the drape plane beyond the skin
+		// (drape.gdshader; rest x/y = world x/-z), so the two meet seamlessly.
+		vec2 q = vec2(p.x, -p.y);
+		float f0 = texture(noise_tex, q / 260.0).r;
+		cloth_slope = vec2(texture(noise_tex, (q + vec2(2.0, 0.0)) / 260.0).r - f0,
+				texture(noise_tex, (q + vec2(0.0, 2.0)) / 260.0).r - f0) / 2.0 * 12.0;
+		vec3 cc = mix(cloth_dark, cloth, 0.8 + 0.2 * f0);
+		cc *= mix(1.0, 0.8 + 0.2 * weave, weave_vis);
+		// The adhesive edge: a slightly paler, raised hem 1.5 mm wide.
+		cc *= 1.0 + 0.12 * (1.0 - smoothstep(0.8, 1.5, out_mm));
+		col = mix(col, cc, cloth_amt);
+	}
+	on_cloth = cloth_amt;
 
 	// --- normal: pores, fine lines, wrinkles ---
 	float e = 0.05;
@@ -107,14 +129,15 @@ void fragment() {
 	// Wrinkle ridges across the squeeze direction (only where it puckers).
 	vec2 sd = squeeze_dir();
 	grad += sd * (-sin(6.2831853 * ph) * 6.2831853 / wrinkle_period) * wrinkle_depth * amt * 0.25;
-	grad *= 1.0 - w;  // blood and wet tissue fill the pores
+	grad *= (1.0 - w) * (1.0 - on_cloth);  // wet tissue fills the pores; cloth hides them
 	// Rest x/y is world x/-z (SkinSheet); tilt the normal against the slope.
 	vec3 tilt = (VIEW_MATRIX * vec4(-grad.x, 0.0, grad.y, 0.0)).xyz;
 	NORMAL = normalize(NORMAL + 0.12 * tilt);
+	NORMAL = normalize(NORMAL + on_cloth * 0.6 * (VIEW_MATRIX * vec4(-cloth_slope.x, 0.0, -cloth_slope.y, 0.0)).xyz);
 
 	ALBEDO = col;
-	ROUGHNESS = mix(0.55, 0.12, w);
-	SPECULAR = mix(0.35, 0.8, w);
+	ROUGHNESS = mix(mix(0.55, 0.12, w), 0.95, on_cloth);
+	SPECULAR = mix(mix(0.35, 0.8, w), 0.05, on_cloth);
 }
 
 void light() {
@@ -123,7 +146,8 @@ void light() {
 	// shadows soften, and the light/shadow line glows red.
 	float wrap = clamp((ndl + 0.45) / 1.45, 0.0, 1.0);
 	float direct = clamp(ndl, 0.0, 1.0);
-	vec3 sss = scatter_color * clamp(wrap - direct, 0.0, 1.0) * 0.9;
+	vec3 sss = scatter_color * clamp(wrap - direct, 0.0, 1.0) * 0.9 * (1.0 - on_cloth);
+	wrap = mix(wrap, direct, on_cloth);  // cloth: plain matte light
 	// (The engine multiplies DIFFUSE_LIGHT by ALBEDO afterwards; LIGHT_COLOR
 	// includes a factor PI.)
 	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * (vec3(wrap) + sss) / PI;
@@ -132,5 +156,5 @@ void light() {
 	float ndh = clamp(dot(NORMAL, hv), 0.0, 1.0);
 	float wet_spec = pow(ndh, mix(30.0, 400.0, wet)) * mix(0.0, 1.6, wet);
 	float soft = pow(ndh, 14.0) * sheen * 0.25;
-	SPECULAR_LIGHT += LIGHT_COLOR * ATTENUATION * (soft + wet_spec) * direct / PI;
+	SPECULAR_LIGHT += LIGHT_COLOR * ATTENUATION * (soft + wet_spec) * direct * (1.0 - on_cloth) / PI;
 }

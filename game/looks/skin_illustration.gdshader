@@ -12,8 +12,6 @@ uniform vec3 ink : source_color = vec3(0.30, 0.10, 0.09);
 uniform sampler2D noise_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
 uniform float mottle = 0.07;
 uniform float hatch_period = 1.4;  // mm between wrinkle lines
-uniform float bleed = 0.0;         // Look.update_wound
-uniform vec3 blood : source_color = vec3(0.62, 0.08, 0.08);
 
 void vertex() {
 	READ_SKIN_DATA
@@ -42,9 +40,6 @@ void fragment() {
 	// Along the lips: a little shadow, then a fine ink line.
 	col *= mix(0.8, 1.0, smoothstep(0.0, 1.8, lip_mm));
 	float edge = 1.0 - smoothstep(0.12, 0.3, lip_mm);
-	// Blood along fresh incisions: a flat red band, as an atlas paints it.
-	float reach = bleed * (0.5 + 1.5 * texture(noise_tex, rest_mm / 8.0).r);
-	col = mix(col, blood, step(lip_mm, reach) * step(0.001, bleed));
 	ALBEDO = mix(col, ink, 0.85 * edge);
 	ROUGHNESS = 0.9;
 	SPECULAR = 0.1;
