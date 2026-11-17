@@ -95,6 +95,9 @@ var fx: Feedback
 var _measuring := false
 var _bench_gpu := 0.0
 var _bench_cpu := 0.0
+var _bench_proc := 0.0
+var _panels_version := -1
+var _lesions: Array = []
 ## The current tool's settings (part of ui; kept as a short name).
 var panel: ContextPanel
 
@@ -982,16 +985,30 @@ func _screen_to_sheet_plane(screen_pos: Vector2) -> Vector3:
 
 
 func _process(delta: float) -> void:
+	Prof.begin("main")
+	Prof.begin("bleed+hooks")
 	_update_bleeding(delta)
 	_update_hooks()
+	Prof.end("bleed+hooks")
 	var s: Dictionary = sheet.get_step_info()
+	Prof.begin("sutures panel")
 	var selected := _selected_info()
 	panel.show_selected_suture(selected)
 	_place_suture_buttons(selected)
-	panel.show_contact(sheet.get_contact_info())
-	var lesions: Array = sheet.get_lesion_info()
-	panel.show_lesions(lesions)
-	panel.show_flaps(sheet.get_flap_info())
+	Prof.end("sutures panel")
+	Prof.begin("panels")
+	# Lesion, flap and contact read-outs change only with the skin: skip
+	# them while it is at rest (SkinSheet's render version unchanged).
+	var version := sheet.get_render_version()
+	if version != _panels_version:
+		_panels_version = version
+		panel.show_contact(sheet.get_contact_info())
+		_lesions = sheet.get_lesion_info()
+		panel.show_lesions(_lesions)
+		panel.show_flaps(sheet.get_flap_info())
+	var lesions := _lesions
+	Prof.end("panels")
+	Prof.begin("hint+stats")
 	overlay.show_tension_lines = ui.show_tension_lines
 	overlay.show_suture_dots = ui.show_suture_dots
 	ui.set_status(s.converged, s.stalled)
@@ -1010,6 +1027,8 @@ func _process(delta: float) -> void:
 		+ "energy %.3f N·mm, area ratio %.2f–%.2f, grabs %d\n" % [
 			s.energy, s.min_area_ratio, s.max_area_ratio, s.grabs] \
 		+ _render_stats())
+	Prof.end("hint+stats")
+	Prof.end("main")
 
 
 ## Frame rate and where the time goes: CPU (scripts + solver + building the
@@ -1299,11 +1318,18 @@ func _save_screenshot_and_quit(path: String) -> void:
 	if z != -1 and z + 1 < args.size():
 		_zoom_about(get_viewport().get_visible_rect().size * 0.5, 1.0 / float(args[z + 1]))
 	# Let the solver run for a moment (about 2 s at 60 fps), then capture.
-	for _frame in 120:
+	# --bench: let the skin come to rest first (--bench-frames N, default
+	# 600), then average the last 60 frames.
+	var frames := 120
+	var bf := args.find("--bench-frames")
+	if args.has("--bench"):
+		frames = int(args[bf + 1]) if bf != -1 and bf + 1 < args.size() else 600
+	for _frame in frames:
 		await RenderingServer.frame_post_draw
-		if _frame >= 60 and args.has("--bench"):
+		if _frame >= frames - 60 and args.has("--bench"):
 			_bench_gpu += RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
 			_bench_cpu += RenderingServer.viewport_get_measured_render_time_cpu(get_viewport().get_viewport_rid())
+			_bench_proc += Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 		if _frame == 100 and args.has("--then-start-over"):  # check: Start over clears everything
 			start_over()
 			await get_tree().process_frame
@@ -1313,7 +1339,14 @@ func _save_screenshot_and_quit(path: String) -> void:
 		if _frame == 108 and args.has("--demo-fx"):
 			_demo_fx()
 	if args.has("--bench"):
-		print("BENCH gpu %.3f ms, render cpu %.3f ms (mean of 60 frames)" % [_bench_gpu / 60.0, _bench_cpu / 60.0])
+		print("BENCH fps %d, gpu %.3f ms, render cpu %.3f ms, process (scripts + solver) %.3f ms (mean of 60 frames)" % [Engine.get_frames_per_second(),
+			_bench_gpu / 60.0, _bench_cpu / 60.0, _bench_proc / 60.0])
+		var keys: Array = Prof.totals.keys()
+		keys.sort_custom(func(x, y): return Prof.totals[x] > Prof.totals[y])
+		for k in keys:
+			print("PROF %-16s %.3f ms/frame" % [k, Prof.totals[k] / 1000.0 / frames])
+		var si: Dictionary = sheet.get_step_info()
+		print("BENCH solver: %s, %d it/frame, step %.2f ms" % ["at rest" if si.converged else "solving", si.iterations, si.step_ms])
 	var err := get_viewport().get_texture().get_image().save_png(path)
 	print("Screenshot saved to %s (error code %d)" % [path, err])
 	get_tree().quit()

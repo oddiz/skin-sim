@@ -328,6 +328,10 @@ public:
     // One Dictionary per active grab: point/target (world space), force (N),
     // force_limited (bool), radius (mm).
     Array get_grab_info() const;
+    // Goes up by one whenever what is drawn may have changed (the skin moved,
+    // was cut, a map or lesion changed). Callers can skip work while it
+    // stays the same.
+    int64_t get_render_version() const { return static_cast<int64_t>(render_version_); }
 
 protected:
     static void _bind_methods();
@@ -337,6 +341,14 @@ private:
     void topology_changed();         // after a cut: refresh caches, redraw, notify
     void push_params();              // hand params_/grab_params_ to the running simulation
     void update_render_mesh();       // copy current positions into the ArrayMesh
+    // The uncached versions of get_heatmap_legend & co. The public ones keep
+    // their last answer until render_version_ changes: GDScript asks for them
+    // every frame, and recomputing (stresses at every vertex, lesion outlines
+    // located on the deformed mesh) cost several ms per frame at rest.
+    Dictionary compute_heatmap_legend() const;
+    Dictionary compute_tension_lines(double p_spacing_mm) const;
+    Array compute_lesion_info() const;
+    Array compute_flap_info() const;
     void ensure_render_objects();
     Eigen::Vector2d world_to_sheet(const Vector3& p_world) const;
     Color heat_color(double p_value) const;  // colour scale of the current heatmap mode
@@ -416,6 +428,11 @@ private:
     // Per cut edge: the third vertex of its triangle (which side is skin).
     std::vector<int> cut_edge_third_;
     double topology_time_s_ = -1e9;
+    uint64_t render_version_ = 0;
+    mutable uint64_t legend_version_ = ~0ull, lines_version_ = ~0ull, lesions_version_ = ~0ull, flaps_version_ = ~0ull;
+    mutable double lines_key_ = -1.0;
+    mutable Dictionary legend_cache_, lines_cache_;
+    mutable Array lesions_cache_, flaps_cache_;
     void update_lip_data();
     Ref<PlaneMesh> wound_bed_mesh_;
     MeshInstance3D* mesh_instance_ = nullptr;  // our internal children; Godot frees them

@@ -40,6 +40,8 @@ var show_suture_dots := false
 ## the ring has filled towards setting a hook (id -> 0..1).
 var hooks := {}
 var hook_progress := {}
+var _probe_key: Array = []
+var _probe_text := ""
 ## The look's way of drawing (Look.overlay_style): thread_width,
 ## thread_color (a real thread; load as rings at the needle holes), ink_bleed,
 ## outline
@@ -88,23 +90,36 @@ func add_snap(a: Vector3, b: Vector3, text: String) -> void:
 func _draw() -> void:
 	if sheet == null or camera == null:
 		return
+	Prof.begin("draw")
+	Prof.begin("draw tension lines")
 	if show_tension_lines:
 		_draw_tension_lines()
+	Prof.end("draw tension lines")
 	if cut_path.size() >= 2:
 		# Dark halo underneath so the line shows on skin and background alike.
 		draw_polyline(cut_path, Color(0, 0, 0, 0.6), 5.0, true)
 		draw_polyline(cut_path, COLOR_SCALPEL, 2.5, true)
 	var font: Font = Style.FONT_REGULAR
+	Prof.begin("draw lesions+marks")
 	_draw_lesions()
 	_draw_marks()
+	Prof.end("draw lesions+marks")
 	if excise_outline.size() >= 2:
 		draw_polyline(excise_outline, Color(0, 0, 0, 0.6), 4.0, true)
 		draw_polyline(excise_outline, Color(0.55, 0.2, 0.85, 0.95), 2.0, true)
 	_draw_flap_preview(font)
+	Prof.begin("draw sutures")
 	_draw_sutures(font)
+	Prof.end("draw sutures")
+	Prof.begin("draw legend+rstl+probe")
+	Prof.begin("legend")
 	_draw_legend(font)
+	Prof.end("legend")
+	Prof.begin("rstl")
 	_draw_rstl(font)
+	Prof.end("rstl")
 	_draw_probe(font)
+	Prof.end("draw legend+rstl+probe")
 	if brush_pos.x >= 0.0:
 		draw_arc(brush_pos, brush_radius_px, 0.0, TAU, 48, Color(0.35, 0.15, 0.45, 0.9), 2.0, true)
 		draw_arc(brush_pos, 0.6 * brush_radius_px, 0.0, TAU, 48, Color(0.35, 0.15, 0.45, 0.5), 1.0, true)
@@ -133,6 +148,7 @@ func _draw() -> void:
 			draw_arc(t, 20.0, -PI * 0.5, -PI * 0.5 + TAU * k, 40, Color(1, 1, 1, 0.9), 3.0, true)
 			draw_arc(t, 20.0, 0.0, TAU, 40, Color(1, 1, 1, 0.2), 3.0, true)
 		_pill(font, pos, label, 16, color)
+	Prof.end("draw")
 
 
 ## A skin hook: a ring where it holds (tap or drag it there) with a small
@@ -374,14 +390,20 @@ func _draw_tension_lines() -> void:
 func _draw_probe(font: Font) -> void:
 	if probe_pos.x < 0.0 or sheet.heatmap == 0 or ui.is_over_ui(probe_pos):
 		return
-	var origin := camera.project_ray_origin(probe_pos)
-	var hit = Plane(Vector3.UP, 0.0).intersects_ray(origin, camera.project_ray_normal(probe_pos))
-	if hit == null:
-		return
-	var r: Dictionary = sheet.sample_heatmap(hit)
-	if not r.ok:
-		return
-	_pill(font, probe_pos + Vector2(16, 28), r.text, 12, Style.TEXT)
+	# Looking up the point on the mesh is not free: ask again only when the
+	# pointer, the view or the skin changed.
+	var key := [probe_pos, camera.position, camera.size, sheet.get_render_version(), sheet.heatmap]
+	if key != _probe_key:
+		_probe_key = key
+		_probe_text = ""
+		var origin := camera.project_ray_origin(probe_pos)
+		var hit = Plane(Vector3.UP, 0.0).intersects_ray(origin, camera.project_ray_normal(probe_pos))
+		if hit != null:
+			var r: Dictionary = sheet.sample_heatmap(hit)
+			if r.ok:
+				_probe_text = r.text
+	if _probe_text != "":
+		_pill(font, probe_pos + Vector2(16, 28), _probe_text, 12, Style.TEXT)
 
 
 ## The colour map's legend: a compact horizontal bar in a card at the

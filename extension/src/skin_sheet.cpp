@@ -207,6 +207,7 @@ void SkinSheet::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_heatmap_contours", "on"), &SkinSheet::set_heatmap_contours);
     ClassDB::bind_method(D_METHOD("get_heatmap_contours"), &SkinSheet::get_heatmap_contours);
     ClassDB::bind_method(D_METHOD("get_heatmap_range_now"), &SkinSheet::get_heatmap_range_now);
+    ClassDB::bind_method(D_METHOD("get_render_version"), &SkinSheet::get_render_version);
     ClassDB::bind_method(D_METHOD("get_tension_lines", "spacing_mm"), &SkinSheet::get_tension_lines);
     ClassDB::bind_method(D_METHOD("sample_heatmap", "world_point"), &SkinSheet::sample_heatmap);
     ClassDB::bind_method(D_METHOD("set_iterations_per_frame", "n"), &SkinSheet::set_iterations_per_frame);
@@ -674,6 +675,14 @@ Array SkinSheet::tie_key_sutures(double p_tightness) {
 }
 
 Array SkinSheet::get_flap_info() const {
+    if (flaps_version_ != render_version_) {
+        flaps_cache_ = compute_flap_info();
+        flaps_version_ = render_version_;
+    }
+    return flaps_cache_;
+}
+
+Array SkinSheet::compute_flap_info() const {
     Array out;
     if (!sheet_) return out;
     for (int i = 0; i < sheet_->flap_count(); ++i) {
@@ -696,17 +705,32 @@ bool SkinSheet::undo_excise() {
     return true;
 }
 
+// Lesions are drawn by the overlay, not the mesh: changing them only
+// invalidates the cached lesion outlines.
 bool SkinSheet::add_lesion(const Vector3& p_world_point) {
+    ++render_version_;
     return sheet_ && sheet_->add_lesion(world_to_sheet(p_world_point), lesion_diameter_);
 }
 
-bool SkinSheet::undo_lesion() { return sheet_ && sheet_->undo_lesion(); }
+bool SkinSheet::undo_lesion() {
+    ++render_version_;
+    return sheet_ && sheet_->undo_lesion();
+}
 
 void SkinSheet::clear_lesions() {
+    ++render_version_;
     if (sheet_) sheet_->clear_lesions();
 }
 
 Array SkinSheet::get_lesion_info() const {
+    if (lesions_version_ != render_version_) {
+        lesions_cache_ = compute_lesion_info();
+        lesions_version_ = render_version_;
+    }
+    return lesions_cache_;
+}
+
+Array SkinSheet::compute_lesion_info() const {
     Array out;
     const skinsim::Simulation* s = sim();
     if (!s) return out;
@@ -816,6 +840,7 @@ void SkinSheet::set_heatmap_auto_range(bool p_on) {
 
 void SkinSheet::set_heatmap_contours(bool p_on) {
     heatmap_contours_ = p_on;
+    ++render_version_;  // the legend's ticks follow the contours
     if (heat_material_.is_valid()) heat_material_->set_shader_parameter("line_strength", p_on ? 0.55 : 0.0);
 }
 
@@ -1190,6 +1215,14 @@ Color SkinSheet::heat_color(double p_value) const {
 }
 
 Dictionary SkinSheet::get_heatmap_legend() const {
+    if (legend_version_ != render_version_) {
+        legend_cache_ = compute_heatmap_legend();
+        legend_version_ = render_version_;
+    }
+    return legend_cache_;
+}
+
+Dictionary SkinSheet::compute_heatmap_legend() const {
     Dictionary d;
     if (heatmap_ == HEATMAP_OFF || !sim()) return d;
     const double range = stress_range();
@@ -1293,6 +1326,15 @@ Array SkinSheet::get_grab_info() const {
 }
 
 Dictionary SkinSheet::get_tension_lines(double p_spacing_mm) const {
+    if (lines_version_ != render_version_ || lines_key_ != p_spacing_mm) {
+        lines_cache_ = compute_tension_lines(p_spacing_mm);
+        lines_version_ = render_version_;
+        lines_key_ = p_spacing_mm;
+    }
+    return lines_cache_;
+}
+
+Dictionary SkinSheet::compute_tension_lines(double p_spacing_mm) const {
     Dictionary out;
     const skinsim::Simulation* s = sim();
     if (!s || !stress_map()) return out;
@@ -1463,6 +1505,7 @@ void SkinSheet::topology_changed() {
 }
 
 void SkinSheet::update_render_mesh() {
+    ++render_version_;  // cached answers (legend, lesions, ...) are now stale
     const skinsim::Simulation* s = sim();
     if (!s || render_mesh_.is_null()) return;
 

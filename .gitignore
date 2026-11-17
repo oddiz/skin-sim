@@ -38,3 +38,7 @@ export/
 
 # Vercel CLI link (project and team IDs; set as GitHub secrets instead)
 .vercel/
+
+# Locked DLLs renamed aside while the Godot editor holds them (Windows)
+*.old-in-use*
+~*.TMP

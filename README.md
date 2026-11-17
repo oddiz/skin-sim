@@ -363,6 +363,16 @@ phone's high-resolution screen it would be worse still. The plane around the
 skin (drape, Game background) is a frame with a hole, so it is not shaded
 under the skin.
 
+The processor side mattered more on phones: with a flap on screen and the
+skin at rest, the scripts spent ~7 ms per frame re-asking for things that had
+not changed (the legend recomputed the stress at every vertex, lesion
+outlines were re-located on the mesh, the value under the pointer searched
+the mesh). SkinSheet now keeps those answers until the skin changes
+(`get_render_version()`), and the scripts skip panel updates while it is at
+rest: ~1.6 ms per frame (desktop: 98 -> 240 fps). `--bench` also prints a
+per-section breakdown (`Prof` in game/prof.gd) and waits for the skin to
+come to rest (`--bench-frames N`).
+
 ## Reading the tension map
 
 The **Tension** map colours the largest principal stress; **Squeezing** the

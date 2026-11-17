@@ -122,6 +122,9 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
   it can outlive the touch; hold still HOOK_HOLD_S -> hook; tap a hook to release. Suture
   labels go past the thread's right end (overlay _beyond_end), buttons past the left end.
   --demo-hook [--tap-hook].
+  Per-frame cost: SkinSheet caches legend / tension lines / lesion & flap info until
+  render_version_ changes (++ in update_render_mesh and lesion edits); main.gd skips panel
+  updates at rest; the overlay caches the probe. Measure with --bench (Prof sections).
   G3 Game (look 3): skin_game.gdshader (cel bands, outline in px), game_background.gdshader
   on the drape plane. No 3D glow (bloomed the pale skin, costly on phones): thread/marker
   glow drawn by the overlay (style glow/neon). Effects: game/fx/feedback.gd (2D, anchored

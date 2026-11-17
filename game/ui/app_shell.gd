@@ -820,6 +820,12 @@ func _layout_narrow(vp: Vector2) -> void:
 
 
 func _process(_delta: float) -> void:
+	Prof.begin("shell")
+	_layout_overlays()
+	Prof.end("shell")
+
+
+func _layout_overlays() -> void:
 	# Hint pill and toasts: bottom centre of the skin area, sized to content.
 	var fr := free_rect()
 	var vp := get_viewport_rect().size
