@@ -48,9 +48,9 @@ const TOOLS := [
 	{"name": "Circle", "icon": "circle", "key": "O", "plan": true,
 		"how": "Drag from the centre outward."},
 	{"name": "Ruler", "icon": "ruler", "key": "D", "plan": true,
-		"how": "Drag to measure a distance. The label shows the length as drawn, and what it measures now once the skin has moved."},
+		"how": "Drag to measure a distance; the length shows while you drag. To keep the labels (the length as drawn, and now once the skin has moved): View → Measurements."},
 	{"name": "Angle", "icon": "angle", "key": "A", "plan": true,
-		"how": "Drag the first arm out from the corner, then drag again for the second arm. The label shows the angle as drawn, and now."},
+		"how": "Drag the first arm out from the corner, then drag again for the second arm; the angle shows while you drag. To keep the labels (as drawn, and now): View → Measurements."},
 	{"name": "Erase", "icon": "eraser", "key": "", "plan": true,
 		"how": "Tap a marking, or rub across several, to erase them. Undo brings them back."},
 ]

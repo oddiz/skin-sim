@@ -1100,6 +1100,7 @@ func _process(delta: float) -> void:
 	Prof.begin("hint+stats")
 	overlay.show_tension_lines = ui.show_tension_lines
 	overlay.show_suture_dots = ui.show_suture_dots
+	overlay.show_measurements = ui.show_measurements
 	ui.set_status(s.converged, s.stalled)
 	ui.set_undo_enabled(not _history.is_empty())
 	ui.set_hint(_hint(selected, lesions))
@@ -1194,7 +1195,7 @@ func _hint(selected: Dictionary, lesions: Array) -> String:
 		Tool.CIRCLE:
 			return "Drag from the centre outward."
 		Tool.RULER:
-			return "Drag to measure. The label keeps the length as drawn, and shows it now when the skin moves."
+			return "Drag to measure."
 		Tool.ANGLE:
 			if not _angle_pending.is_empty():
 				return "Now drag the second arm (start anywhere). Esc cancels."
@@ -1236,7 +1237,7 @@ func _demo_plan() -> void:
 	print("demo-plan: %d markings: %s" % [marks.size(), ", ".join(marks.map(func(m): return m.kind))])
 	# Rub out the rectangle, then undo.
 	_set_tool(Tool.ERASE)
-	await _gesture([Vector2(-28, -9), Vector2(-20, -9)])
+	await _gesture([Vector2(-20, -17), Vector2(-20, -11)])
 	var after_erase := marks.size()
 	_undo()
 	print("demo-plan: erase rubbed out %d, undo brought back %d" % [5 - after_erase, marks.size() - after_erase])

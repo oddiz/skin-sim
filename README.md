@@ -149,8 +149,8 @@ skin again.
 | "Tie key sutures" (Flap section) | Tie the last flap's key sutures: they pull it into place |
 | Drag (Pen, M) | Plan: draw on the skin with a surgical marker (no effect on the skin). Markings are kept in tissue coordinates, so they stretch and move with the skin; where an incision crosses one it ends on each lip, and nothing is drawn across an open wound or an excised hole |
 | Drag (Line I, Rectangle B, Circle O) | Plan: a straight line; a rectangle corner to corner; a circle from its centre. Panel: colour, solid / dashed / dotted, Snap (lines click to 15° steps) |
-| Drag (Ruler, D) | Plan: measure a distance, with mm ticks. The label keeps the length as drawn and adds what it measures now once the skin has moved ("30.0 mm → 31.5 now") |
-| Drag, then drag again (Angle, A) | Plan: the first arm out of the corner, then the second arm (start anywhere). Labelled with the angle as drawn and now ("60° → 65° now"); Esc cancels a half-made angle |
+| Drag (Ruler, D) | Plan: measure a distance, with mm ticks. The length shows while you drag; with View → Measurements the labels stay, giving the length as drawn and what it measures now once the skin has moved ("30.0 mm → 31.5 now") |
+| Drag, then drag again (Angle, A) | Plan: the first arm out of the corner, then the second arm (start anywhere). The angle shows while you drag (kept with View → Measurements, as drawn and now: "60° → 65° now"); Esc cancels a half-made angle |
 | Tap or rub (Erase) | Plan: erase the markings touched (undo brings them back) |
 | Z | Undo the last incision, suture, undermining stroke, lesion, excision, flap or marking |
 | Esc / ? | Close panels and deselect / keyboard shortcuts |

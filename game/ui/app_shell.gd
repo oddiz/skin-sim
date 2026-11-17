@@ -89,6 +89,8 @@ var show_tension_lines := true
 var bleeding := true
 ## Load-coloured dots at the sutures' needle holes.
 var show_suture_dots := false
+## Labels on placed rulers and angles (off: only while drawing one).
+var show_measurements := false
 var _effects_switch: CheckButton
 ## Fitzpatrick skin type 0..5 (I-VI) for the Realistic look.
 var skin_type := 1
@@ -552,6 +554,9 @@ func _build_view_card() -> void:
 	var dots := _switch_row(v, "Suture load dots", show_suture_dots,
 		func(on: bool): show_suture_dots = on)
 	dots.tooltip_text = "A dot at each needle hole coloured by the thread's load (green, yellow at 50%, red at its breaking strength)."
+	var measures := _switch_row(v, "Measurements", show_measurements,
+		func(on: bool): show_measurements = on)
+	measures.tooltip_text = "Keep the labels on rulers and angles: the value as drawn, and what it measures now. Off: they show only while you draw."
 	_stats_switch = _switch_row(v, "Solver details", false, func(on: bool): _stats_card.visible = on)
 	set_heatmap(sheet.heatmap)
 

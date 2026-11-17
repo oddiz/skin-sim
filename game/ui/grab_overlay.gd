@@ -36,6 +36,9 @@ var flap_preview: Dictionary = {}
 var show_tension_lines := true
 ## Load dots at each suture's needle holes (View panel; off by default).
 var show_suture_dots := false
+## Labels on placed rulers and angles (View → Measurements). Off, a label
+## shows only on the shape being drawn and goes once it is placed.
+var show_measurements := false
 ## Skin hooks (main.gd): grab id -> true; and for fingers still held, how far
 ## the ring has filled towards setting a hook (id -> 0..1).
 var hooks := {}
@@ -645,8 +648,11 @@ func _draw_marks() -> void:
 		return
 	var font: Font = Style.FONT_REGULAR
 	var shown: Array = marks_on_screen().duplicate()
+	var labelled: Array = shown.duplicate() if show_measurements else []
 	if not plan_preview.is_empty():
-		shown.append(_mark_on_screen(plan_preview))
+		var preview := _mark_on_screen(plan_preview)
+		shown.append(preview)
+		labelled.append(preview)
 	for m in shown:
 		var c: Color = m.color
 		for pts in m.pieces:
@@ -654,7 +660,7 @@ func _draw_marks() -> void:
 		for e in m.extra:
 			draw_polyline(e, Color(c, 0.9), 1.5, true)
 	# Labels on top of every line.
-	for m in shown:
+	for m in labelled:
 		if m.label != "":  # centred on label_at
 			var w := font.get_string_size(m.label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
 			_pill(font, m.label_at + Vector2(-0.5 * w, 4.0), m.label, 12, Style.TEXT)
