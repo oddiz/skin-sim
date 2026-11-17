@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <queue>
 
 #include <godot_cpp/classes/time.hpp>
@@ -989,6 +990,8 @@ void SkinSheet::update_lip_data() {
     const int n = mesh_.vertex_count();
     lip_distance_.assign(n, kCap);
     cut_edge_third_.assign(mesh_.cut_edges.size(), -1);
+    bridge_mid_.clear();
+    render_tris_ = mesh_.triangles;
     if (mesh_.cut_edges.empty()) return;
     std::vector<std::vector<std::pair<int, double>>> adj(n);
     for (const skinsim::Edge& e : edges_) {
@@ -1023,6 +1026,69 @@ void SkinSheet::update_lip_data() {
     for (size_t i = 0; i < mesh_.cut_edges.size(); ++i) {
         const auto it = third.find({mesh_.cut_edges[i][0], mesh_.cut_edges[i][1]});
         if (it != third.end()) cut_edge_third_[i] = it->second;
+    }
+
+    // Bridges: edges through the tissue (not lip edges) with both ends on a
+    // lip. Their midpoint gets its true distance to the nearest incision
+    // (straight line at rest; both lips of an incision share positions).
+    std::set<std::pair<int, int>> lip_edges;
+    for (const skinsim::Edge& e : mesh_.cut_edges) lip_edges.insert({e[0], e[1]});
+    auto rest_dist_to_cut = [&](const Eigen::Vector2d& X) {
+        double best = kCap;
+        for (const skinsim::Edge& e : mesh_.cut_edges) {
+            const Eigen::Vector2d A = mesh_.rest_positions.col(e[0]), AB = mesh_.rest_positions.col(e[1]) - A;
+            const double len2 = AB.squaredNorm();
+            const double t = len2 > 0.0 ? std::clamp((X - A).dot(AB) / len2, 0.0, 1.0) : 0.0;
+            best = std::min(best, (A + t * AB - X).norm());
+        }
+        return best;
+    };
+    std::map<std::pair<int, int>, int> mid_of;  // edge -> vertex index of its midpoint
+    for (const skinsim::Edge& e : edges_) {
+        if (lip_distance_[e[0]] > 0.0 || lip_distance_[e[1]] > 0.0 || lip_edges.count({e[0], e[1]})) continue;
+        const Eigen::Vector2d M = 0.5 * (mesh_.rest_positions.col(e[0]) + mesh_.rest_positions.col(e[1]));
+        mid_of[{e[0], e[1]}] = n + static_cast<int>(bridge_mid_.size());
+        bridge_mid_.push_back({e[0], e[1], rest_dist_to_cut(M)});
+    }
+    if (bridge_mid_.empty()) return;
+    // Split the triangles beside them (counter-clockwise kept): one, two or
+    // three of a triangle's edges may be bridges.
+    render_tris_.clear();
+    for (const skinsim::Triangle& t : mesh_.triangles) {
+        int m[3];  // m[k]: midpoint of the edge from t[k] to t[k+1], or -1
+        int count = 0;
+        for (int k = 0; k < 3; ++k) {
+            const int a = t[k], b = t[(k + 1) % 3];
+            const auto it = mid_of.find({std::min(a, b), std::max(a, b)});
+            m[k] = it != mid_of.end() ? it->second : -1;
+            count += m[k] >= 0;
+        }
+        if (count == 0) {
+            render_tris_.push_back(t);
+        } else if (count == 3) {
+            render_tris_.push_back({t[0], m[0], m[2]});
+            render_tris_.push_back({m[0], t[1], m[1]});
+            render_tris_.push_back({m[2], m[1], t[2]});
+            render_tris_.push_back({m[0], m[1], m[2]});
+        } else {
+            // Rotate so that the edge t[k] -> t[k+1] is split (count 1), or
+            // so that the edge t[k+1] -> t[k+2] is the one not split (count 2).
+            int k = 0;
+            if (count == 1)
+                while (m[k] < 0) ++k;
+            else
+                while (m[(k + 1) % 3] >= 0) ++k;
+            const int a = t[k], b = t[(k + 1) % 3], c = t[(k + 2) % 3];
+            const int mab = m[k], mca = m[(k + 2) % 3];
+            if (count == 1) {
+                render_tris_.push_back({a, mab, c});
+                render_tris_.push_back({mab, b, c});
+            } else {
+                render_tris_.push_back({a, mab, mca});
+                render_tris_.push_back({mab, b, c});
+                render_tris_.push_back({mab, c, mca});
+            }
+        }
     }
 }
 
@@ -1586,11 +1652,14 @@ void SkinSheet::update_render_mesh() {
         nw[i] = Vector3(static_cast<real_t>(-g.x()), 1, static_cast<real_t>(g.y())).normalized();
     }
 
+    // render_tris_: the mesh's triangles, those beside lip-to-lip edges split
+    // (see update_lip_data); the extra midpoint vertices are added below.
+    const int n_draw = static_cast<int>(render_tris_.size());
     PackedInt32Array indices;
-    indices.resize(3 * n_tris);
+    indices.resize(3 * n_draw);
     int32_t* iw = indices.ptrw();
-    for (int t = 0; t < n_tris; ++t) {
-        const skinsim::Triangle& tri = mesh_.triangles[t];
+    for (int t = 0; t < n_draw; ++t) {
+        const skinsim::Triangle& tri = render_tris_[t];
         // Solver triangles are counter-clockwise; Godot's front faces are
         // clockwise as seen by the camera, so swap two indices.
         iw[3 * t + 0] = tri[0];
@@ -1658,6 +1727,34 @@ void SkinSheet::update_render_mesh() {
         for (int i = 0; i < n_verts; ++i)
             cw[i] = skin_color_.lerp(undermined, static_cast<real_t>(0.75 * (i < und.size() ? und[i] : 0.0)));
         arrays[Mesh::ARRAY_COLOR] = colors;
+    }
+
+    // Midpoints of lip-to-lip edges: the average of their two ends, except
+    // the lip distance (UV2.y), which is their own.
+    if (!bridge_mid_.empty()) {
+        for (int slot : {Mesh::ARRAY_VERTEX, Mesh::ARRAY_NORMAL}) {
+            PackedVector3Array a = arrays[slot];
+            for (const BridgeMid& m : bridge_mid_) {
+                Vector3 v = (a[m.a] + a[m.b]) * 0.5f;
+                a.push_back(slot == Mesh::ARRAY_NORMAL ? v.normalized() : v);
+            }
+            arrays[slot] = a;
+        }
+        for (int slot : {Mesh::ARRAY_TEX_UV, Mesh::ARRAY_TEX_UV2}) {
+            if (arrays[slot].get_type() != Variant::PACKED_VECTOR2_ARRAY) continue;
+            PackedVector2Array a = arrays[slot];
+            for (const BridgeMid& m : bridge_mid_) {
+                Vector2 v = (a[m.a] + a[m.b]) * 0.5f;
+                if (slot == Mesh::ARRAY_TEX_UV2) v.y = static_cast<real_t>(m.dist);
+                a.push_back(v);
+            }
+            arrays[slot] = a;
+        }
+        if (arrays[Mesh::ARRAY_COLOR].get_type() == Variant::PACKED_COLOR_ARRAY) {
+            PackedColorArray a = arrays[Mesh::ARRAY_COLOR];
+            for (const BridgeMid& m : bridge_mid_) a.push_back(a[m.a].lerp(a[m.b], 0.5f));
+            arrays[Mesh::ARRAY_COLOR] = a;
+        }
     }
 
     render_mesh_->clear_surfaces();

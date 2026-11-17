@@ -431,6 +431,18 @@ private:
     std::vector<double> lip_distance_;
     // Per cut edge: the third vertex of its triangle (which side is skin).
     std::vector<int> cut_edge_third_;
+    // Drawing only: edges running through the tissue from one lip vertex to
+    // another (at a sharp flap tip, across a narrow strip). Their ends are
+    // both 0 mm from a lip, so the shaders' lip distance, interpolated
+    // along them, would read "on the lip" all the way across: the wet rim
+    // would cover whole triangles. Such edges get a midpoint vertex with its
+    // true distance, and the triangles beside them are split for drawing.
+    struct BridgeMid {
+        int a, b;     // the edge's vertices
+        double dist;  // rest distance from its midpoint to the nearest incision, mm
+    };
+    std::vector<BridgeMid> bridge_mid_;      // vertex n_verts + k is bridge_mid_[k]
+    std::vector<skinsim::Triangle> render_tris_;  // the triangles to draw (counter-clockwise)
     double topology_time_s_ = -1e9;
     uint64_t render_version_ = 0;
     mutable uint64_t legend_version_ = ~0ull, lines_version_ = ~0ull, lesions_version_ = ~0ull, flaps_version_ = ~0ull;

@@ -117,7 +117,8 @@ concepts. Define abbreviations on first use. Teach the reasoning, not just the c
 - Graphics (plan G1-G4: Classic / Illustration / Realistic / Game looks, switchable in View):
   game/looks/look.gd + .gdshader files; SkinSheet skin/wall/bed_material slots and per-vertex
   shader data (UV rest mm, UV2 (J, lip distance), COLOR (undermined, excess, squeeze dir));
-  cut walls = sloped bands; relief normals. Renderer: gl_compatibility everywhere (web parity).
+  cut walls = sloped bands; relief normals. Lip-to-lip edges (sharp flap tips) get a render-only midpoint with its
+  true lip distance (SkinSheet bridge_mid_/render_tris_), else the wet rim floods the triangle. Renderer: gl_compatibility everywhere (web parity).
   Screenshots: --look N --plain --zoom X.
   G2 Realistic (look 2): skin_realistic.gdshader (bumps from rest-space noise, fake SSS in
   light()). Drape: glued on the skin's margin by the skin shader (window_half, rest
